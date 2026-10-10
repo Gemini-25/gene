@@ -537,12 +537,39 @@ impl Sim {
             signal: &self.st.signal,
             dropped: &self.st.dropped,
         };
-        for a in &mut self.st.agents {
+        let before: Vec<u32> = self.st.agents.iter().map(|a| a.energy).collect();
+        let threads = self.threads.max(1);
+        if threads > 1 && self.st.agents.len() >= 32 {
+            if self.pool.is_none() {
+                self.pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().ok();
+            }
+        }
+        match &self.pool {
+            // Each VM reads the shared world and writes only its own agent (SPEC §19), so the
+            // split does not change the result.
+            Some(pool) if threads > 1 && self.st.agents.len() >= 32 => {
+                use rayon::prelude::*;
+                let agents = &mut self.st.agents;
+                pool.install(|| {
+                    agents.par_iter_mut().with_min_len(16).for_each(|a| {
+                        if !a.s.inert {
+                            vm::think(a, &sense, a.keys.ctrl);
+                        }
+                    })
+                });
+            }
+            _ => {
+                for a in &mut self.st.agents {
+                    if !a.s.inert {
+                        vm::think(a, &sense, a.keys.ctrl);
+                    }
+                }
+            }
+        }
+        for (a, before) in self.st.agents.iter().zip(before) {
             if a.s.inert {
                 continue;
             }
-            let before = a.energy;
-            vm::think(a, &sense, a.keys.ctrl);
             let spent = (before - a.energy) as u64;
             let attempt = a
                 .s
