@@ -36,6 +36,8 @@ fn main() {
         *zero_w.entry(class).or_default() += (w.loose_total(t, W) == 0) as u64;
     }
     let all_w0 = (0..n).filter(|&t| w.loose_total(t, W) == 0).count() as f64 / n as f64;
+    let all_dry = (0..n).filter(|&t| w.loose_total(t, W) + w.loose_total(t, I) == 0).count() as f64 / n as f64;
+    println!("tiles with no water at all (W + I == 0): {:.0}% of the map", 100.0 * all_dry);
     println!("tiles with W == 0: {:.0}% of the map", 100.0 * all_w0);
     println!("{:<18} {:>6} {:>8} {:>8} {:>9} {:>8} {:>8} {:>8}", "class", "n", "tile C", "C == 0", "tile W", "W == 0", "inv G", "energy");
     for (k, v) in &by {

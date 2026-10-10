@@ -95,6 +95,8 @@ struct Hist {
     /// Carbon in the air (loose C) and in dead organic matter (loose G + dropped pages).
     air_c: Vec<u64>,
     dead_g: Vec<u64>,
+    /// Per mille of tiles without loose water.
+    dry: Vec<u32>,
 }
 
 impl Hist {
@@ -107,11 +109,13 @@ impl Hist {
         self.genomes.push(genomes);
         self.energy.push((ag.iter().map(|a| a.energy as u64).sum::<u64>() / ag.len().max(1) as u64) as u32);
         let w = &sim.st.world;
-        let (mut c, mut g) = (0u64, 0u64);
+        let (mut c, mut g, mut dry) = (0u64, 0u64, 0u64);
         for t in 0..w.n() as u32 {
             c += w.loose_total(t, gene_core::species::C);
             g += w.loose_total(t, gene_core::species::G);
+            dry += (w.loose_total(t, gene_core::species::W) + w.loose_total(t, gene_core::species::I) == 0) as u64;
         }
+        self.dry.push((dry * 1000 / w.n() as u64) as u32);
         g += sim.st.dropped.values().flatten().map(|m| m.present_pages() as u64).sum::<u64>();
         self.air_c.push(c);
         self.dead_g.push(g);
@@ -128,6 +132,7 @@ impl Hist {
             half(&mut self.energy);
             half(&mut self.air_c);
             half(&mut self.dead_g);
+            half(&mut self.dry);
         }
     }
 
@@ -142,6 +147,7 @@ impl Hist {
         self.energy.truncate(k);
         self.air_c.truncate(k);
         self.dead_g.truncate(k);
+        self.dry.truncate(k);
     }
 
     fn json(&self) -> String {
@@ -149,7 +155,7 @@ impl Hist {
             v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
         }
         format!(
-            "{{\"tick\":[{}],\"pop\":[{}],\"births\":[{}],\"deaths\":[{}],\"genomes\":[{}],\"energy\":[{}],\"air_c\":[{}],\"dead_g\":[{}]}}",
+            "{{\"tick\":[{}],\"pop\":[{}],\"births\":[{}],\"deaths\":[{}],\"genomes\":[{}],\"energy\":[{}],\"air_c\":[{}],\"dead_g\":[{}],\"dry\":[{}]}}",
             arr(&self.tick),
             arr(&self.pop),
             arr(&self.births),
@@ -157,7 +163,8 @@ impl Hist {
             arr(&self.genomes),
             arr(&self.energy),
             arr(&self.air_c),
-            arr(&self.dead_g)
+            arr(&self.dead_g),
+            arr(&self.dry)
         )
     }
 }
@@ -223,6 +230,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
         energy: vec![],
         air_c: vec![],
         dead_g: vec![],
+        dry: vec![],
     };
     let mut cache = HashCache(BTreeMap::new());
     cache.refresh(&sim);
@@ -763,12 +771,12 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::ge
             let _ = tx.send(format!("{{\"distinct\":{},\"top\":[{}]}}", v.len(), items.join(",")));
         }
         Req::Water(tx) => {
-            // 4 bytes per tile: water, loose G (dead organic matter), flags (1 records, 2 ore), loose S
+            // 4 bytes per tile: water (W + ice), loose G (dead organic matter), flags (1 records, 2 ore), loose S
             let w = &sim.st.world;
             let mut out = Vec::with_capacity(4 * w.n());
             for t in 0..w.n() as u32 {
                 let flags = sim.st.dropped.contains_key(&t) as u8 | ((w.loose_total(t, gene_core::species::X) > 0) as u8) << 1;
-                out.push(w.loose_total(t, W).min(255) as u8);
+                out.push((w.loose_total(t, W) + w.loose_total(t, gene_core::species::I)).min(255) as u8); // water in any phase
                 out.push(w.loose_total(t, gene_core::species::G).min(255) as u8);
                 out.push(flags);
                 out.push(w.loose_total(t, gene_core::species::S).min(255) as u8);

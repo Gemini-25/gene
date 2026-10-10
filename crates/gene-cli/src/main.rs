@@ -467,7 +467,7 @@ fn run(mut sim: Sim, o: &Opts) -> Summary {
         "tick,pop,births,deaths_energy,deaths_body,mean_energy,mean_inv_g,embryos,max_gen,mean_gen,distinct_genomes,mean_genome_len,\
 upkeep_q,vm_q,attempt_q,effect_q,photosynthesis,respiration,moves,inert,loose_G,loose_C,loose_O,loose_W,dropped_pages,mean_theta,ledger_residual,\
 emits,signal_reads,public_reads,copies_from_public,copies_to_public,draft_to_embryo,public_writes,drafts_created,bit_flips,foreign_births,commits,adoptions,parcels,parcels_created,parcel_reactions,links,unlinks,assembly_moves,parcels_moved,pushes,load_failures,\
-taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_media_created,parcel_media_dropped"
+taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_media_created,parcel_media_dropped,dry_tiles"
     )
     .unwrap();
     writeln!(births, "tick,uid,parent,root,generation,genome,len,structural_op,structural_applied,point_flips,foreign,x,y").unwrap();
@@ -625,10 +625,12 @@ fn write_stats(out: &mut impl Write, sim: &mut Sim) {
     let n = ag.len().max(1) as f64;
     let w = &sim.st.world;
     let mut loose = [0u64; NSPEC];
+    let mut dry = 0u64;
     for t in 0..w.n() as u32 {
         for s in 0..NSPEC {
             loose[s] += w.loose_total(t, s);
         }
+        dry += (w.loose_total(t, W) + w.loose_total(t, I) == 0) as u64;
     }
     let theta: f64 = if ag.is_empty() {
         0.0
@@ -639,7 +641,7 @@ fn write_stats(out: &mut impl Write, sim: &mut Sim) {
     let a = sim.audit();
     writeln!(
         out,
-        "{},{},{},{},{},{:.0},{:.2},{},{},{:.2},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{},{},{},{},{},{:.0},{:.2},{},{},{:.2},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         sim.st.tick,
         ag.len(),
         sim.obs.total_births,
@@ -695,7 +697,8 @@ fn write_stats(out: &mut impl Write, sim: &mut Sim) {
         sim.obs.m1.actor_pushes,
         sim.st.world.parcels.values().filter(|p| p.media.is_some()).count(),
         sim.obs.m1.parcel_media_created,
-        sim.obs.m1.parcel_media_dropped
+        sim.obs.m1.parcel_media_dropped,
+        dry
     )
     .unwrap();
 }

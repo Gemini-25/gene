@@ -142,6 +142,8 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
     <canvas class="chart" id="c-air"></canvas>
     <h2>죽은 유기물 탄소 (loose G + 버려진 기록 페이지)</h2>
     <canvas class="chart" id="c-dead"></canvas>
+    <h2>물이 없는 땅 (loose W = 0인 tile, ‰)</h2>
+    <canvas class="chart" id="c-dry"></canvas>
     <h2>많은 genome <span class="small" id="g-distinct"></span></h2>
     <ul class="census" id="census"></ul>
     <h2>새로 반복되는 행동 <span class="small" id="b-count"></span></h2>
@@ -1173,8 +1175,9 @@ function drawCharts() {
     lineChart($("c-air"), hist.tick, hist.air_c, css("--accent"), "C");
     lineChart($("c-dead"), hist.tick, hist.dead_g, css("--accent"), "G");
   }
+  if (hist.dry) lineChart($("c-dry"), hist.tick, hist.dry, css("--accent"), "‰");
 }
-for (const id of ["c-pop", "c-gen", "c-air", "c-dead"]) {
+for (const id of ["c-pop", "c-gen", "c-air", "c-dead", "c-dry"]) {
   const el = $(id);
   el.addEventListener("pointermove", (e) => { hover[id] = e.clientX - el.getBoundingClientRect().left; drawCharts(); });
   el.addEventListener("pointerleave", () => { delete hover[id]; drawCharts(); });
