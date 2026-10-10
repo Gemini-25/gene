@@ -120,7 +120,9 @@ fn parse_opts(args: &[String], o: &mut Opts) -> BTreeMap<String, String> {
                     "m2" | "gene-m2-1" => gene_core::sim::RULESET_M2.into(),
                     "m0c" | "gene-m0-3" => gene_core::sim::RULESET_M0C.into(),
                     "m2b" | "gene-m2-2" => gene_core::sim::RULESET_M2B.into(),
-                    other => die(format!("unknown ruleset {other} (m0, m0b, m0c, m1a..m1f, m2, m2b)")),
+                    "m0d" | "gene-m0-4" => gene_core::sim::RULESET_M0D.into(),
+                    "m2c" | "gene-m2-3" => gene_core::sim::RULESET_M2C.into(),
+                    other => die(format!("unknown ruleset {other} (m0, m0b, m0c, m0d, m1a..m1f, m2, m2b, m2c)")),
                 }
             }
             "--seeds" | "--threads" | "--from" | "--port" | "--load" => {

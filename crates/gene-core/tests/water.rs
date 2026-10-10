@@ -54,3 +54,24 @@ fn only_water_above_the_retained_amount_runs_off() {
     let total: u64 = (0..s.st.world.n() as u32).map(|u| water(&s, u)).sum();
     assert_eq!(total, 40, "water is conserved");
 }
+
+// ---------------------------------------------------------------- SPEC §20j aging (candidate)
+
+#[test]
+fn aging_raises_upkeep_by_one_per_day_of_age_and_keeps_the_ledger() {
+    use gene_core::sim::RULESET_M2C;
+    let prog = assemble(".module 0\nspin:\n    YIELD\n    JUMP spin\n").unwrap();
+    let drain = |ruleset: &str, age: u64| {
+        let mut s = Sim::with_program_ruleset(Config { seed: 3, width: 64, height: 64, agents: 1 }, &prog, ruleset).unwrap();
+        s.st.agents[0].age = age;
+        s.st.agents[0].inv = [0; NSPEC]; // no respiration
+        s.fixture_rebase();
+        let e0 = s.st.agents[0].energy;
+        s.step();
+        assert!(s.audit_ok());
+        e0 - s.st.agents[0].energy
+    };
+    let young = drain(RULESET_M2C, 0);
+    assert_eq!(drain(RULESET_M2B, 40 * 4096), young, "no aging without the capability");
+    assert_eq!(drain(RULESET_M2C, 40 * 4096) - young, 40, "40 days old: 40q more per tick");
+}

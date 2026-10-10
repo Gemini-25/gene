@@ -12,6 +12,8 @@ pub const MEM_CELLS: usize = 64;
 pub const INV_VOLUME: u32 = 64;
 pub const ENERGY_MAX: u32 = 65_535;
 pub const BASE_UPKEEP: u32 = 32;
+/// With aging (SPEC §20j), upkeep grows by 1q/tick for every this many ticks of age.
+pub const AGING_PERIOD: u64 = 4096;
 pub const MIN_CHILD_ENERGY: u32 = 16_384;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,6 +210,11 @@ impl Agent {
             + self.draft.as_ref().map_or(0, |d| d.present_pages())
             + self.learned.iter().chain(&self.retained).map(|b| b.media.present_pages()).sum::<u32>()
             + self.embryo.as_ref().map_or(0, |e| e.pages())
+    }
+
+    /// Extra upkeep of an agent this old when the ruleset has aging.
+    pub fn aging_upkeep(&self) -> u32 {
+        (self.age / AGING_PERIOD).min(u32::MAX as u64) as u32
     }
 
     pub fn inv_volume(&self) -> u32 {
