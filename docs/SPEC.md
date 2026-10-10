@@ -802,6 +802,17 @@ bin = min(16, floor(log2(1 + n)))이다. parcel이 없는 tile의 parcel 필드�
 - 관계·구조물·계보 분석은 이어 간 구간만 다룬다.
 - `summary.json`의 `resumed_from`에 이어 간 tick을 적는다. 분석 상태 없이 이어 갔으면 `highlevel.partial`이 true다.
 
+### 17g. 경쟁 시험: 진화한 genome이 조상보다 나은가
+
+선택이 실제로 적응을 만드는지 재는 도구다. 새 고수준 행동이 남으려면 먼저 적응이 일어나야 한다.
+
+- `--founder` 이름 자리에 `SAVE.bin@HASH`를 쓰면, 그 저장 상태에서 genome hash가 HASH(16진 앞자리)로 시작하는 개체의 genome이 조상이 된다.
+- `scripts/compete.py SAVE.bin HASH[,HASH...]`는 seed마다 두 실행을 한다.
+  - 시험: `조상+SAVE@HASH`. 조상 i는 program i mod 2를 쓰므로 짝수 uid가 조상, 홀수 uid가 진화한 genome이다.
+  - 대조: `조상+조상`. 같은 seed라 처음 자리가 같고, 프로그램만 같다.
+- 지표는 마지막에 살아 있는 개체 중 홀수 자리 계통의 몫에서 대조 실행의 같은 몫을 뺀 값(%p)이다. 같은 seed끼리 빼서 처음 자리의 운을 지운다. 같은 조상끼리도 seed에 따라 몫이 27..61%로 흩어지기 때문이다.
+- 기본값: 128², 개체 64, 100,000 tick(24일), seed 1..4.
+
 ## 18. 첫 실험 E1: 조상 생존 (§49 축소판)
 
 **사전 고정 조건.**

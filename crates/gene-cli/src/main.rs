@@ -29,6 +29,7 @@ USAGE:
 
 Defaults follow SPEC §3: size 512, agents 1000, founder founder4.
 Several founders joined with + share one world (E2): founder i runs program i mod n.
+A founder may be SAVE.bin@HASH: an agent's genome from a saved state (hash prefix in hex).
 Runs stop early at extinction unless --keep-going is given.";
 
 #[derive(Clone, Debug)]
@@ -154,8 +155,27 @@ fn founder_source(name: &str) -> String {
 
 /// Founder programs of `--founder a+b+c` (E2: several public ancestors in one world; founder i
 /// runs program i mod n).
+/// A name may also be SAVE.bin@HASH: the genome of an agent in that saved state whose genome
+/// hash starts with HASH (hex), e.g. an evolved genome for a competition test.
 fn founder_programs(spec: &str) -> Vec<gene_core::genome::Program> {
-    spec.split('+').map(|n| isa::assemble(&founder_source(n)).unwrap_or_else(|e| die(format!("{n}: {e}")))).collect()
+    spec.split('+')
+        .map(|n| match n.split_once('@') {
+            Some((save, prefix)) => saved_genome(save, prefix),
+            None => isa::assemble(&founder_source(n)).unwrap_or_else(|e| die(format!("{n}: {e}"))),
+        })
+        .collect()
+}
+
+fn saved_genome(save: &str, prefix: &str) -> gene_core::genome::Program {
+    let bytes = fs::read(save).unwrap_or_else(|e| die(format!("{save}: {e}")));
+    let sim = Sim::load(&bytes).unwrap_or_else(|e| die(format!("{save}: {e:?}")));
+    let a = sim
+        .st
+        .agents
+        .iter()
+        .find(|a| hex(&hash_cells(a.code.prefix(a.used_len).unwrap_or(&[]))).starts_with(prefix))
+        .unwrap_or_else(|| die(format!("{save}: no agent with genome {prefix}")));
+    a.program().clone()
 }
 
 /// The founder program a program is nearest to (shortest listing of differences).
@@ -1198,7 +1218,7 @@ fn genome_report(sim: &Sim, founder: &str, top: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_seeds, truncate_csv};
+    use super::{founder_programs, hash_cells, hex, parse_seeds, truncate_csv};
 
     #[test]
     fn resume_cuts_csv_rows_after_the_checkpoint() {
@@ -1209,6 +1229,22 @@ mod tests {
         std::fs::write(&p, "tick,pop\n256,10\n512,40\n768,30\n1024,99\n10").unwrap();
         assert_eq!(truncate_csv(&p, 768, 1), 40, "largest pop among kept rows");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "tick,pop\n256,10\n512,40\n768,30\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_saved_genome_can_be_a_founder() {
+        let dir = std::env::temp_dir().join(format!("gene-saved-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let progs = founder_programs("founder5+founder7");
+        let cfg = gene_core::sim::Config { seed: 1, width: 64, height: 64, agents: 4 };
+        let sim = gene_core::Sim::with_programs_ruleset(cfg, &progs, gene_core::sim::RULESET).unwrap();
+        let save = dir.join("s.bin");
+        std::fs::write(&save, sim.save()).unwrap();
+        let h = hex(&hash_cells(&progs[1].to_cells()));
+        let got = founder_programs(&format!("founder5+{}@{}", save.display(), &h[..10]));
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[1].to_cells(), progs[1].to_cells(), "the agent running founder7");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
