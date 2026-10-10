@@ -581,6 +581,7 @@ E1-a(`docs/results/E1.md`)에서 Founder-4는 20개 seed 모두 첫 밤에 전�
 | D12 | Step 최종 검사비가 모자라면 다음 Step이 검사만 수행 | 원본에 없음 |
 | D13 | CoreHash = BLAKE3(postcard(SimState)) | 원본의 필드별 LE 직렬화와 같은 목적. 형식이 하나라 단순 |
 | D14 | WORK는 Surface와 tile Heat만(parcel 없음) | D1 |
+| D15 | 화면은 Bevy 대신 로컬 웹 viewer(`gene serve`)로 먼저 제공 | 개인 사용, 컴파일·GPU 부담 없음. core는 화면과 독립이라 Bevy를 나중에 붙일 수 있음. 시뮬레이션 thread가 상태를 단독 소유하고 화면은 스냅샷만 읽음(원본 I07) |
 
 ## 21. 확장 규칙과 로드맵
 

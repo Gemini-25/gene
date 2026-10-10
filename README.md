@@ -16,7 +16,7 @@
 | E1-a: Founder-4(원본 §57) | 20/20 seed가 첫 밤에 전멸 |
 | E1-b: Founder-5(개정판) | [`docs/results/E1.md`](docs/results/E1.md) |
 | 속도(512², 개체 약 1,700) | 약 190 TPS, 단일 thread. 명세 목표 S1(500+) 미달, 병목은 환경 수송 |
-| 화면(Bevy) | 아직 없음(M2). 지금은 PNG 지도와 CSV 출력 |
+| 화면 | `gene serve`: 브라우저용 로컬 viewer(지도·재생·속도·개체 상세·genome 순위). Bevy는 보류 |
 
 ## 빠른 시작
 
@@ -31,6 +31,10 @@ cargo build --release
 
 # 명세 기본값(512², 1000 개체)으로 seed 여러 개를 병렬 실행
 ./target/release/gene batch --seeds 1-20 --threads 4 --founder founder5 --ticks 200000 --out runs/E1b
+
+# 브라우저 화면: http://127.0.0.1:8080/ 를 연다 (처음엔 일시정지 상태)
+./target/release/gene serve --founder founder5 --size 256 --agents 300
+./target/release/gene serve --load runs/demo/final.bin --founder founder5   # 저장 상태 이어 보기
 
 # 조상 프로그램 어셈블·역어셈블
 ./target/release/gene asm assets/founder5.asm
@@ -64,8 +68,9 @@ crates/gene-core   시뮬레이션 core (Bevy·관찰기에 의존하지 않음)
   motion.rs        동시 이동 의존 graph (stage 6)
   env.rs           빛·외기·수송·화학 (stage 7–8)
   sim.rs           tick 순서, 장부, 저장·이어하기
-crates/gene-cli    헤드리스 실행기 `gene`
-assets/            공개 조상 founder4.asm, founder5.asm
+crates/gene-cli    실행기 `gene` (run, batch, resume, serve, inspect, asm)
+  serve.rs         로컬 viewer 서버 (std만 사용, 시뮬레이션 thread가 상태를 단독 소유)
+assets/            공개 조상 founder4.asm, founder5.asm, viewer.html
 scripts/           결과 집계
 docs/              명세, 결과, 원본 보관본
 ```

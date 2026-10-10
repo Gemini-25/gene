@@ -11,6 +11,8 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+mod serve;
+
 const USAGE: &str = "gene — Gene M0 headless runner
 
 USAGE:
@@ -19,6 +21,8 @@ USAGE:
               [--audit-every K] [--keep-going] [--save-final] [--quiet]
   gene batch  --seeds A-B [--threads N] [same options as run]  (one directory per seed)
   gene resume --from CHECKPOINT [--ticks T] [--out DIR] [...]
+  gene serve  [--port 8080] [--load SAVE.bin] [same world options as run]
+              local web viewer: map, play/pause/speed, agent inspection, genome census
   gene asm    FILE.asm                   assemble, print size, hash and disassembly
   gene inspect SAVE.bin [--founder NAME]  genome census of a saved state with diffs against the founder
   gene founders                          list built-in founders
@@ -92,7 +96,7 @@ fn parse_opts(args: &[String], o: &mut Opts) -> BTreeMap<String, String> {
             "--keep-going" => o.keep_going = true,
             "--quiet" => o.quiet = true,
             "--save-final" => o.save_final = true,
-            "--seeds" | "--threads" | "--from" => {
+            "--seeds" | "--threads" | "--from" | "--port" | "--load" => {
                 let v = val();
                 extra.insert(k.to_string(), v);
             }
@@ -151,6 +155,18 @@ fn main() {
                 hex(&hash_cells(&cells))
             );
             print!("{}", isa::disassemble(&p));
+        }
+        "serve" => {
+            let extra = parse_opts(&args[1..], &mut o);
+            let port = extra.get("--port").map_or(8080, |p| p.parse().unwrap_or_else(|_| die("bad --port")));
+            let sim = match extra.get("--load") {
+                Some(path) => {
+                    let bytes = fs::read(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
+                    Sim::load(&bytes).unwrap_or_else(|e| die(format!("{path}: {e:?}")))
+                }
+                None => new_sim(&o),
+            };
+            serve::serve(sim, serve::ServeOpts { port, save_dir: o.out.clone(), founder: o.founder.clone() });
         }
         "inspect" => {
             let path = args.get(1).unwrap_or_else(|| die("inspect SAVE.bin"));
