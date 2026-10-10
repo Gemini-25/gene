@@ -334,6 +334,7 @@ loop:
     let mut a = Sim::with_program_ruleset(cfg.clone(), &prog, RULESET_M1D).unwrap();
     let mut b = Sim::with_program_ruleset(cfg, &prog, RULESET_M1D).unwrap();
     b.threads = 4;
+    b.par_think_min = 1;
     for _ in 0..600 {
         a.step();
         b.step();

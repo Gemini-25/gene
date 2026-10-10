@@ -115,6 +115,10 @@ pub struct Sim {
     /// Host threads for result-preserving parallel stages (not part of the state).
     pub threads: usize,
     pub(crate) pool: Option<rayon::ThreadPool>,
+    /// Scratch for the parallel environment stage (all zero between uses; not state).
+    pub(crate) env_mask: Vec<u8>,
+    /// Population from which Think runs on the pool (below it the split costs more than it saves).
+    pub par_think_min: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -276,6 +280,8 @@ impl Sim {
             signal_next: BTreeMap::new(),
             threads: 1,
             pool: None,
+            env_mask: Vec::new(),
+            par_think_min: 4096,
         };
         sim.rebuild_occ();
         sim.recompute_heat_cap();
@@ -539,7 +545,8 @@ impl Sim {
         };
         let before: Vec<u32> = self.st.agents.iter().map(|a| a.energy).collect();
         let threads = self.threads.max(1);
-        if threads > 1 && self.st.agents.len() >= 32 {
+        let par = threads > 1 && self.st.agents.len() >= self.par_think_min.max(1);
+        if par {
             if self.pool.is_none() {
                 self.pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().ok();
             }
@@ -547,11 +554,12 @@ impl Sim {
         match &self.pool {
             // Each VM reads the shared world and writes only its own agent (SPEC §19), so the
             // split does not change the result.
-            Some(pool) if threads > 1 && self.st.agents.len() >= 32 => {
+            Some(pool) if par => {
                 use rayon::prelude::*;
                 let agents = &mut self.st.agents;
+                let chunk = (agents.len() / (threads * 4)).max(64);
                 pool.install(|| {
-                    agents.par_iter_mut().with_min_len(16).for_each(|a| {
+                    agents.par_iter_mut().with_min_len(chunk).for_each(|a| {
                         if !a.s.inert {
                             vm::think(a, &sense, a.keys.ctrl);
                         }

@@ -75,6 +75,7 @@ fn parallel_transport_matches_serial_bit_for_bit() {
     let mut serial = Sim::with_program(cfg.clone(), &prog).unwrap();
     let mut par = Sim::with_program(cfg, &prog).unwrap();
     par.threads = 4;
+    par.par_think_min = 1;
     for _ in 0..3000 {
         serial.step();
         par.step();

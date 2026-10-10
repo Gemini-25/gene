@@ -105,6 +105,13 @@ impl Sim {
             });
             y0 = y1;
         }
+        // tiles with records or a parcel, as a dense mask (map lookups per tile cost more than the work)
+        let mask = &mut self.env_mask;
+        mask.resize(occ.len(), 0);
+        for t in dropped.keys().chain(parcels.keys()) {
+            mask[*t as usize] = 1;
+        }
+        let mask = &*mask;
         let pool = self.pool.as_ref().expect("pool");
         pool.scope(|sc| {
             for band in bands.iter_mut() {
@@ -113,7 +120,7 @@ impl Sim {
                     // first due tile of the band
                     let mut t = band.base + ((tick % 16) as u32 + 16 - band.base % 16) % 16;
                     while t < end {
-                        if occ[t as usize] != 0 || dropped.contains_key(&t) || parcels.contains_key(&t) {
+                        if occ[t as usize] != 0 || mask[t as usize] != 0 {
                             band.complex.push(t);
                         } else {
                             env_simple(band, t, tick, lpeak[t as usize] as u64, expo[t as usize] as u64, &keys);
@@ -123,6 +130,9 @@ impl Sim {
                 });
             }
         });
+        for t in dropped.keys().chain(parcels.keys()) {
+            self.env_mask[*t as usize] = 0;
+        }
         let mut complex = Vec::new();
         for b in bands {
             self.st.flows.solar_in += b.flows.solar_in;
