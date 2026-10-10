@@ -748,6 +748,12 @@ bin = min(16, floor(log2(1 + n)))이다. parcel이 없는 tile의 parcel 필드�
 
 **한계.** 창 하나(256 tick) 안에서 끝나는 묶음은 연쇄가 아니라 family 하나로 잡힌다. 그런 새 행동은 B를 통과한 새 family로 센다. 상황은 위 세 가지로만 본다.
 
+**이어 달리기.** `gene run --checkpoint-every C --resume`은 출력 폴더에 체크포인트가 있으면 가장 새것에서 이어 간다.
+- 체크포인트(`ckpt_<tick>.bin`) 옆에 관찰 계수(`ckpt_<tick>.obs`: 누적 출생·사망, M1 계수, 효과 결과 수, 변이 통계)를 둔다. 둘 다 임시 파일에 쓴 뒤 이름을 바꾼다.
+- 가장 새 둘만 남긴다.
+- 이어 갈 때 `stats.csv`, `births.csv`, `deaths.csv`를 그 tick까지 잘라 이어 쓴다. 끊김 없는 실행과 byte 단위로 같고, core hash도 같다.
+- 행동·관계·계보·판정 분석은 이어 간 구간만 다룬다. `summary.json`의 `resumed_from`에 이어 간 tick을 적는다.
+
 ## 18. 첫 실험 E1: 조상 생존 (§49 축소판)
 
 **사전 고정 조건.**

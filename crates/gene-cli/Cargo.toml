@@ -11,3 +11,4 @@ path = "src/main.rs"
 [dependencies]
 gene-core = { path = "../gene-core" }
 png = "0.17"
+postcard = { version = "1", features = ["use-std"] }

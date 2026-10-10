@@ -46,6 +46,8 @@ struct Opts {
     keep_going: bool,
     quiet: bool,
     save_final: bool,
+    /// Continue from the newest checkpoint in the output directory, if there is one.
+    resume: bool,
     ruleset: String,
     /// Threads inside one simulation (results are identical for any value).
     sim_threads: usize,
@@ -67,6 +69,7 @@ impl Default for Opts {
             keep_going: false,
             quiet: false,
             save_final: false,
+            resume: false,
             ruleset: gene_core::sim::RULESET.into(),
             sim_threads: 0,
         }
@@ -102,6 +105,7 @@ fn parse_opts(args: &[String], o: &mut Opts) -> BTreeMap<String, String> {
             "--keep-going" => o.keep_going = true,
             "--quiet" => o.quiet = true,
             "--save-final" => o.save_final = true,
+            "--resume" => o.resume = true,
             "--sim-threads" => o.sim_threads = num(val()) as usize,
             "--ruleset" => {
                 o.ruleset = match val().as_str() {
@@ -169,8 +173,14 @@ fn main() {
     match cmd.as_str() {
         "run" => {
             parse_opts(&args[1..], &mut o);
-            let sim = new_sim(&o);
-            run(sim, &o);
+            match o.resume.then(|| latest_checkpoint(&o)).flatten() {
+                Some((t, sim)) => {
+                    run_from(sim, &o, Some(t));
+                }
+                None => {
+                    run(new_sim(&o), &o);
+                }
+            }
         }
         "batch" => {
             let extra = parse_opts(&args[1..], &mut o);
@@ -258,6 +268,8 @@ struct Summary {
     extinct_at: Option<u64>,
     final_pop: usize,
     peak_pop: usize,
+    /// The checkpoint tick a resumed run continued from.
+    resumed_from: Option<u64>,
     births: u64,
     deaths_energy: u64,
     deaths_body: u64,
@@ -525,7 +537,7 @@ fn effects_json(sim: &Sim, an: &gene_core::behavior::Analyzer) -> String {
 
 fn summary_json(s: &Summary, o: &Opts) -> String {
     format!(
-        "{{\n  \"ruleset\": \"{}\",\n  \"founder\": \"{}\",\n  \"seed\": {},\n  \"size\": {},\n  \"agents\": {},\n  \"ticks_requested\": {},\n  \"ticks_run\": {},\n  \"extinct_at\": {},\n  \"final_pop\": {},\n  \"peak_pop\": {},\n  \"births\": {},\n  \"deaths_energy\": {},\n  \"deaths_body\": {},\n  \"max_generation\": {},\n  \"distinct_genomes\": {},\n  \"tps\": {:.1},\n  \"audit_ok\": {},\n  \"core_hash\": \"{}\",\n  \"effects\": {},\n  \"relations\": {},\n  \"highlevel\": {}\n}}\n",
+        "{{\n  \"ruleset\": \"{}\",\n  \"founder\": \"{}\",\n  \"seed\": {},\n  \"size\": {},\n  \"agents\": {},\n  \"ticks_requested\": {},\n  \"ticks_run\": {},\n  \"extinct_at\": {},\n  \"final_pop\": {},\n  \"peak_pop\": {},\n  \"births\": {},\n  \"deaths_energy\": {},\n  \"deaths_body\": {},\n  \"max_generation\": {},\n  \"distinct_genomes\": {},\n  \"tps\": {:.1},\n  \"audit_ok\": {},\n  \"core_hash\": \"{}\",\n  \"resumed_from\": {},\n  \"effects\": {},\n  \"relations\": {},\n  \"highlevel\": {}\n}}\n",
         o.ruleset,
         o.founder,
         s.seed,
@@ -544,18 +556,93 @@ fn summary_json(s: &Summary, o: &Opts) -> String {
         s.tps,
         s.audit_ok,
         s.hash,
+        s.resumed_from.map_or("null".into(), |t| t.to_string()),
         if s.effects.is_empty() { "null" } else { &s.effects },
         if s.relations.is_empty() { "null" } else { &s.relations },
         if s.highlevel.is_empty() { "null" } else { &s.highlevel }
     )
 }
 
-fn run(mut sim: Sim, o: &Opts) -> Summary {
+/// The newest checkpoint in the output directory that has its observer counters next to it,
+/// loaded with those counters restored.
+fn latest_checkpoint(o: &Opts) -> Option<(u64, Sim)> {
+    let mut ticks: Vec<u64> = fs::read_dir(&o.out)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let n = e.file_name().into_string().ok()?;
+            n.strip_prefix("ckpt_")?.strip_suffix(".bin")?.parse().ok()
+        })
+        .collect();
+    ticks.sort_unstable();
+    for t in ticks.into_iter().rev() {
+        let (bin, obs) = (o.out.join(format!("ckpt_{t:07}.bin")), o.out.join(format!("ckpt_{t:07}.obs")));
+        let (Ok(b), Ok(c)) = (fs::read(&bin), fs::read(&obs)) else { continue };
+        let (Ok(mut sim), Ok(counters)) = (Sim::load(&b), postcard::from_bytes::<gene_core::observer::Counters>(&c)) else { continue };
+        if sim.st.tick != t {
+            continue;
+        }
+        sim.obs.restore(counters);
+        sim.threads = o.sim_threads.max(1);
+        eprintln!("resuming {} from tick {t}", o.out.display());
+        return Some((t, sim));
+    }
+    None
+}
+
+/// Keep the header and the rows up to tick t of a CSV whose first column is the tick; return
+/// the kept rows' largest value in column `max_col` (0 when none).
+fn truncate_csv(path: &std::path::Path, t: u64, max_col: usize) -> u64 {
+    let text = fs::read_to_string(path).unwrap_or_default();
+    let mut out = String::with_capacity(text.len());
+    let mut best = 0;
+    // a run killed mid-write leaves a partial last line: keep only rows as wide as the header
+    let width = text.lines().next().map_or(0, |h| h.split(',').count());
+    for (k, line) in text.lines().enumerate() {
+        if k > 0 {
+            if line.split(',').count() != width {
+                continue;
+            }
+            let mut cols = line.split(',');
+            match cols.next().and_then(|c| c.parse::<u64>().ok()) {
+                Some(tick) if tick <= t => {}
+                _ => continue,
+            }
+            if let Some(v) = line.split(',').nth(max_col).and_then(|c| c.parse::<u64>().ok()) {
+                best = best.max(v);
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    fs::write(path, out).unwrap();
+    best
+}
+
+fn run(sim: Sim, o: &Opts) -> Summary {
+    run_from(sim, o, None)
+}
+
+/// Run to `o.ticks`. With `resumed` (a checkpoint tick), the run continues an earlier one in
+/// the same directory: stats, births and deaths are cut back to that tick and appended to; the
+/// event analyses (behaviour, relations, lineage, judge) cover only the resumed part.
+fn run_from(mut sim: Sim, o: &Opts, resumed: Option<u64>) -> Summary {
     fs::create_dir_all(&o.out).unwrap_or_else(|e| die(format!("{}: {e}", o.out.display())));
     let open = |name: &str| BufWriter::new(File::create(o.out.join(name)).unwrap());
-    let mut stats = open("stats.csv");
-    let mut births = open("births.csv");
-    let mut deaths = open("deaths.csv");
+    let mut peak_before = 0;
+    let append = |name: &str| {
+        BufWriter::new(fs::OpenOptions::new().append(true).open(o.out.join(name)).unwrap_or_else(|e| die(format!("{name}: {e}"))))
+    };
+    if let Some(t) = resumed {
+        peak_before = truncate_csv(&o.out.join("stats.csv"), t, 1);
+        truncate_csv(&o.out.join("births.csv"), t, 0);
+        truncate_csv(&o.out.join("deaths.csv"), t, 0);
+    }
+    let (mut stats, mut births, mut deaths) = match resumed {
+        Some(_) => (append("stats.csv"), append("births.csv"), append("deaths.csv")),
+        None => (open("stats.csv"), open("births.csv"), open("deaths.csv")),
+    };
+    if resumed.is_none() {
     writeln!(
         stats,
         "tick,pop,births,deaths_energy,deaths_body,mean_energy,mean_inv_g,embryos,max_gen,mean_gen,distinct_genomes,mean_genome_len,\
@@ -566,10 +653,12 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     .unwrap();
     writeln!(births, "tick,uid,parent,root,generation,genome,len,structural_op,structural_applied,point_flips,foreign,x,y,inv_g").unwrap();
     writeln!(deaths, "tick,uid,cause,age,children,generation,inv_g,embryo_state").unwrap();
+    }
     let start = Instant::now();
-    let mut s = Summary { seed: sim.st.config.seed, audit_ok: true, ..Default::default() };
+    let mut s = Summary { seed: sim.st.config.seed, audit_ok: true, peak_pop: peak_before as usize, resumed_from: resumed, ..Default::default() };
     let t_begin = sim.st.tick;
-    let t_end = t_begin + o.ticks;
+    // a resumed run ends where the original would have (it started at tick 0)
+    let t_end = if resumed.is_some() { o.ticks.max(t_begin) } else { t_begin + o.ticks };
     if o.map_every > 0 {
         write_map(&sim, &o.out.join(format!("map_{:07}.png", sim.st.tick)));
     }
@@ -680,7 +769,23 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
             write_map(&sim, &o.out.join(format!("map_{t:07}.png")));
         }
         if o.checkpoint_every > 0 && t % o.checkpoint_every == 0 {
-            fs::write(o.out.join(format!("ckpt_{t:07}.bin")), sim.save()).unwrap();
+            // rows up to t are on disk before the checkpoint that resumes after them
+            stats.flush().unwrap();
+            births.flush().unwrap();
+            deaths.flush().unwrap();
+            let write = |name: String, bytes: Vec<u8>| {
+                let tmp = o.out.join(format!("{name}.tmp"));
+                fs::write(&tmp, bytes).unwrap();
+                fs::rename(&tmp, o.out.join(name)).unwrap();
+            };
+            write(format!("ckpt_{t:07}.obs"), postcard::to_allocvec(&sim.obs.counters()).unwrap());
+            write(format!("ckpt_{t:07}.bin"), sim.save());
+            // keep the two newest checkpoints
+            let old = t.saturating_sub(2 * o.checkpoint_every);
+            if old > 0 {
+                let _ = fs::remove_file(o.out.join(format!("ckpt_{old:07}.bin")));
+                let _ = fs::remove_file(o.out.join(format!("ckpt_{old:07}.obs")));
+            }
         }
         if !o.quiet && t % 16_384 == 0 {
             let el = start.elapsed().as_secs_f64();
@@ -1042,7 +1147,19 @@ fn genome_report(sim: &Sim, founder: &str, top: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_seeds;
+    use super::{parse_seeds, truncate_csv};
+
+    #[test]
+    fn resume_cuts_csv_rows_after_the_checkpoint() {
+        let dir = std::env::temp_dir().join(format!("gene-trunc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("stats.csv");
+        // the last line was cut off by a kill: it must not pass for tick 10
+        std::fs::write(&p, "tick,pop\n256,10\n512,40\n768,30\n1024,99\n10").unwrap();
+        assert_eq!(truncate_csv(&p, 768, 1), 40, "largest pop among kept rows");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "tick,pop\n256,10\n512,40\n768,30\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn seed_lists() {

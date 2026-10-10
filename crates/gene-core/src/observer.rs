@@ -2,6 +2,7 @@
 
 use crate::agent::{Agent, MutationRecord};
 use crate::sim::SimState;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeathCause {
@@ -9,7 +10,7 @@ pub enum DeathCause {
     Body,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TickStats {
     pub inert: u64,
     pub upkeep_q: u64,
@@ -70,7 +71,7 @@ pub struct DeathEvent {
     pub embryo_state: u16,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MutationStats {
     pub finished: u64,
     pub unchanged: u64,
@@ -84,7 +85,7 @@ pub struct MutationStats {
 }
 
 /// M1a counters (SPEC §20b).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct M1Stats {
     pub emits: u64,
     pub signal_reads: u64,
@@ -192,6 +193,54 @@ pub struct Observer {
     /// REPRO outcome counts by sub-op.
     pub repro: [[u64; 15]; 7],
     pub mutation: MutationStats,
+}
+
+/// The cumulative counters of an Observer, saved next to a checkpoint so that a resumed run
+/// continues its CSV columns (the event logs and analyses start afresh).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Counters {
+    pub total_births: u64,
+    pub total_deaths_energy: u64,
+    pub total_deaths_body: u64,
+    pub m1: M1Stats,
+    pub outcomes: Vec<Vec<u64>>,
+    pub repro: Vec<Vec<u64>>,
+    pub mutation: MutationStats,
+    pub acc: TickStats,
+}
+
+impl Observer {
+    pub fn counters(&self) -> Counters {
+        Counters {
+            total_births: self.total_births,
+            total_deaths_energy: self.total_deaths_energy,
+            total_deaths_body: self.total_deaths_body,
+            m1: self.m1.clone(),
+            outcomes: self.outcomes.iter().map(|r| r.to_vec()).collect(),
+            repro: self.repro.iter().map(|r| r.to_vec()).collect(),
+            mutation: self.mutation.clone(),
+            acc: self.acc.clone(),
+        }
+    }
+
+    pub fn restore(&mut self, c: Counters) {
+        self.total_births = c.total_births;
+        self.total_deaths_energy = c.total_deaths_energy;
+        self.total_deaths_body = c.total_deaths_body;
+        self.m1 = c.m1;
+        for (dst, src) in self.outcomes.iter_mut().zip(&c.outcomes) {
+            for (d, v) in dst.iter_mut().zip(src) {
+                *d = *v;
+            }
+        }
+        for (dst, src) in self.repro.iter_mut().zip(&c.repro) {
+            for (d, v) in dst.iter_mut().zip(src) {
+                *d = *v;
+            }
+        }
+        self.mutation = c.mutation;
+        self.acc = c.acc;
+    }
 }
 
 impl Observer {
