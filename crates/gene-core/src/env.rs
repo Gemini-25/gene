@@ -503,8 +503,11 @@ fn edge_flux(
     let (ea, eb) = (elev[a as usize], elev[b as usize]);
     if ea != eb {
         let (src, dst) = if ea > eb { (a, b) } else { (b, a) };
-        let cand = sr(32 * min_p, 256, keys[W], object, tick).min(32);
-        flow(band, elev, src, dst, W, cand);
+        // a dry upper tile moves nothing; the draw is counter-based, so skipping it changes nothing
+        if band.total(src, W) > 0 {
+            let cand = sr(32 * min_p, 256, keys[W], object, tick).min(32);
+            flow(band, elev, src, dst, W, cand);
+        }
     } else {
         let (na, nb) = (band.total(a, W), band.total(b, W));
         if na != nb {
