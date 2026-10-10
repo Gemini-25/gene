@@ -2,10 +2,17 @@ use gene_core::sim::{Config, Sim};
 use std::time::Instant;
 fn main() {
     let threads: usize = std::env::args().nth(1).map_or(1, |t| t.parse().unwrap());
-    let prog = gene_core::isa::assemble(gene_core::FOUNDER5_ASM).unwrap();
-    let mut sim = Sim::with_program(Config { seed: 1, width: 512, height: 512, agents: 1000 }, &prog).unwrap();
+    // optional second argument: a saved state to time instead of the Founder-5 start
+    let mut sim = match std::env::args().nth(2) {
+        Some(path) => Sim::load(&std::fs::read(path).unwrap()).unwrap(),
+        None => {
+            let prog = gene_core::isa::assemble(gene_core::FOUNDER5_ASM).unwrap();
+            let mut sim = Sim::with_program(Config { seed: 1, width: 512, height: 512, agents: 1000 }, &prog).unwrap();
+            for _ in 0..512 { sim.step(); }
+            sim
+        }
+    };
     sim.threads = threads;
-    for _ in 0..512 { sim.step(); }
     let mut t = [0f64; 10];
     let n = 1024;
     for _ in 0..n {
