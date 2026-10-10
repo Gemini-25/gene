@@ -454,6 +454,27 @@ impl Sim {
         }
     }
 
+    /// Observer: one fact for the copy lineage (no effect on the world).
+    pub(crate) fn lin(&mut self, f: crate::lineage::MediaFact) {
+        if let Some(v) = &mut self.obs.lineage {
+            v.push(f);
+        }
+    }
+
+    /// Observer: every 256 ticks, agents running learned code or code that holds foreign cells.
+    fn sample_code_use(&mut self) {
+        let Some(v) = &mut self.obs.lineage else { return };
+        if self.st.tick % 256 != 0 {
+            return;
+        }
+        for a in &self.st.agents {
+            let media = if a.slots.is_empty() { a.code.uid } else { a.slots[a.vm.module as usize].0 };
+            if media != a.code.uid || a.code.foreign {
+                v.push(crate::lineage::MediaFact::Exec { tick: self.st.tick, agent: a.uid, media });
+            }
+        }
+    }
+
     /// Observer: agent i acted on the parcel on tile t (a Use relation; `act` from relations::act).
     pub(crate) fn rel_use(&mut self, i: usize, t: u32, act: u8) {
         if self.obs.rel.is_some() {
@@ -503,6 +524,7 @@ impl Sim {
     pub fn step(&mut self) {
         self.stage_maintenance();
         self.stage_think();
+        self.sample_code_use();
         self.stage_seal();
         self.stage_local_resolve();
         self.stage_assembly();
@@ -851,6 +873,9 @@ impl Sim {
         };
         self.st.world.occ[bt as usize] = u32::MAX; // occupied until rebuild
         self.obs.record_birth(&child, &e.mutation, tick);
+        if let Some(v) = &mut self.obs.lineage {
+            v.push(crate::lineage::MediaFact::Born { tick, agent: child.uid, parent: parent.uid, media: child.code.uid });
+        }
         Some(child)
     }
 

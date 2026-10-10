@@ -630,7 +630,7 @@ Founder-7(`assets/founder7.asm`)은 Founder-6에서 G가 모자랄 때의 행동
 
 **영토(원본 §29).** 16×16 tile 칸마다 집단별 heatmap 셋을 쌓는다: 방문(256 tick마다 구성원 위치 표본), 물질(자원 사실의 양, 주고받은 양쪽 집단 모두), 구조물(구조물 사실 횟수). 사실의 장소는 구조물이면 parcel tile, 아니면 행동한 개체의 tile이다. 소속은 마지막으로 닫힌 창의 집단이다. 창이 닫힐 때마다 이전 값은 floor(3/4)로 줄고 새 관측이 더해진다. 칸 합계의 0.6 이상을 가진 집단이 있을 때만 그 칸을 그 집단 색으로 칠한다. 화면 표시용이며 세계의 허가 정보가 아니다.
 
-**아직 없는 것.** 복사 계보(원본 §58 나머지).
+복사 계보는 §17e다.
 
 ### 17d. 구조물(artifact)의 동일성과 반복 (원본 §58)
 
@@ -660,6 +660,32 @@ bin = min(16, floor(log2(1 + n)))이다. parcel이 없는 tile의 parcel 필드�
 - `artifacts.csv`: 독립 2곳 이상인 모양. pattern, first_tick, parcels, bonds, trivial, occurrences, independent, contributors, natural, repeated_at.
 - `summary.json`의 `relations`: artifact_patterns, repeated_artifacts, repeated_trivial.
 - 화면: "반복되는 구조물" 목록과 13칸 썸네일.
+
+### 17e. 복사 계보와 전달 증거 (원본 §58)
+
+관찰기 전용이다. 매체마다 cell 구간 [start, end)별로 그 구간을 마지막으로 쓴 사실을 둔다.
+
+| 사실 | 구간의 출처 |
+| --- | --- |
+| WRITE Cell | Literal(쓴 개체) |
+| COPY | Copied(원천 매체, 복사한 개체, 처음 저자). 처음 저자는 복사할 때 원천 구간의 저자로 정한다. 원천이 자기 code·자기 배아이고 기록된 출처가 없으면 그 개체의 code가 저자다 |
+| bit 마모 | Damaged |
+| 재활용으로 0을 씀 | Erased |
+| 산화로 페이지가 사라짐 | Destroyed |
+
+- 나중 사실이 겹치는 구간만 바꾼다. 매체가 버려지거나 주인이 바뀌어도 출처는 유지한다.
+- READ는 출처를 만들지 않는다. 같은 bytes를 따로 쓴 것은 복사가 아니다(Literal).
+
+**전달.** 복사 → 채택(DraftCommit 후 learned) 또는 출생(배아 기록이 자식의 code) → 실행이 모두 있어야 한다.
+- 실행은 256 tick마다 표본으로 본다: 지금 VM이 도는 module의 매체가 learned·retained 매체이거나, 공개 기록 출처가 섞인 code다.
+- 실행된 매체의 사용 구간(learned는 commit 길이) 안에 저자가 다른 개체인 cell이 있으면 (개체, 매체, 저자)마다 한 번 Transfer를 기록한다.
+- 저자가 그 개체의 부모면 kin, 아니면 non-kin이다. 경로는 learned(채택) 또는 birth(배아 기록)다.
+
+**출력.**
+- `lineage.csv`: tick, agent, media, author, kind(kin/non-kin), cells, via(learned/birth).
+- `summary.json`의 `relations`: record_writes, record_copies, copied_cells, bit_damage, transfers_kin, transfers_nonkin.
+
+**원본과의 차이.** 기술 상태(LiveUsers, DormantRecord, ArtifactOnly, NotObserved)와 Recent Innovations 알림 규칙은 아직 없다. module 단위가 아니라 사용 구간 전체로 실행 증거를 본다.
 
 ## 18. 첫 실험 E1: 조상 생존 (§49 축소판)
 

@@ -207,6 +207,12 @@ impl Sim {
         let base = last as usize * PAGE_CELLS + next as usize;
         m.cells[base..base + k as usize].fill(0);
         m.revision += 1;
+        let media = m.uid;
+        if self.obs.lineage.is_some() {
+            let tick = self.st.tick;
+            self.lin(crate::lineage::MediaFact::Erase { tick, media, start: base as u32, end: base as u32 + k });
+        }
+        let m = self.media_mut(i, r).unwrap();
         let next = next + k;
         if next as usize == PAGE_CELLS {
             m.pop_slot();
@@ -245,6 +251,11 @@ impl Sim {
         let m = self.media_mut(i, r).unwrap();
         m.write(index, value);
         m.revision += 1;
+        let media = m.uid;
+        if self.obs.lineage.is_some() {
+            let (tick, agent) = (self.st.tick, self.st.agents[i].uid);
+            self.lin(crate::lineage::MediaFact::Write { tick, agent, media, cell: index });
+        }
         if matches!(r, MediaRef::Public { .. }) {
             self.obs.m1.public_writes += 1;
         }
@@ -319,6 +330,9 @@ impl Sim {
         let new_uid = draft.uid;
         if let Some(old) = a.learned.take() {
             a.retained.push(old);
+        }
+        if let Some(v) = &mut self.obs.lineage {
+            v.push(crate::lineage::MediaFact::Adopt { tick: self.st.tick, agent: a.uid, media: draft.uid, len });
         }
         a.learned = Some(Bank { media: draft, used_len: len });
         a.bank_progs.push((new_uid, p.clone()));
@@ -466,6 +480,15 @@ impl Sim {
             m.write(dst_off + k, cap.bytes[k as usize]);
         }
         m.revision += 1;
+        let dst_uid = m.uid;
+        // genetic replication (own code into own embryo) is the default origin: no spans for it
+        let own_code = matches!(sd, dom::OWN_CODE | dom::EMBRYO);
+        if self.obs.lineage.is_some() && !(own_code && dst == MediaRef::Embryo) {
+            let (tick, agent) = (self.st.tick, self.st.agents[i].uid);
+            let f = crate::lineage::MediaFact::Copy { tick, agent, src: cap.src_uid, own_code, src_start: r[4] as u32, dst: dst_uid, dst_start: dst_off, len: n };
+            self.lin(f);
+        }
+        let m = self.media_mut(i, dst).unwrap();
         if foreign_src && !matches!(dst, MediaRef::Public { .. }) {
             m.foreign = true;
         }

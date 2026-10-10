@@ -173,6 +173,8 @@ pub struct Observer {
     pub facts: Option<Vec<EffectFact>>,
     /// Interactions for the relation graph (original §58); collected only when Some.
     pub rel: Option<Vec<crate::relations::RelFact>>,
+    /// Record writes, copies, damage and code use for the copy lineage; collected only when Some.
+    pub lineage: Option<Vec<crate::lineage::MediaFact>>,
     pub m1: M1Stats,
     pub tick: TickStats,
     pub acc: TickStats,

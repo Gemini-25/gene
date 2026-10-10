@@ -13,6 +13,7 @@ pub mod env;
 pub mod genome;
 pub mod intent;
 pub mod isa;
+pub mod lineage;
 pub mod media;
 pub mod motion;
 pub mod mutation;

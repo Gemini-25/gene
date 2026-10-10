@@ -11,7 +11,7 @@
 | 항목 | 상태 |
 | --- | --- |
 | M0 엔진(`gene-core`) | 구현 완료 |
-| 시험 | 104개 통과 (단위 32, 장부·결정론·병렬 5, VM·이동 10, M1a/b 9, parcel 6, 결합·조립체 15, 접촉 15, parcel 매체 10, 조상 크기 1, CLI 1) |
+| 시험 | 110개 통과 (단위 37, 장부·결정론·병렬 5, VM·이동 10, M1a/b 9, parcel 6, 결합·조립체 15, 접촉 15, parcel 매체 10, 복사 계보 1, 조상 크기 1, CLI 1) |
 | 에너지·원자 장부 | 시험에서는 매 tick 정확히 일치, 실행 중에는 4096 tick마다 검사 |
 | 결정론 | 같은 seed면 같은 hash. 저장 후 이어 간 결과도 같음 |
 | E1-a: Founder-4(원본 §57) | 20/20 seed가 첫 밤에 전멸 |
@@ -75,6 +75,7 @@ python3 scripts/e1_summary.py runs/E1b
 | `behaviors.csv` | 반복되는 행동 family(원본 §58 A1.4): 처음 나타난 tick, 개체 수, 대표 효과 순서 |
 | `groups.csv` | 4096 tick 창마다 관계 graph의 집단(원본 §29): 개체 수, 관계 종류, 지속 창 수, 문명 후보 여부 |
 | `artifacts.csv` | 두 곳 이상에서 나타난 구조물 모양(원본 §58): 독립 occurrence 수, 만든 개체 수, 반복 확정 tick |
+| `lineage.csv` | 다른 개체가 쓴 코드가 기록을 거쳐 채택·출생으로 들어와 실행된 사건(원본 §58 전달 증거): 저자, kin/non-kin, cell 수 |
 
 ## 구조
 
@@ -92,6 +93,7 @@ crates/gene-core   시뮬레이션 core (Bevy·관찰기에 의존하지 않음)
   behavior.rs      행동 token·sketch·family (관찰 전용, 원본 §58)
   relations.rs     관계 graph, 결정론적 LPA 집단 탐지와 ID 유지 (관찰 전용, 원본 §29)
   artifacts.rs     구조물 모양 hash, 독립 occurrence, 반복 구조물 (관찰 전용, 원본 §58)
+  lineage.rs       기록의 cell 구간별 출처, 복사·채택·실행으로 확인한 전달 (관찰 전용, 원본 §58)
   repro.rs         배아 상태 기계
   mutation.rs      point·구조 변이 8종
   motion.rs        동시 이동 의존 graph (stage 6)

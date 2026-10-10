@@ -154,6 +154,9 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
     <h2>반복되는 구조물 <span class="small" id="art-count"></span></h2>
     <div class="small">parcel 주변 13칸 모양이 서로 겹치지 않는 3곳 이상에서, 만든 개체 2 이상에 의해 나타난 것(원본 §58). 위치·제작자는 모양에 넣지 않는다.</div>
     <div class="arts" id="arts"></div>
+    <h2>기록으로 전해진 코드 <span class="small" id="lin-count"></span></h2>
+    <div class="small">다른 개체가 쓴 코드가 공개 기록을 거쳐 채택되거나 배아에 들어가 실제로 실행된 경우(원본 §58 전달 증거).</div>
+    <ul class="behav" id="lin"></ul>
     <h2>선택한 개체 <button id="follow" title="F">따라가기</button></h2>
     <div id="agent" class="empty">지도에서 개체를 클릭하세요.</div>
   </aside>
@@ -1265,6 +1268,18 @@ function drawFootprint(cv, tiles) {
   const [cx, cy] = cell(6);
   g.strokeStyle = "#f2d04f"; g.lineWidth = 1.5; g.strokeRect(cx + 0.75, cy + 0.75, c - 1.5, c - 1.5);
 }
+async function loadLineage() {
+  const l = await getJSON("/api/lineage");
+  if (l.writes === undefined) return;
+  $("lin-count").textContent = `(기록 쓰기 ${fmt(l.writes)} · 복사 ${fmt(l.copies)} · 전달 ${l.transfers})`;
+  const ul = $("lin"); ul.innerHTML = "";
+  for (const t of l.recent) {
+    const li = document.createElement("li");
+    li.innerHTML = `#${t.agent} ← #${t.author} <span class="small">· ${t.cells} cell · ${t.learned ? "학습 채택" : "출생"} · ${t.kin ? "부모에게서" : "남에게서"} · ${(t.tick / 4096).toFixed(1)}일</span>`;
+    ul.appendChild(li);
+  }
+  if (!l.recent.length) ul.innerHTML = '<li class="small">아직 없음</li>';
+}
 let artsTick = -1;
 async function loadArtifacts() {
   const a = await getJSON("/api/artifacts");
@@ -1471,7 +1486,7 @@ async function slowPoll() {
   try {
     const h = await getJSON("/api/history");
     const t = h.tick && h.tick.length ? h.tick[h.tick.length - 1] : 0;
-    if (t !== lastHistTick) { lastHistTick = t; hist = h; later(drawCharts, 0); later(loadBehaviors, 400); later(loadGroups, 600); later(loadArtifacts, 800); later(loadTerritory, 1000); }
+    if (t !== lastHistTick) { lastHistTick = t; hist = h; later(drawCharts, 0); later(loadBehaviors, 400); later(loadGroups, 600); later(loadArtifacts, 800); later(loadTerritory, 1000); later(loadLineage, 1200); }
     const field = await getBin("/api/water");
     later(() => setField(field), 800);
     later(loadTimeline, 1200);

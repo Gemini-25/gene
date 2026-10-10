@@ -318,16 +318,25 @@ impl Sim {
     fn media_wear(&mut self, t: u32, x: u64) {
         let seed = self.st.config.seed;
         let tick = self.st.tick;
-        let mut flips = 0;
+        let mut hits: Vec<(u64, u32)> = Vec::new();
         if let Some(list) = self.st.dropped.get_mut(&t) {
             for m in list.iter_mut() {
-                flips += wear_one(m, x, seed, tick) as u64;
+                if let Some(c) = wear_one(m, x, seed, tick) {
+                    hits.push((m.uid, c));
+                }
             }
         }
         if let Some(m) = self.st.world.parcels.get_mut(&t).and_then(|p| p.media.as_mut()) {
-            flips += wear_one(m, x, seed, tick) as u64;
+            if let Some(c) = wear_one(m, x, seed, tick) {
+                hits.push((m.uid, c));
+            }
         }
-        self.obs.m1.bit_flips += flips;
+        self.obs.m1.bit_flips += hits.len() as u64;
+        if let Some(v) = &mut self.obs.lineage {
+            for (media, cell) in hits {
+                v.push(crate::lineage::MediaFact::Damage { tick, media, cell });
+            }
+        }
     }
 
     /// Rx2 oxidation of exposed records on tile t: dropped ones in UID order, then the parcel's.
@@ -367,6 +376,10 @@ impl Sim {
         let mut credit = m.credit as u64 + inc;
         let mut ext = 0;
         while credit >= 65536 && ext < 4 && possible(&self.st.world, m) > 0 {
+            if let (Some(v), Some(page)) = (&mut self.obs.lineage, m.present.iter().rposition(|p| *p)) {
+                let start = (page * crate::genome::PAGE_CELLS) as u32;
+                v.push(crate::lineage::MediaFact::Destroy { tick, media: m.uid, start, end: start + crate::genome::PAGE_CELLS as u32 });
+            }
             m.oxidize_top_page();
             let w = &mut self.st.world;
             w.take_loose(t, O, 1);
@@ -764,17 +777,17 @@ fn band_rx_possible(b: &mut EnvBand, t: u32, rx: &Reaction) -> u64 {
 }
 
 /// One exposure due of a record: the clock advances (4 on exposed ground, else 1) and every
-/// 16384 flips one uniformly drawn bit of a present page. Returns whether a bit flipped.
-fn wear_one(m: &mut crate::media::Media, x: u64, seed: u64, tick: u64) -> bool {
+/// 16384 flips one uniformly drawn bit of a present page. Returns the cell that flipped.
+fn wear_one(m: &mut crate::media::Media, x: u64, seed: u64, tick: u64) -> Option<u32> {
     let clock = m.exposure_clock as u32 + if x >= 64 { 4 } else { 1 };
     if clock < 16384 {
         m.exposure_clock = clock as u16;
-        return false;
+        return None;
     }
     m.exposure_clock = (clock - 16384) as u16;
     let present: Vec<usize> = (0..m.slots()).filter(|p| m.present[*p]).collect();
     if present.is_empty() {
-        return false;
+        return None;
     }
     let key = crate::rng::stream_key(seed, Domain::Environment, m.uid, (2u64 << 56) | m.wear_events);
     let mut st = Stream::new(key, tick);
@@ -787,5 +800,5 @@ fn wear_one(m: &mut crate::media::Media, x: u64, seed: u64, tick: u64) -> bool {
     if m.recycle.is_some_and(|(p, _)| p as usize == page) {
         m.recycle = Some((page as u16, 0));
     }
-    true
+    Some((page * 128 + cell) as u32)
 }

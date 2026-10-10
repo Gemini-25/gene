@@ -320,7 +320,19 @@ fn artifacts_csv(a: &gene_core::artifacts::Artifacts) -> String {
     out
 }
 
-fn relations_json(g: &gene_core::relations::Graph, a: &gene_core::artifacts::Artifacts) -> String {
+/// Code that came from another agent through records and is running (original §58 transfers).
+fn lineage_csv(l: &gene_core::lineage::Lineage) -> String {
+    use gene_core::lineage::TransferKind;
+    let mut out = String::from("tick,agent,media,author,kind,cells,via\n");
+    for t in &l.transfers {
+        let kind = if t.kind == TransferKind::Kin { "kin" } else { "non-kin" };
+        let via = if t.learned { "learned" } else { "birth" };
+        out += &format!("{},{},{},{},{},{},{}\n", t.tick, t.agent, t.media, t.author, kind, t.cells, via);
+    }
+    out
+}
+
+fn relations_json(g: &gene_core::relations::Graph, a: &gene_core::artifacts::Artifacts, l: &gene_core::lineage::Lineage) -> String {
     use gene_core::relations::GroupEvent;
     let (mut new, mut splits, mut merges, mut civ) = (0, 0, 0, 0);
     for e in &g.events {
@@ -333,7 +345,7 @@ fn relations_json(g: &gene_core::relations::Graph, a: &gene_core::artifacts::Art
         }
     }
     format!(
-        "{{\"resource_mass\": {}, \"record_cells\": {}, \"use_contacts\": {}, \"groups_now\": {}, \"largest_now\": {}, \"groups_formed\": {}, \"splits\": {}, \"merges\": {}, \"civ_candidates\": {}, \"artifact_patterns\": {}, \"repeated_artifacts\": {}, \"repeated_trivial\": {}}}",
+        "{{\"resource_mass\": {}, \"record_cells\": {}, \"use_contacts\": {}, \"groups_now\": {}, \"largest_now\": {}, \"groups_formed\": {}, \"splits\": {}, \"merges\": {}, \"civ_candidates\": {}, \"artifact_patterns\": {}, \"repeated_artifacts\": {}, \"repeated_trivial\": {}, \"record_writes\": {}, \"record_copies\": {}, \"copied_cells\": {}, \"bit_damage\": {}, \"transfers_kin\": {}, \"transfers_nonkin\": {}}}",
         g.totals[0],
         g.totals[1],
         g.totals[2],
@@ -345,7 +357,13 @@ fn relations_json(g: &gene_core::relations::Graph, a: &gene_core::artifacts::Art
         civ,
         a.patterns.len(),
         a.repeated.iter().filter(|h| !a.patterns[h].trivial).count(),
-        a.repeated.iter().filter(|h| a.patterns[h].trivial).count()
+        a.repeated.iter().filter(|h| a.patterns[h].trivial).count(),
+        l.writes,
+        l.copies,
+        l.copied_cells,
+        l.damaged,
+        l.transfers.iter().filter(|t| t.kind == gene_core::lineage::TransferKind::Kin).count(),
+        l.transfers.iter().filter(|t| t.kind == gene_core::lineage::TransferKind::NonKin).count()
     )
 }
 
@@ -459,6 +477,8 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     sim.obs.facts = Some(Vec::new());
     let mut graph = gene_core::relations::Graph::default();
     let mut artifacts = gene_core::artifacts::Artifacts::default();
+    let mut lineage = gene_core::lineage::Lineage::default();
+    sim.obs.lineage = Some(Vec::new());
     let mut groups = open("groups.csv");
     writeln!(groups, "window,tick,id,agents,parcels,media,kinds,weight,windows,border,hub,civ,parent").unwrap();
     sim.obs.rel = Some(Vec::new());
@@ -474,6 +494,9 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
         for f in sim.obs.rel.as_mut().unwrap().drain(..) {
             graph.push(&f);
             artifacts.push(&f);
+        }
+        for f in sim.obs.lineage.as_mut().unwrap().drain(..) {
+            lineage.push(&f);
         }
         if t % gene_core::relations::WINDOW == 0 {
             let ag = &sim.st.agents;
@@ -568,7 +591,8 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     if sim.st.tick % gene_core::relations::WINDOW != 0 {
         artifacts.scan(&sim.st.world, &|u| has_record(&sim, u), sim.st.tick); // the structures left at the end
     }
-    s.relations = relations_json(&graph, &artifacts);
+    s.relations = relations_json(&graph, &artifacts, &lineage);
+    fs::write(o.out.join("lineage.csv"), lineage_csv(&lineage)).unwrap();
     fs::write(o.out.join("artifacts.csv"), artifacts_csv(&artifacts)).unwrap();
     fs::write(o.out.join("behaviors.csv"), behaviors_csv(&behavior)).unwrap();
     fs::write(o.out.join("genomes.txt"), genome_report(&sim, &o.founder, 5)).unwrap();

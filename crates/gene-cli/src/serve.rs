@@ -35,6 +35,7 @@ struct Shared {
     groups: Arc<String>,
     artifacts: Arc<String>,
     territory: Arc<String>,
+    lineage: Arc<String>,
     timeline: Arc<String>,
 }
 
@@ -63,6 +64,7 @@ pub fn serve(sim: Sim, o: ServeOpts) {
         groups: Arc::new(String::from("{}")),
         artifacts: Arc::new(String::from("{}")),
         territory: Arc::new(String::from("{}")),
+        lineage: Arc::new(String::from("{\"writes\":0,\"copies\":0,\"cells\":0,\"damaged\":0,\"transfers\":0,\"recent\":[]}")),
         timeline: Arc::new(String::from("{}")),
     }));
     let (tx, rx) = mpsc::channel::<Req>();
@@ -232,7 +234,9 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
     let mut arts = gene_core::artifacts::Artifacts::default();
     let mut terr = gene_core::relations::Territory::new(sim.st.world.w, sim.st.world.h);
     let mut member: BTreeMap<u64, u64> = BTreeMap::new();
+    let mut lin = gene_core::lineage::Lineage::default();
     sim.obs.rel = Some(Vec::new());
+    sim.obs.lineage = Some(Vec::new());
     let mut timeline = Timeline { every: 4096, budget: 400_000_000, points: Vec::new() };
     timeline.record(&sim);
     let mut epoch = Instant::now();
@@ -260,6 +264,8 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                                 arts = gene_core::artifacts::Artifacts::default();
                                 terr = gene_core::relations::Territory::new(sim.st.world.w, sim.st.world.h);
                                 member.clear();
+                                lin = gene_core::lineage::Lineage::default();
+                                sim.obs.lineage = Some(Vec::new());
                                 recent.clear();
                                 cache.refresh(&sim);
                                 shared.lock().unwrap().control.paused = true;
@@ -312,6 +318,13 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                 graph.push(&f);
                 arts.push(&f);
                 terr.fact(&f, &|u| member.get(&u).copied());
+            }
+            let had = lin.transfers.len();
+            for f in sim.obs.lineage.as_mut().unwrap().drain(..) {
+                lin.push(&f);
+            }
+            if lin.transfers.len() != had || (sim.st.tick % 4096 == 0 && lin.copies > 0) {
+                shared.lock().unwrap().lineage = Arc::new(lineage_json(&lin));
             }
             if sim.st.tick % 256 == 0 && !member.is_empty() {
                 for a in &sim.st.agents {
@@ -561,6 +574,37 @@ fn territory_json(t: &gene_core::relations::Territory, tick: u64) -> String {
         })
         .collect();
     format!("{{\"tick\":{tick},\"cw\":{},\"ch\":{},\"cell\":{},\"layers\":[{}]}}", t.cw, t.ch, gene_core::relations::CELL, layers.join(","))
+}
+
+/// Copy lineage totals and the latest transfers (original §58).
+fn lineage_json(l: &gene_core::lineage::Lineage) -> String {
+    use gene_core::lineage::TransferKind;
+    let items: Vec<String> = l
+        .transfers
+        .iter()
+        .rev()
+        .take(10)
+        .map(|t| {
+            format!(
+                "{{\"tick\":{},\"agent\":{},\"author\":{},\"kin\":{},\"cells\":{},\"learned\":{}}}",
+                t.tick,
+                t.agent,
+                t.author,
+                t.kind == TransferKind::Kin,
+                t.cells,
+                t.learned
+            )
+        })
+        .collect();
+    format!(
+        "{{\"writes\":{},\"copies\":{},\"cells\":{},\"damaged\":{},\"transfers\":{},\"recent\":[{}]}}",
+        l.writes,
+        l.copies,
+        l.copied_cells,
+        l.damaged,
+        l.transfers.len(),
+        items.join(",")
+    )
 }
 
 fn behaviors_json(an: &gene_core::behavior::Analyzer) -> String {
@@ -852,6 +896,10 @@ fn handle(mut stream: TcpStream, shared: &Arc<Mutex<Shared>>, tx: &mpsc::Sender<
         }
         "/api/territory" => {
             let s = shared.lock().unwrap().territory.clone();
+            respond(&mut stream, "200 OK", json, s.as_bytes())
+        }
+        "/api/lineage" => {
+            let s = shared.lock().unwrap().lineage.clone();
             respond(&mut stream, "200 OK", json, s.as_bytes())
         }
         "/api/groups" => {
