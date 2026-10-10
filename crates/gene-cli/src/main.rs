@@ -19,7 +19,7 @@ USAGE:
   gene run    [--seed N] [--size S] [--agents A] [--ticks T] [--founder NAME|FILE]
               [--out DIR] [--stats-every K] [--map-every M] [--checkpoint-every C]
               [--audit-every K] [--keep-going] [--save-final] [--quiet] [--ruleset m0|m1a|m1b|m1c|m1d] [--sim-threads N]
-  gene batch  --seeds A-B [--threads N] [same options as run]  (one directory per seed)
+  gene batch  --seeds A-B|A,B,C-D [--threads N] [same options as run]  (one directory per seed)
   gene resume --from CHECKPOINT [--ticks T] [--out DIR] [...]
   gene serve  [--port 8080] [--load SAVE.bin] [same world options as run]
               local web viewer: map, play/pause/speed, agent inspection, genome census
@@ -145,11 +145,10 @@ fn main() {
         }
         "batch" => {
             let extra = parse_opts(&args[1..], &mut o);
-            let seeds = extra.get("--seeds").unwrap_or_else(|| die("--seeds A-B required"));
-            let (a, b) = seeds.split_once('-').unwrap_or((seeds, seeds));
-            let (a, b): (u64, u64) = (a.parse().unwrap(), b.parse().unwrap());
+            let seeds = extra.get("--seeds").unwrap_or_else(|| die("--seeds required, e.g. 1-20 or 1,3,5-7"));
+            let seeds = parse_seeds(seeds).unwrap_or_else(|| die(format!("bad --seeds {seeds} (e.g. 1-20 or 1,3,5-7)")));
             let threads: usize = extra.get("--threads").map_or(4, |t| t.parse().unwrap());
-            batch(&o, a..=b, threads);
+            batch(&o, seeds, threads);
         }
         "resume" => {
             let extra = parse_opts(&args[1..], &mut o);
@@ -556,8 +555,23 @@ fn write_map(sim: &Sim, path: &Path) {
     enc.write_header().unwrap().write_image_data(&px).unwrap();
 }
 
-fn batch(o: &Opts, seeds: std::ops::RangeInclusive<u64>, threads: usize) {
-    let seeds: Vec<u64> = seeds.collect();
+/// Seed list: comma-separated numbers and inclusive ranges, e.g. "1-20" or "1,3,5-7".
+fn parse_seeds(spec: &str) -> Option<Vec<u64>> {
+    let mut out = Vec::new();
+    for part in spec.split(',') {
+        let (a, b) = part.split_once('-').unwrap_or((part, part));
+        let (a, b): (u64, u64) = (a.trim().parse().ok()?, b.trim().parse().ok()?);
+        if a > b {
+            return None;
+        }
+        out.extend(a..=b);
+    }
+    out.sort_unstable();
+    out.dedup();
+    Some(out)
+}
+
+fn batch(o: &Opts, seeds: Vec<u64>, threads: usize) {
     let queue = std::sync::Mutex::new(seeds.clone());
     let results = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|sc| {
@@ -689,4 +703,18 @@ fn genome_report(sim: &Sim, founder: &str, top: usize) -> String {
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_seeds;
+
+    #[test]
+    fn seed_lists() {
+        assert_eq!(parse_seeds("1-3"), Some(vec![1, 2, 3]));
+        assert_eq!(parse_seeds("7"), Some(vec![7]));
+        assert_eq!(parse_seeds("5,1-2,2"), Some(vec![1, 2, 5]));
+        assert_eq!(parse_seeds("3-1"), None);
+        assert_eq!(parse_seeds("x"), None);
+    }
 }
