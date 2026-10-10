@@ -30,12 +30,14 @@ impl Sim {
                 transport_parallel(pool, w, slot, color, threads, &keys, tick);
             } else {
                 let list = std::mem::take(&mut w.edges[slot]);
+                let plain = w.residue.is_empty();
                 let mut band = Band {
                     base: 0,
                     loose: &mut w.loose,
                     heat_u: &mut w.heat_u,
                     heat_c: &mut w.heat_c,
                     residue: Some(&mut w.residue),
+                    plain,
                 };
                 for &(a, b) in &list {
                     edge_flux(&mut band, &w.elev, &w.perm, &w.metal, &keys, a, b, tick);
@@ -222,23 +224,7 @@ impl Sim {
 
     fn rx_possible(&self, t: u32, rx: &Reaction) -> u64 {
         let w = &self.st.world;
-        if rx.reducing && w.loose_total(t, O) > 1 {
-            return 0;
-        }
-        if w.theta(t) < rx.min_theta {
-            return 0;
-        }
-        let mut p = u64::MAX;
-        for &(s, k) in rx.inputs {
-            p = p.min(w.loose_total(t, s) / k as u64);
-        }
-        for &(s, k) in rx.outputs {
-            p = p.min(w.loose_space(t, s) / k as u64);
-        }
-        if rx.heat < 0 {
-            p = p.min(w.heat_u[t as usize] / (-rx.heat) as u64);
-        }
-        p
+        rx_possible_at(&w.loose_stock_u64(t), w.heat_u[t as usize], w.theta(t), rx)
     }
 
     fn rx_apply(&mut self, t: u32, rx: &Reaction) {
@@ -257,12 +243,17 @@ impl Sim {
     }
 
     fn loose_chemistry(&mut self, t: u32, x: u64, tick: u64) {
+        // theta only changes when a reaction runs; recompute it then (same values as before)
+        let mut theta = self.st.world.theta(t);
         for (k, rx) in CREDIT_REACTIONS.iter().enumerate() {
-            let rate = rx.rates[temp_bin(self.st.world.theta(t))] as u64;
+            let rate = rx.rates[temp_bin(theta)] as u64;
             if rate == 0 {
                 continue;
             }
-            let possible = self.rx_possible(t, rx);
+            let possible = {
+                let w = &self.st.world;
+                rx_possible_at(&w.loose_stock_u64(t), w.heat_u[t as usize], theta, rx)
+            };
             if possible == 0 {
                 continue;
             }
@@ -273,6 +264,7 @@ impl Sim {
                 self.rx_apply(t, rx);
                 credit -= 65536;
                 ext += 1;
+                theta = self.st.world.theta(t);
             }
             self.st.world.rx_credit[t as usize][k] = credit.min(65535) as u16;
         }
@@ -392,12 +384,18 @@ struct Band<'a> {
     heat_c: &'a mut [u64],
     /// Overflow store; only the serial path may touch it (parallel requires it empty).
     residue: Option<&'a mut std::collections::BTreeMap<u32, [u64; NSPEC]>>,
+    /// No overflow anywhere when the stage started: totals are the loose stock alone. Transport
+    /// only moves loose stock within u16 bounds, so this cannot change during the stage.
+    plain: bool,
 }
 
 impl Band<'_> {
     #[inline]
     fn total(&self, t: u32, s: usize) -> u64 {
         let base = self.loose[(t - self.base) as usize][s] as u64;
+        if self.plain {
+            return base;
+        }
         match &self.residue {
             Some(r) if !r.is_empty() => base + r.get(&t).map_or(0, |x| x[s]),
             _ => base,
@@ -436,6 +434,30 @@ impl Band<'_> {
     fn c(&mut self, t: u32) -> &mut u64 {
         &mut self.heat_c[(t - self.base) as usize]
     }
+}
+
+/// How many extents of rx the stock, the free space and the heat allow (0 when blocked).
+fn rx_possible_at(stock: &[u64; NSPEC], u: u64, theta: u64, rx: &Reaction) -> u64 {
+    if rx.reducing && stock[O] > 1 {
+        return 0;
+    }
+    if theta < rx.min_theta {
+        return 0;
+    }
+    let mut p = u64::MAX;
+    for &(s, k) in rx.inputs {
+        p = p.min(stock[s] / k as u64);
+        if p == 0 {
+            return 0;
+        }
+    }
+    for &(s, k) in rx.outputs {
+        p = p.min((u16::MAX as u64).saturating_sub(stock[s]) / k as u64);
+    }
+    if rx.heat < 0 {
+        p = p.min(u / (-rx.heat) as u64);
+    }
+    p
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -577,7 +599,7 @@ fn transport_parallel(
         loose = lr;
         heat_u = ur;
         heat_c = cr;
-        bands.push(Band { base: cuts[k - 1] * width, loose: l, heat_u: u, heat_c: c, residue: None });
+        bands.push(Band { base: cuts[k - 1] * width, loose: l, heat_u: u, heat_c: c, residue: None, plain: true });
     }
     pool.scope(|sc| {
         for (mut band, edges) in bands.into_iter().zip(parts) {
