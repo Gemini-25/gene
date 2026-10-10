@@ -42,13 +42,16 @@ def main(run, n, names):
             if b <= t and (x is None or x > t):
                 alive[k] += 1
         print(f"{d // DAY:3d} | " + " | ".join(f"{a:5d}" for a in alive))
-    hashes = {}
+    hashes, modules = {}, {}
     try:
         import subprocess
         out = subprocess.run(["./target/release/gene", "founders"], capture_output=True, text=True).stdout
         for line in out.splitlines():
             name, rest = line.split(":", 1)
-            hashes[name.strip()] = rest.split(",")[-1].strip()
+            fields = [f.strip() for f in rest.split(",")]
+            hashes[name.strip()] = fields[2]
+            if len(fields) > 3 and fields[3].startswith("modules "):
+                modules[name.strip()] = dict(m.split(":") for m in fields[3][8:].split(";"))
     except Exception:
         pass
     kind_of_hash = {hashes[nm]: k for k, nm in enumerate(names) if nm in hashes}
@@ -61,6 +64,32 @@ def main(run, n, names):
             cross.setdefault(key, []).append(int(b["tick"]))
     for (a, b), ts in sorted(cross.items()):
         print(f"{a} parent line, {b} founder genome: {len(ts)} births, first at day {min(ts) / DAY:.1f}")
+    # habit combinations (modular founders): which founder each non-empty hook module came from
+    if modules and births and "modules" in births[0]:
+        stubs = {}
+        for nm, mods in modules.items():
+            for t, h in mods.items():
+                stubs.setdefault((t, h), set()).add(nm)
+        origin = {}  # (tag, hash) -> founder whose own habit this is (shared modules are not habits)
+        for (t, h), owners in stubs.items():
+            if len(owners) == 1 and t != "0":
+                origin[(t, h)] = next(iter(owners))
+        combos = {}
+        for b in births:
+            if not b.get("modules"):
+                continue
+            hab = set()
+            for m in b["modules"].split(";"):
+                t, h = m.split(":")
+                if (t, h) in origin:
+                    hab.add((t, origin[(t, h)]))
+            owners = {o for _, o in hab}
+            root_kind = names[(int(b["root"]) - 1) % n] if names else None
+            if len(owners) >= 2 or (owners and root_kind and owners != {root_kind} and len(owners) == 1):
+                key = tuple(sorted(hab))
+                combos.setdefault(key, []).append(int(b["tick"]))
+        for key, ts in sorted(combos.items(), key=lambda kv: -len(kv[1])):
+            print(f"habit mix {key}: {len(ts)} births, first at day {min(ts) / DAY:.1f}")
     cols = ["emits", "signal_reads", "public_reads", "copies_from_public", "drafts_created", "commits", "adoptions", "parcels", "parcels_created", "provisioned"]
     last = stats[-1]
     print("end:", ", ".join(f"{c} {last[c]}" for c in cols if c in last))

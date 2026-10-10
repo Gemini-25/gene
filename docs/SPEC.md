@@ -570,6 +570,35 @@ E2는 기록·신호·구조물을 하나씩 쓰는 조상들을 한 세계에 �
 
 세 조상 모두 혼자 살아남는다. 코드가 길수록 번식 복사와 유지비가 커서 Founder-7보다 조금 약하다. Founder-9가 가장 약하다(채택 비용 약 2만 q와 learned 페이지 유지비). E2 본 실험은 Founder-7 없이 Founder-8, -9, -10만 섞는다(`--founder founder8+founder9+founder10`).
 
+### 16f. 습관을 module로 나눈 E2 조상 Founder-8m, -9m, -10m
+
+**동기.** E2 예비 실험에서 Founder-8..10은 코드가 module 하나였다. 그래서 재조합 변이(§12 Recombine: module 하나의 내용을 다른 module 내용으로 덮어씀, tag 유지)가 일어나도 프로그램 전체가 바뀔 뿐 습관이 섞이지 않았다. 사용자 결정 2의 "변이가 병목이면 module 재조합" 단계로 습관을 module로 나눴다.
+
+**구조.** 세 조상 모두 module 4개다.
+- module 0(본체)은 셋이 bytes까지 같다. Founder-7에 hook 세 곳을 넣었다.
+  - G를 가져온 뒤 `CALL 1`. r11에 그 tile에 있던 G를 둔다.
+  - 길을 잃었을 때(S나 G를 못 찾아 돌아다니거나 자려 할 때) `CALL 2`. r5에 방향 0..3이나 4(없음)를 받는다.
+  - 오전이 아닌데 부유하게 쉴 때 `CALL 3`.
+- module 1..3은 습관이다. 자기 습관이 아닌 자리는 바로 RET하는 빈 module이다.
+
+| 조상 | module 1 (먹이를 찾은 뒤) | module 2 (길을 잃었을 때) | module 3 (부유하게 쉴 때) | 크기 |
+| --- | --- | --- | --- | --- |
+| Founder-8m | 먹이 신호 | 신호 듣고 방향 고르기 | 빈 module | 356 word, 760 cell |
+| Founder-9m | 빈 module | 빈 module(r5 = 4) | 기록에서 배우기 | 415 word, 878 cell |
+| Founder-10m | 빈 module | 빈 module(r5 = 4) | 벽 짓기 | 358 word, 764 cell |
+
+습관의 내용은 Founder-8..10과 같다. 다만 Founder-9m은 배운 뒤 RET으로 옛 본체에 돌아간다. 본체는 빈 stack에서 RET하지 않으므로 계속 상속받은 본체가 돈다. 다음 CALL부터는 배운 코드의 hook module이 묶인다.
+
+**조합이 생기는 길.**
+- Founder-9m이 다른 종류의 genome을 배우면, 그 hook module이 재조합의 donor가 된다(§20c).
+- 그래서 그 자식은 재조합 한 번으로 예를 들어 "기록 학습 + 먹이 신호"를 함께 가질 수 있다.
+- 같은 종류 안에서는 DuplicateModule과 재조합이 습관을 다른 hook 자리로 옮길 수 있다.
+
+**관찰.**
+- `births.csv`의 `modules` 열에 module마다 tag와 내용 hash(BLAKE3 앞 4 byte)를 적는다.
+- `gene founders`가 조상 module hash를 보여 준다.
+- `scripts/e2_mix.py`는 출생 genome의 hook module이 둘 이상의 조상에게서 왔거나 계통과 다른 조상에게서 왔으면 습관 조합으로 센다.
+
 ## 17. 관찰과 출력
 
 관찰은 세계를 바꾸지 않는다. 헤드리스 실행이 내는 파일:

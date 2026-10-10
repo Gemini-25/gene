@@ -44,3 +44,6 @@ pub const FOUNDER7_ASM: &str = include_str!("../../../assets/founder7.asm");
 pub const FOUNDER8_ASM: &str = include_str!("../../../assets/founder8.asm");
 pub const FOUNDER9_ASM: &str = include_str!("../../../assets/founder9.asm");
 pub const FOUNDER10_ASM: &str = include_str!("../../../assets/founder10.asm");
+pub const FOUNDER8M_ASM: &str = include_str!("../../../assets/founder8m.asm");
+pub const FOUNDER9M_ASM: &str = include_str!("../../../assets/founder9m.asm");
+pub const FOUNDER10M_ASM: &str = include_str!("../../../assets/founder10m.asm");

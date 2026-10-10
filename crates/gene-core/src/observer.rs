@@ -57,6 +57,24 @@ pub struct BirthEvent {
     pub y: u16,
     /// G the child was born carrying (provisioned by its parent through the embryo store).
     pub inv_g: u16,
+    /// Per module: tag and the first 4 bytes of the BLAKE3 hash of its words, to see which
+    /// founder's habits a genome carries (E2 modular founders).
+    pub modules: Vec<(u16, u32)>,
+}
+
+/// (tag, short content hash) of every module of a program.
+pub fn module_hashes(p: &crate::genome::Program) -> Vec<(u16, u32)> {
+    p.modules
+        .iter()
+        .map(|m| {
+            let words = &p.words[m.start as usize..(m.start + m.len) as usize];
+            let mut h = blake3::Hasher::new();
+            for w in words {
+                h.update(&w.to_le_bytes());
+            }
+            (m.tag, u32::from_le_bytes(h.finalize().as_bytes()[..4].try_into().unwrap()))
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug)]
@@ -273,6 +291,7 @@ impl Observer {
             x: child.x,
             y: child.y,
             inv_g: child.inv[crate::species::G],
+            modules: child.prog.as_deref().map(module_hashes).unwrap_or_default(),
         });
     }
 

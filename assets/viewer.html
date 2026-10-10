@@ -1285,7 +1285,7 @@ function multiChart(canvas, xs, series, colors, names) {
     c.fillStyle = css("--ink"); c.textAlign = "left"; c.fillText(txt, bx + 6, T + 13);
   }
 }
-const KIND_SHORT = { founder4: "F4", founder5: "F5", founder6: "F6", founder7: "F7", founder8: "F8 신호", founder9: "F9 기록", founder10: "F10 구조물" };
+const KIND_SHORT = { founder4: "F4", founder5: "F5", founder6: "F6", founder7: "F7", founder8: "F8 신호", founder9: "F9 기록", founder10: "F10 구조물", founder8m: "F8m 신호", founder9m: "F9m 기록", founder10m: "F10m 구조물" };
 function drawKinds() {
   const f = state && state.founders ? state.founders : [];
   const on = f.length > 1 && hist && hist.kinds && hist.kinds.length === f.length;
@@ -1651,7 +1651,7 @@ const COLOUR_MODES = ["genome", "kind", "lineage", "group", "energy", "generatio
 // founder kinds (E2 mixed worlds): founder i runs program i mod n, so kind = (root - 1) mod n.
 // Fixed order of hues that stand out on green land, blue water and tan ground.
 const KIND_COLOURS = [0xff8a3d, 0xa597ff, 0xffd84a, 0x6fb6ff, 0x5fe0b0, 0xff9cc4];
-const KIND_DESC = { founder4: "Founder-4", founder5: "Founder-5", founder6: "Founder-6", founder7: "Founder-7", founder8: "Founder-8 · 신호", founder9: "Founder-9 · 기록 학습", founder10: "Founder-10 · 구조물" };
+const KIND_DESC = { founder4: "Founder-4", founder5: "Founder-5", founder6: "Founder-6", founder7: "Founder-7", founder8: "Founder-8 · 신호", founder9: "Founder-9 · 기록 학습", founder10: "Founder-10 · 구조물", founder8m: "Founder-8m · 신호", founder9m: "Founder-9m · 기록 학습", founder10m: "Founder-10m · 구조물" };
 function kindOf(root) { const n = state && state.founders ? state.founders.length : 1; return (root - 1) % n; }
 function showLegend() {
   const el = $("legend");

@@ -143,6 +143,9 @@ fn founder_source(name: &str) -> String {
         "founder8" => gene_core::FOUNDER8_ASM.to_string(),
         "founder9" => gene_core::FOUNDER9_ASM.to_string(),
         "founder10" => gene_core::FOUNDER10_ASM.to_string(),
+        "founder8m" => gene_core::FOUNDER8M_ASM.to_string(),
+        "founder9m" => gene_core::FOUNDER9M_ASM.to_string(),
+        "founder10m" => gene_core::FOUNDER10M_ASM.to_string(),
         path => fs::read_to_string(path).unwrap_or_else(|e| die(format!("cannot read founder {path}: {e}"))),
     }
 }
@@ -238,10 +241,11 @@ fn main() {
             print!("{}", genome_report(&sim, &o.founder, 5));
         }
         "founders" => {
-            for name in ["founder4", "founder5", "founder6", "founder7", "founder8", "founder9", "founder10"] {
+            for name in ["founder4", "founder5", "founder6", "founder7", "founder8", "founder9", "founder10", "founder8m", "founder9m", "founder10m"] {
                 let p = isa::assemble(&founder_source(name)).unwrap();
                 let cells = p.to_cells();
-                println!("{name}: {} words, {} cells, {}", p.words.len(), cells.len(), &hex(&hash_cells(&cells))[..16]);
+                let mods: Vec<String> = gene_core::observer::module_hashes(&p).iter().map(|(t, h)| format!("{t}:{h:08x}")).collect();
+                println!("{name}: {} words, {} cells, {}, modules {}", p.words.len(), cells.len(), &hex(&hash_cells(&cells))[..16], mods.join(";"));
             }
         }
         "-h" | "--help" | "help" => println!("{USAGE}"),
@@ -651,7 +655,7 @@ emits,signal_reads,public_reads,copies_from_public,copies_to_public,draft_to_emb
 taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_media_created,parcel_media_dropped,dry_tiles,provisioned"
     )
     .unwrap();
-    writeln!(births, "tick,uid,parent,root,generation,genome,len,structural_op,structural_applied,point_flips,foreign,x,y,inv_g").unwrap();
+    writeln!(births, "tick,uid,parent,root,generation,genome,len,structural_op,structural_applied,point_flips,foreign,x,y,inv_g,modules").unwrap();
     writeln!(deaths, "tick,uid,cause,age,children,generation,inv_g,embryo_state").unwrap();
     }
     let start = Instant::now();
@@ -719,7 +723,7 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
             judge.birth(b.uid, b.parent, b.tick, b.genome_hash);
             writeln!(
                 births,
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 b.tick,
                 b.uid,
                 b.parent,
@@ -733,7 +737,8 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
                 b.foreign as u8,
                 b.x,
                 b.y,
-                b.inv_g
+                b.inv_g,
+                b.modules.iter().map(|(t, h)| format!("{t}:{h:08x}")).collect::<Vec<_>>().join(";")
             )
             .unwrap();
         }
