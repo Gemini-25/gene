@@ -15,6 +15,8 @@ enum Store {
     Loose(u8),
     Actor(u8),
     EmbryoRet,
+    Matrix(u8),
+    Pore(u8),
 }
 
 pub(crate) fn priority(key: [u32; 2], tick: u64) -> u64 {
@@ -99,7 +101,9 @@ impl Sim {
 
     fn store_tile(&self, i: usize, s: Store) -> Result<u32, Outcome> {
         match s {
-            Store::Loose(o) | Store::Actor(o) => self.rel_tile(i, o).ok_or(Outcome::Boundary),
+            Store::Loose(o) | Store::Actor(o) | Store::Matrix(o) | Store::Pore(o) => {
+                self.rel_tile(i, o).ok_or(Outcome::Boundary)
+            }
             _ => Ok(self.tile_of(i)),
         }
     }
@@ -118,10 +122,13 @@ impl Sim {
             return (Outcome::InvalidTarget, 0);
         }
         let s = ch as usize;
+        let parcels = self.caps.parcels;
         let src = match (sd, so) {
             (dom::SELF, 0) => Store::Inv,
             (dom::LOOSE, o) => Store::Loose(o),
             (dom::EMBRYO, 0) => Store::EmbryoRet,
+            (dom::PARCEL, o) if parcels => Store::Matrix(o),
+            (dom::PORE, o) if parcels => Store::Pore(o),
             _ => return (Outcome::InvalidTarget, 0),
         };
         let dst = match (dd, doff) {
@@ -129,8 +136,13 @@ impl Sim {
             (dom::LOOSE, o) => Store::Loose(o),
             (dom::ACTOR, o) if o > 0 => Store::Actor(o),
             (dom::EMBRYO, 0) => Store::EmbryoRet,
+            (dom::PARCEL, o) if parcels => Store::Matrix(o),
+            (dom::PORE, o) if parcels => Store::Pore(o),
             _ => return (Outcome::InvalidTarget, 0),
         };
+        if (matches!(src, Store::Matrix(_)) || matches!(dst, Store::Matrix(_))) && !crate::world::SOLID[s] {
+            return (Outcome::InvalidTarget, 0);
+        }
         let src_tile = match self.store_tile(i, src) {
             Ok(t) => t,
             Err(e) => return (e, 0),
@@ -153,9 +165,44 @@ impl Sim {
                 return (Outcome::InvalidTarget, 0);
             }
         }
+        // parcel endpoints: object identity (Stale) and access (Blocked).
+        // The captured uid belongs to the source if it is a parcel store, else to the destination.
+        let cap_src = matches!(src, Store::Matrix(_) | Store::Pore(_));
+        for (store, t) in [(src, src_tile), (dst, dst_tile)] {
+            let cur = self.st.world.parcels.get(&t);
+            let captured = (store == src) == cap_src;
+            match store {
+                Store::Pore(_) => {
+                    let Some(p) = cur else { return (Outcome::InvalidTarget, 0) };
+                    if captured && it.parcel_uid != Some(p.uid) {
+                        return (Outcome::Stale, 0);
+                    }
+                    if p.perm() < 32 {
+                        return (Outcome::Blocked, 0);
+                    }
+                }
+                Store::Matrix(_) if store == src => {
+                    let Some(p) = cur else { return (Outcome::Matter, 0) };
+                    if it.parcel_uid != Some(p.uid) {
+                        return (Outcome::Stale, 0);
+                    }
+                    if p.c >= 64 {
+                        return (Outcome::Blocked, 0);
+                    }
+                }
+                Store::Matrix(_) => {
+                    if captured && it.parcel_uid.is_some() && cur.map(|p| p.uid) != it.parcel_uid {
+                        return (Outcome::Stale, 0);
+                    }
+                }
+                _ => {}
+            }
+        }
         let same = match (src, dst) {
             (Store::Inv, Store::Inv) | (Store::EmbryoRet, Store::EmbryoRet) => true,
-            (Store::Loose(_), Store::Loose(_)) => src_tile == dst_tile,
+            (Store::Loose(_), Store::Loose(_))
+            | (Store::Matrix(_), Store::Matrix(_))
+            | (Store::Pore(_), Store::Pore(_)) => src_tile == dst_tile,
             _ => false,
         };
         if same || amount == 0 {
@@ -167,6 +214,8 @@ impl Sim {
             Store::Inv => a.inv[s] as u64,
             Store::Loose(_) => w.loose_total(src_tile, s),
             Store::EmbryoRet => a.embryo.as_ref().unwrap().ret[s] as u64,
+            Store::Matrix(_) => w.parcels.get(&src_tile).map_or(0, |p| p.matrix[s] as u64),
+            Store::Pore(_) => w.parcels[&src_tile].pore[s] as u64,
             Store::Actor(_) => unreachable!(),
         };
         let inv_space = |stock: &[u16; NSPEC]| (INV_VOLUME.saturating_sub(volume(stock)) / VOL[s]) as u64;
@@ -175,16 +224,35 @@ impl Sim {
             Store::Loose(_) => w.loose_space(dst_tile, s),
             Store::Actor(_) => inv_space(&self.st.agents[target.unwrap()].inv),
             Store::EmbryoRet => inv_space(&a.embryo.as_ref().unwrap().ret),
+            Store::Matrix(_) => 64 - w.parcels.get(&dst_tile).map_or(0, |p| p.volume()) as u64,
+            Store::Pore(_) => {
+                let p = &w.parcels[&dst_tile];
+                (p.capacity().saturating_sub(p.pore_volume()) / VOL[s]) as u64
+            }
         };
         let dz = w.elev[dst_tile as usize] as i64 - w.elev[src_tile as usize] as i64;
         let per_unit = 16 + (MASS[s] as i64 * dz).max(0) as u64;
         let by_energy = a.s.budget as u64 / per_unit;
-        let n = (amount as u64).min(avail).min(space).min(by_energy);
+        let mut n = (amount as u64).min(avail).min(space).min(by_energy);
+        // parcel geometry: pore capacity after the change, and no actor under a blocking parcel
+        let mut occupancy = false;
+        if parcels && (matches!(src, Store::Matrix(_) | Store::Pore(_)) || matches!(dst, Store::Matrix(_) | Store::Pore(_))) {
+            while n > 0 {
+                match self.parcel_check(src, src_tile, dst, dst_tile, s, n) {
+                    Ok(()) => break,
+                    Err(Outcome::Blocked) => occupancy = true,
+                    Err(_) => {}
+                }
+                n -= 1;
+            }
+        }
         if n == 0 {
             return if by_energy == 0 {
                 (Outcome::Energy, 0)
             } else if avail == 0 {
                 (Outcome::Matter, 0)
+            } else if occupancy && space > 0 {
+                (Outcome::Blocked, 0)
             } else {
                 (Outcome::Capacity, 0)
             };
@@ -194,6 +262,8 @@ impl Sim {
             Store::Inv => self.st.agents[i].inv[s] -= n as u16,
             Store::Loose(_) => self.st.world.take_loose(src_tile, s, n),
             Store::EmbryoRet => self.st.agents[i].embryo.as_mut().unwrap().ret[s] -= n as u16,
+            Store::Matrix(_) => self.st.world.parcels.get_mut(&src_tile).unwrap().matrix[s] -= n as u16,
+            Store::Pore(_) => self.st.world.parcels.get_mut(&src_tile).unwrap().pore[s] -= n as u16,
             Store::Actor(_) => unreachable!(),
         }
         match dst {
@@ -201,6 +271,24 @@ impl Sim {
             Store::Loose(_) => self.st.world.put_loose(dst_tile, s, n),
             Store::Actor(_) => self.st.agents[target.unwrap()].inv[s] += n as u16,
             Store::EmbryoRet => self.st.agents[i].embryo.as_mut().unwrap().ret[s] += n as u16,
+            Store::Matrix(_) => {
+                if !self.st.world.parcels.contains_key(&dst_tile) {
+                    let uid = self.st.next_parcel_uid;
+                    self.st.next_parcel_uid += 1;
+                    self.st.world.parcels.insert(
+                        dst_tile,
+                        crate::world::Parcel { uid, matrix: [0; NSPEC], pore: [0; NSPEC], c: 0, credit: [[0; 5]; 3] },
+                    );
+                    self.obs.m1.parcels_created += 1;
+                }
+                self.st.world.parcels.get_mut(&dst_tile).unwrap().matrix[s] += n as u16;
+            }
+            Store::Pore(_) => self.st.world.parcels.get_mut(&dst_tile).unwrap().pore[s] += n as u16,
+        }
+        for (store, t) in [(src, src_tile), (dst, dst_tile)] {
+            if matches!(store, Store::Matrix(_) | Store::Pore(_)) {
+                self.parcel_settle(t);
+            }
         }
         self.move_heat(src_tile, dst_tile, n * CAP[s]);
         let me = self.tile_of(i);
@@ -348,6 +436,9 @@ impl Sim {
 
     fn eff_work(&mut self, i: usize, it: &Intent) -> Res {
         let r = it.r;
+        if self.caps.parcels && r[0] == dom::PARCEL {
+            return self.eff_work_parcel(i, it);
+        }
         let req = r[5] as u32;
         match it.sub {
             sub::WORK_COMPRESS | sub::WORK_ABRADE => {
@@ -402,5 +493,70 @@ impl Sim {
             }
             _ => (Outcome::InvalidTarget, 0),
         }
+    }
+}
+
+impl Sim {
+    /// Would moving n units of s between these stores leave every touched parcel valid?
+    fn parcel_check(&self, src: Store, src_tile: u32, dst: Store, dst_tile: u32, s: usize, n: u64) -> Result<(), Outcome> {
+        let mut touched: Vec<(u32, crate::world::Parcel)> = Vec::new();
+        let get = |t: u32, touched: &mut Vec<(u32, crate::world::Parcel)>| -> usize {
+            if let Some(k) = touched.iter().position(|x| x.0 == t) {
+                return k;
+            }
+            let p = self.st.world.parcels.get(&t).cloned().unwrap_or(crate::world::Parcel {
+                uid: 0,
+                matrix: [0; NSPEC],
+                pore: [0; NSPEC],
+                c: 0,
+                credit: [[0; 5]; 3],
+            });
+            touched.push((t, p));
+            touched.len() - 1
+        };
+        let n16 = n as u16;
+        match src {
+            Store::Matrix(_) => {
+                let k = get(src_tile, &mut touched);
+                touched[k].1.matrix[s] -= n16;
+            }
+            Store::Pore(_) => {
+                let k = get(src_tile, &mut touched);
+                touched[k].1.pore[s] -= n16;
+            }
+            _ => {}
+        }
+        match dst {
+            Store::Matrix(_) => {
+                let k = get(dst_tile, &mut touched);
+                touched[k].1.matrix[s] += n16;
+            }
+            Store::Pore(_) => {
+                let k = get(dst_tile, &mut touched);
+                touched[k].1.pore[s] += n16;
+            }
+            _ => {}
+        }
+        for (t, p) in &touched {
+            if p.volume() > 64 || p.pore_volume() > p.capacity() {
+                return Err(Outcome::Capacity);
+            }
+            if p.blocks() && self.st.world.occ[*t as usize] != 0 {
+                return Err(Outcome::Blocked);
+            }
+        }
+        Ok(())
+    }
+
+    /// After a parcel changed: remove it when its matrix is empty, then refresh P and X.
+    pub(crate) fn parcel_settle(&mut self, t: u32) {
+        let w = &mut self.st.world;
+        if w.parcels.get(&t).is_some_and(|p| p.volume() == 0) {
+            let p = w.parcels.remove(&t).unwrap();
+            for s in 0..NSPEC {
+                w.force_loose(t, s, p.pore[s] as u64);
+            }
+        }
+        w.parcel_changed(t);
     }
 }

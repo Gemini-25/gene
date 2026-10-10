@@ -45,6 +45,10 @@ impl Sim {
                 early.push((i, it.clone(), Outcome::Boundary));
                 continue;
             };
+            if self.st.world.blocked(dst) {
+                early.push((i, it.clone(), Outcome::Blocked));
+                continue;
+            }
             let w = &self.st.world;
             let mass = a.mass();
             let fric = 256 + (mass * w.mu_eff(dst)).div_ceil(960);

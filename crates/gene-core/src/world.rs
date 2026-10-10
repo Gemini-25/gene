@@ -8,6 +8,58 @@ use std::collections::BTreeMap;
 pub const BASE_HEAT_CAP: u64 = 1024;
 pub const P_OPEN: u64 = 256;
 
+/// A structure on a tile (M1c, SPEC §20d).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Parcel {
+    pub uid: u64,
+    pub matrix: [u16; NSPEC],
+    pub pore: [u16; NSPEC],
+    pub c: u8,
+    /// Reaction credits per site (matrix, pore, boundary) for Rx2..Rx6.
+    pub credit: [[u16; 5]; 3],
+}
+
+/// Species allowed in a matrix (solids).
+pub const SOLID: [bool; NSPEC] = [false, false, false, true, false, true, true, true, false, true];
+/// Gases (exchange through pores, leave matrices to the loose stock).
+pub const GAS: [bool; NSPEC] = [false, true, true, false, true, false, false, false, true, false];
+
+impl Parcel {
+    pub fn volume(&self) -> u32 {
+        volume(&self.matrix)
+    }
+
+    pub fn pore_volume(&self) -> u32 {
+        volume(&self.pore)
+    }
+
+    /// Permeability P = max(1, 256 - floor(s*c/64)).
+    pub fn perm(&self) -> u16 {
+        256u32.saturating_sub(self.volume() * self.c as u32 / 64).max(1) as u16
+    }
+
+    /// Pore capacity K = 64 - ceil(s*c/256) for a given matrix volume and compression.
+    pub fn capacity_for(s: u32, c: u8) -> u32 {
+        64u32.saturating_sub((s * c as u32).div_ceil(256))
+    }
+
+    pub fn capacity(&self) -> u32 {
+        Self::capacity_for(self.volume(), self.c)
+    }
+
+    pub fn blocks(&self) -> bool {
+        self.volume() >= 16 && self.c >= 128
+    }
+
+    pub fn matter(&self) -> [u64; NSPEC] {
+        let mut m = [0u64; NSPEC];
+        for i in 0..NSPEC {
+            m[i] = self.matrix[i] as u64 + self.pore[i] as u64;
+        }
+        m
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct World {
     pub w: u32,
@@ -19,6 +71,8 @@ pub struct World {
     pub surface_c: Vec<u8>,
     pub loose: Vec<[u16; NSPEC]>,
     pub residue: BTreeMap<u32, [u64; NSPEC]>,
+    /// Structures by tile (M1c).
+    pub parcels: BTreeMap<u32, Parcel>,
     pub heat_u: Vec<u64>,
     /// Reaction credits for Rx2..Rx6 at the loose site.
     pub rx_credit: Vec<[u16; 5]>,
@@ -34,6 +88,12 @@ pub struct World {
     /// Derived: edges grouped by (bucket * 4 + color).
     #[serde(skip)]
     pub edges: Vec<Vec<(u32, u32)>>,
+    /// Derived: permeability P per tile (256 without a parcel).
+    #[serde(skip)]
+    pub perm: Vec<u16>,
+    /// Derived: min(8, metal M in the tile's matrix) for conduction.
+    #[serde(skip)]
+    pub metal: Vec<u8>,
 }
 
 /// Relative direction offsets in absolute frame for orientation 0..3 (N, E, S, W).
@@ -164,23 +224,57 @@ impl World {
     pub fn mu_eff(&self, t: u32) -> u64 {
         let mu = self.mu[t as usize] as u64;
         let surf = mu.saturating_sub(self.surface_c[t as usize] as u64 / 2).max(64);
-        mu.min(surf)
+        let mut m = mu.min(surf);
+        if let Some(p) = self.parcels.get(&t) {
+            let s = p.volume() as u64;
+            if !p.blocks() && s >= 4 && p.c >= 64 {
+                m = m.min(mu.saturating_sub(p.c as u64 * s / 16).max(64));
+            }
+        }
+        m
+    }
+
+    pub fn blocked(&self, t: u32) -> bool {
+        self.parcels.get(&t).is_some_and(|p| p.blocks())
+    }
+
+    /// Recompute P, metal and exposure X around tile t after its parcel changed.
+    pub fn parcel_changed(&mut self, t: u32) {
+        let p = self.parcels.get(&t);
+        self.perm[t as usize] = p.map_or(P_OPEN as u16, |p| p.perm());
+        self.metal[t as usize] = p.map_or(0, |p| p.matrix[M].min(8) as u8);
+        self.update_expo(t);
+        for d in 0..4 {
+            if let Some(nb) = self.neighbor(t, d) {
+                self.update_expo(nb);
+            }
+        }
+    }
+
+    fn update_expo(&mut self, t: u32) {
+        let ps = self.perm[t as usize] as u64;
+        let mut sum = ps;
+        for d in 0..4 {
+            if let Some(nb) = self.neighbor(t, d) {
+                sum += ps.min(self.perm[nb as usize] as u64);
+            }
+        }
+        self.expo[t as usize] = (sum / 5).max(1) as u16;
     }
 
     pub fn rebuild_static_caches(&mut self) {
         let n = self.n();
-        // exposure: P=256 inside, 0 outside the map.
-        self.expo = (0..n as u32)
-            .map(|t| {
-                let mut sum = P_OPEN;
-                for d in 0..4 {
-                    if self.neighbor(t, d).is_some() {
-                        sum += P_OPEN;
-                    }
-                }
-                (sum / 5).max(1) as u16
-            })
-            .collect();
+        self.perm = vec![P_OPEN as u16; n];
+        self.metal = vec![0; n];
+        for (t, p) in &self.parcels {
+            self.perm[*t as usize] = p.perm();
+            self.metal[*t as usize] = p.matrix[M].min(8) as u8;
+        }
+        // exposure X from P (0 outside the map)
+        self.expo = vec![0; n];
+        for t in 0..n as u32 {
+            self.update_expo(t);
+        }
         // edges by bucket and color
         let mut edges = vec![Vec::new(); 32];
         for y in 0..self.h {
@@ -268,6 +362,9 @@ pub fn generate(seed: u64, w: u32, h: u32) -> World {
     let mut world = World {
         w,
         h,
+        parcels: BTreeMap::new(),
+        perm: vec![],
+        metal: vec![],
         elev: height.iter().map(|v| (v / 4096) as i16).collect(),
         mu: moisture.iter().map(|v| 256 + v / 128).collect(),
         lpeak: light.iter().map(|v| 32768 + v / 2).collect(),

@@ -245,7 +245,7 @@ impl Sim {
         let abs = (self.st.agents[i].orient + dir as u8) & 3;
         let me = self.tile_of(i);
         let Some(t) = self.st.world.neighbor(me, abs) else { return Some((Outcome::Boundary, 0)) };
-        if self.st.world.occ[t as usize] != 0 || self.reserved.contains(&t) {
+        if self.st.world.occ[t as usize] != 0 || self.reserved.contains(&t) || self.st.world.blocked(t) {
             return Some((Outcome::Blocked, 0));
         }
         self.reserved.insert(t);

@@ -226,7 +226,7 @@ fn snapshot(sim: &Sim, cache: &HashCache, ctl: &Control, tps: f64) -> String {
     format!(
         "{{\"tick\":{tick},\"day\":{},\"phase\":{p},\"light\":{light:.3},\"pop\":{},\"births\":{},\"deaths\":{},\
 \"genomes\":{},\"tps\":{tps:.1},\"paused\":{},\"speed\":{},\"w\":{},\"h\":{},\"seed\":{},\"ruleset\":\"{}\",\
-\"signal\":[{}],\"agents\":{{\"uid\":[{}],\"x\":[{}],\"y\":[{}],\"c\":[{}],\"e\":[{}],\"g\":[{}],\"emb\":[{}]}}}}",
+\"signal\":[{}],\"parcels\":[{}],\"agents\":{{\"uid\":[{}],\"x\":[{}],\"y\":[{}],\"c\":[{}],\"e\":[{}],\"g\":[{}],\"emb\":[{}]}}}}",
         tick / 4096,
         ag.len(),
         sim.obs.total_births,
@@ -239,6 +239,12 @@ fn snapshot(sim: &Sim, cache: &HashCache, ctl: &Control, tps: f64) -> String {
         sim.st.config.seed,
         sim.st.ruleset,
         sim.st.signal.iter().take(20000).map(|(k, v)| format!("{},{},{}", k >> 2, k & 3, v)).collect::<Vec<_>>().join(","),
+        w.parcels
+            .iter()
+            .take(50000)
+            .map(|(t, p)| format!("{},{},{}", t, p.volume(), p.c))
+            .collect::<Vec<_>>()
+            .join(","),
         list(&|a| a.uid.to_string()),
         list(&|a| a.x.to_string()),
         list(&|a| a.y.to_string()),

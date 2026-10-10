@@ -30,6 +30,8 @@ pub struct Sense<'a> {
     pub tick: u64,
     /// M1a capabilities (signals, public tape, drafts).
     pub m1: bool,
+    /// M1c parcels.
+    pub parcels: bool,
     pub signal: &'a BTreeMap<u64, i16>,
     pub dropped: &'a BTreeMap<u32, Vec<Media>>,
 }
@@ -56,8 +58,21 @@ fn sense_tile(a: &Agent, w: &World, dx: i16, dy: i16, radius: i32) -> Result<u32
     if dx.abs() + dy.abs() > radius {
         return Err(Fault::BadAddress);
     }
+    let me = w.idx(a.x as u32, a.y as u32);
     let (ax, ay) = rotate(a.orient, dx, dy);
-    w.offset(w.idx(a.x as u32, a.y as u32), ax, ay).ok_or(Fault::Boundary)
+    let t = w.offset(me, ax, ay).ok_or(Fault::Boundary)?;
+    // distance 2: visible if one of the axis-order shortest paths has an open middle tile
+    if dx.abs() + dy.abs() == 2 && !w.parcels.is_empty() {
+        let mids: &[(i32, i32)] = if dx == 0 || dy == 0 { &[(dx / 2, dy / 2)] } else { &[(dx, 0), (0, dy)] };
+        let open = mids.iter().any(|&(mx, my)| {
+            let (rx, ry) = rotate(a.orient, mx, my);
+            w.offset(me, rx, ry).is_some_and(|m| !w.blocked(m))
+        });
+        if !open {
+            return Err(Fault::Occluded);
+        }
+    }
+    Ok(t)
 }
 
 fn read(a: &mut Agent, s: &Sense) -> Result<u16, Fault> {
@@ -99,11 +114,27 @@ fn read(a: &mut Agent, s: &Sense) -> Result<u16, Fault> {
             Ok(w.loose_visible(t, index as usize))
         }
         dom::PARCEL => {
-            sense_tile(a, w, r[1] as i16, r[2] as i16, SENSE_RADIUS)?;
-            if field == 6 {
-                Ok(0)
-            } else {
-                bad
+            let t = sense_tile(a, w, r[1] as i16, r[2] as i16, SENSE_RADIUS)?;
+            let p = if s.parcels { w.parcels.get(&t) } else { None };
+            match (field, p) {
+                (6, p) => Ok(p.is_some() as u16),
+                (_, None) => bad,
+                (0, Some(p)) if index < 10 => Ok(p.matrix[index as usize]),
+                (1, Some(p)) => Ok(p.c as u16),
+                (2, Some(_)) => Ok(0),
+                (3, Some(_)) if index < 4 => Ok(0),
+                (4, Some(_)) => Ok(0),
+                (5, Some(p)) => Ok(p.capacity() as u16),
+                _ => bad,
+            }
+        }
+        dom::PORE if s.parcels => {
+            let t = sense_tile(a, w, r[1] as i16, r[2] as i16, SENSE_RADIUS)?;
+            let p = w.parcels.get(&t).ok_or(Fault::BadAddress)?;
+            match field {
+                0 if index < 10 => Ok(p.pore[index as usize]),
+                1 => Ok(p.capacity() as u16),
+                _ => bad,
             }
         }
         dom::ACTOR => {
@@ -218,6 +249,31 @@ fn capture_copy(a: &Agent, s: &Sense) -> Option<CopyCapture> {
         }
     }
     Some(CopyCapture { src_tile, src_uid: media.uid, src_rev: media.revision, bytes })
+}
+
+/// Parcel on the first parcel endpoint of a TRANSFER, or at the WORK position.
+fn capture_parcel(a: &Agent, s: &Sense, opc: u8) -> Option<u64> {
+    let r = a.vm.regs;
+    let me = s.world.idx(a.x as u32, a.y as u32);
+    let t = match opc {
+        op::TRANSFER => {
+            let (sd, so) = unpack(r[0])?;
+            let (dd, doff) = unpack(r[1])?;
+            let off = if matches!(sd, dom::PARCEL | dom::PORE) {
+                so
+            } else if matches!(dd, dom::PARCEL | dom::PORE) {
+                doff
+            } else {
+                return None;
+            };
+            let (dx, dy) = OFFSETS[off as usize];
+            let (ax, ay) = rotate(a.orient, dx, dy);
+            s.world.offset(me, ax, ay)?
+        }
+        op::WORK if r[0] == dom::PARCEL => sense_tile(a, s.world, r[1] as i16, r[2] as i16, 1).ok()?,
+        _ => return None,
+    };
+    s.world.parcels.get(&t).map(|p| p.uid)
 }
 
 fn capture_target(a: &Agent, s: &Sense) -> Option<u64> {
@@ -409,7 +465,8 @@ pub fn think(a: &mut Agent, s: &Sense, ctrl_key: [u32; 2]) {
                     r8.copy_from_slice(&a.vm.regs[..8]);
                     let copy = if opc == op::COPY { capture_copy(a, s) } else { None };
                     let target_uid = if opc == op::TRANSFER { capture_target(a, s) } else { None };
-                    a.s.intent = Some(Intent { opc, sub: imm, r: r8, copy, target_uid });
+                    let parcel_uid = if s.parcels { capture_parcel(a, s, opc) } else { None };
+                    a.s.intent = Some(Intent { opc, sub: imm, r: r8, copy, target_uid, parcel_uid });
                 }
                 break;
             }

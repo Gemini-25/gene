@@ -13,6 +13,7 @@ pub mod media;
 pub mod motion;
 pub mod mutation;
 pub mod observer;
+pub mod parcels;
 pub mod records;
 pub mod repro;
 pub mod rng;

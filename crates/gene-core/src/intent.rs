@@ -53,6 +53,8 @@ pub struct Intent {
     pub copy: Option<CopyCapture>,
     /// Occupant uid captured at Think for ActorInventory destinations.
     pub target_uid: Option<u64>,
+    /// Parcel uid captured at Think for parcel endpoints (M1c).
+    pub parcel_uid: Option<u64>,
 }
 
 pub mod sub {

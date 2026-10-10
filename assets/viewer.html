@@ -188,6 +188,18 @@ function draw() {
       ctx.fillRect(x - 0.5, y - 0.5, 2, 2);
     }
   }
+  if (state.parcels && state.parcels.length) {
+    const pc = state.parcels;
+    for (let k = 0; k < pc.length; k += 3) {
+      const t = pc[k], s = pc[k + 1], c = pc[k + 2];
+      const x = t % W, y = Math.floor(t / W);
+      const blocks = s >= 16 && c >= 128;
+      const shade = Math.round(blocks ? 70 : 200 - Math.min(120, c / 2));
+      ctx.fillStyle = `rgb(${shade},${shade - 10},${shade - 25})`;
+      const inset = blocks ? 0 : 0.18;
+      ctx.fillRect(x + inset, y + inset, 1 - 2 * inset, 1 - 2 * inset);
+    }
+  }
   const a = state.agents, n = a.uid.length;
   const s = view.scale;
   const size = s >= 3 ? 1 : Math.min(3, 2 / s);

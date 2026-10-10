@@ -4,7 +4,6 @@ use crate::agent::INV_VOLUME;
 use crate::rng::{permutation, sr, stream_key, Domain, Stream};
 use crate::sim::Sim;
 use crate::species::*;
-use crate::world::P_OPEN;
 
 const GASES: [usize; 4] = [C, O, H, V];
 
@@ -14,6 +13,9 @@ impl Sim {
         let bucket = (tick % 8) as usize;
         let mut st = Stream::new(stream_key(self.st.config.seed, Domain::Resolve, 0, 7), tick);
         let perm = permutation(&mut st, 4);
+        if self.caps.parcels && !self.st.world.parcels.is_empty() {
+            self.pore_exchange();
+        }
         let keys = self.keys.edge;
         let threads = self.threads.max(1);
         if threads > 1 && self.pool.is_none() {
@@ -36,7 +38,7 @@ impl Sim {
                     residue: Some(&mut w.residue),
                 };
                 for &(a, b) in &list {
-                    edge_flux(&mut band, &w.elev, &keys, a, b, tick);
+                    edge_flux(&mut band, &w.elev, &w.perm, &w.metal, &keys, a, b, tick);
                 }
                 w.edges[slot] = list;
             }
@@ -73,6 +75,7 @@ impl Sim {
         let rows = (w.h as usize).div_ceil(threads) as u32;
         let keys = self.keys.loose_rx;
         let dropped = &self.st.dropped;
+        let parcels = &w.parcels;
         let occ = &w.occ;
         let (lpeak, expo, heat_c) = (&w.lpeak, &w.expo, &w.heat_c);
         let mut heat_u: &mut [u64] = &mut w.heat_u;
@@ -108,7 +111,7 @@ impl Sim {
                     // first due tile of the band
                     let mut t = band.base + ((tick % 16) as u32 + 16 - band.base % 16) % 16;
                     while t < end {
-                        if occ[t as usize] != 0 || dropped.contains_key(&t) {
+                        if occ[t as usize] != 0 || dropped.contains_key(&t) || parcels.contains_key(&t) {
                             band.complex.push(t);
                         } else {
                             env_simple(band, t, tick, lpeak[t as usize] as u64, expo[t as usize] as u64, &keys);
@@ -199,6 +202,9 @@ impl Sim {
         }
         // 4. external chemistry at the loose site
         self.loose_chemistry(t, x, tick);
+        if self.caps.parcels {
+            self.parcel_chemistry(t, x, tick);
+        }
         self.phase_changes(t);
         self.media_chemistry(t, x, tick);
         if self.caps.m1 {
@@ -432,9 +438,19 @@ impl Band<'_> {
     }
 }
 
-fn edge_flux(band: &mut Band, elev: &[i16], keys: &[[u32; 2]; NSPEC], a: u32, b: u32, tick: u64) {
+#[allow(clippy::too_many_arguments)]
+fn edge_flux(
+    band: &mut Band,
+    elev: &[i16],
+    perm: &[u16],
+    metal: &[u8],
+    keys: &[[u32; 2]; NSPEC],
+    a: u32,
+    b: u32,
+    tick: u64,
+) {
     let object = (a as u64) << 32 | b as u64;
-    let min_p = P_OPEN;
+    let min_p = perm[a as usize].min(perm[b as usize]) as u64;
     for s in GASES {
         let (na, nb) = (band.total(a, s), band.total(b, s));
         if na == nb {
@@ -457,7 +473,8 @@ fn edge_flux(band: &mut Band, elev: &[i16], keys: &[[u32; 2]; NSPEC], a: u32, b:
             flow(band, elev, src, dst, W, cand);
         }
     }
-    conduct(band, a, b);
+    let m = (metal[a as usize] + metal[b as usize]).min(8) as u64;
+    conduct(band, a, b, min_p, m);
 }
 
 /// Move up to `cand` units of species s from src to dst with heat and potential energy.
@@ -490,7 +507,7 @@ fn flow(band: &mut Band, elev: &[i16], src: u32, dst: u32, s: usize, cand: u64) 
     }
 }
 
-fn conduct(band: &mut Band, a: u32, b: u32) {
+fn conduct(band: &mut Band, a: u32, b: u32, min_p: u64, metal: u64) {
     let (ua, ub) = (*band.u(a), *band.u(b));
     let (ca, cb) = (*band.c(a), *band.c(b));
     let (ta, tb) = (ua / ca, ub / cb);
@@ -498,7 +515,7 @@ fn conduct(band: &mut Band, a: u32, b: u32) {
         return;
     }
     let (hot, cold, dt, ch, cc) = if ta > tb { (a, b, ta - tb, ca, cb) } else { (b, a, tb - ta, cb, ca) };
-    let kappa = (ch.min(cc) * P_OPEN / 16384).max(1);
+    let kappa = (ch.min(cc) * min_p / 16384).max(1) + metal;
     let mut q = kappa * dt;
     // cap = floor(dt*ch*cc/(ch+cc)); divide only when the cap binds
     if q as u128 * (ch as u128 + cc as u128) > dt as u128 * ch as u128 * cc as u128 {
@@ -547,7 +564,7 @@ fn transport_parallel(
         parts.push(head);
         rest = tail;
     }
-    let elev = &w.elev;
+    let (elev, perm, metal) = (&w.elev, &w.perm, &w.metal);
     let mut loose: &mut [[u16; NSPEC]] = &mut w.loose;
     let mut heat_u: &mut [u64] = &mut w.heat_u;
     let mut heat_c: &mut [u64] = &mut w.heat_c;
@@ -566,7 +583,7 @@ fn transport_parallel(
         for (mut band, edges) in bands.into_iter().zip(parts) {
             sc.spawn(move |_| {
                 for &(a, b) in edges {
-                    edge_flux(&mut band, elev, keys, a, b, tick);
+                    edge_flux(&mut band, elev, perm, metal, keys, a, b, tick);
                 }
             });
         }

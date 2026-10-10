@@ -668,6 +668,66 @@ M1b는 M1a에 DraftCommit과 learned binding을 더한다(원본 §21). 살아 �
 
 **생식.** 자식은 배아 raw에 실제로 쓴 bytes만 상속한다. learned는 자동으로 복사되지 않는다. 구조 변이 Recombine의 donor에는 inherited와 learned module이 포함된다.
 
+## 20d. M1c: 구조물 parcel (ruleset `gene-m1-3`)
+
+M1c는 M1b에 parcel을 더한다(원본 §10, §11, §12, §16, §17, §18, §63). 결합(LINK/UNLINK), grip, anchor, 밀기, 조립체 이동, parcel 매체는 M1d로 미룬다.
+
+**상태.** tile마다 parcel이 최대 하나다.
+- 필드: ParcelUID, matrix[10](G, X, M, S, I만 허용, 유효 부피 합 s ≤ 64), pore[10], 압축도 c(0..255), 반응 credit.
+- 투과도: P = max(1, 256 − floor(s·c/64)). parcel이 없으면 P = 256이다.
+- pore 용량: K = 64 − ceil(s·c/256). pore의 유효 부피 합은 K 이하다.
+- 높이: ceil(s/16). s ≥ 16이고 c ≥ 128이면 개체를 막는다(차단 parcel). 그 밖에는 개체와 같은 tile에 있을 수 있다.
+
+**생성과 제거.**
+- TRANSFER의 목적지가 Matrix(2)이고 그 tile에 parcel이 없으면, 새 parcel(c = 0)을 만들고 그 안에 넣는다. 고체가 아닌 종은 InvalidTarget이다.
+- matrix에서 꺼내기는 c < 64일 때만 가능하다(아니면 Blocked).
+- s가 0이 되면 pore 내용물은 loose로 돌아가고, parcel은 사라지며 credit도 함께 사라진다.
+- 개체가 서 있는 tile을 차단 parcel로 만드는 행동(입고, 압축)은 Blocked다.
+
+**pore 출입.** 개체의 능동 출입(TRANSFER Pore 10)은 그 parcel의 P ≥ 32일 때만 가능하다. 용량 K를 넘으면 Capacity다.
+
+**WORK.**
+- 대상: Parcel(2), r1·r2는 접촉 반경 1이다.
+- Compress: 64q당 c + 1. Abrade: 256q당 c − 1.
+- 압축 결과 K가 pore 내용물보다 작아지거나, 개체가 있는 tile이 차단되면 그 단위는 진행하지 않는다.
+
+**노출과 수송.**
+- X는 기존 식 그대로 P로 계산하고, parcel이 바뀌면 그 tile과 이웃 4칸의 X를 다시 계산한다.
+- edge 수송의 minP는 두 tile의 P 중 작은 값이다.
+- 열전도 κ에는 min(8, 두 matrix의 M 합)을 더한다.
+- 그래서 차폐가 빛, 외기, 확산, 열전도를 함께 줄인다.
+
+**자연 pore 교환(stage 7, 수송 전).** due parcel마다 기체 C, O, H, V 순서로, 이어서 W를 처리한다.
+- d = n_loose·K − n_pore·64. d > 0이면 loose → pore, d < 0이면 반대 방향이다.
+- 양 = min(32, SR(|d|·P, 64·2048))이고, W는 분모 64·8192를 쓴다.
+- 원천 재고와 목적지 여유로 다시 제한한다. 같은 tile 안의 이동이므로 열과 Ug는 변하지 않는다.
+- RNG는 FluxRng domain 9(PoreFlux), selector = 종, object = ParcelUID다.
+
+**화학.** site 순서는 Loose → Matrix → Pore → PoreBoundary → 버려진 기록(UID 순)이다.
+
+| site | 반응 | 반응물 출처 | 생성물 행선지 |
+| --- | --- | --- | --- |
+| Matrix | Rx2..Rx6 | 응축 반응물은 matrix, 기체는 tile loose | 고체는 matrix, 기체·액체는 loose |
+| Pore | Rx2..Rx6 | pore 자기 재고 | pore |
+| PoreBoundary | Rx2, Rx5, Rx6만 | 응축은 pore, 기체는 loose | 기체는 loose, 응축은 pore |
+
+- 일반 site의 credit 증가는 SR(rate·X·min(16, extent), 256)이다.
+- PoreBoundary는 SR(rate·X·P·min(16, extent), 65536)이다.
+- 공간·용량 검사는 기존 규칙을 그대로 따른다.
+- 반응 후 s나 c가 바뀌어 matrix 부피 상한을 넘을 수 있으면 그 extent는 거절한다.
+- credit RNG는 domain 10, selector = (site_kind << 8) | 반응, object = ParcelUID다. site_kind는 Matrix 1, Pore 2, PoreBoundary 4다.
+
+**감각.**
+- Parcel READ field: 0 matrix[r4], 1 c, 2 방향(0), 3 bond(0), 4 anchor(0), 5 pore 용량, 6 present.
+- PoreStock READ field: 0 재고[r4], 1 용량.
+- 거리 2 감각은 두 축 순서의 최단 경로 중 하나라도 중간 tile이 열려 있으면(s < 16 또는 c < 128) 보인다. 둘 다 막혀 있으면 Occluded다.
+
+**이동.**
+- 차단 parcel이 있는 tile로는 이동하거나 출생할 수 없다(Blocked).
+- 통과 가능한 parcel(s ≥ 4, c ≥ 64)의 마찰은 μparcel = max(64, μ − floor(c·s/16))이고, μeff에 포함된다.
+
+**장부.** parcel의 matrix와 pore는 tile의 물질이다. 열용량, 질량·Ug, 원자 수, 엔탈피에 모두 들어간다.
+
 ## 21. 확장 규칙과 로드맵
 
 ### 증거 규칙 (원본 §62를 강제 규칙으로 승격)

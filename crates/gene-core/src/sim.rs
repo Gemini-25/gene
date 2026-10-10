@@ -17,20 +17,24 @@ pub const RULESET: &str = "gene-m0-1";
 pub const RULESET_M1: &str = "gene-m1-1";
 /// M1b: M1a + DraftCommit / learned binding (SPEC §20c).
 pub const RULESET_M1B: &str = "gene-m1-2";
+/// M1c: M1b + parcels (SPEC §20d).
+pub const RULESET_M1C: &str = "gene-m1-3";
 
 /// Capabilities switched on by the ruleset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Caps {
     pub m1: bool,
     pub commit: bool,
+    pub parcels: bool,
 }
 
 impl Caps {
     pub fn of(ruleset: &str) -> Option<Caps> {
         match ruleset {
-            RULESET => Some(Caps { m1: false, commit: false }),
-            RULESET_M1 => Some(Caps { m1: true, commit: false }),
-            RULESET_M1B => Some(Caps { m1: true, commit: true }),
+            RULESET => Some(Caps { m1: false, commit: false, parcels: false }),
+            RULESET_M1 => Some(Caps { m1: true, commit: false, parcels: false }),
+            RULESET_M1B => Some(Caps { m1: true, commit: true, parcels: false }),
+            RULESET_M1C => Some(Caps { m1: true, commit: true, parcels: true }),
             _ => None,
         }
     }
@@ -79,6 +83,7 @@ pub struct SimState {
     pub atoms0: [u128; NELEM],
     /// Current signal field (nonzero entries only), key = tile << 2 | channel.
     pub signal: BTreeMap<u64, i16>,
+    pub next_parcel_uid: u64,
 }
 
 /// Cached FluxRng keys.
@@ -88,6 +93,10 @@ pub struct FluxKeys {
     /// Loose site keys for Rx2..Rx6.
     pub loose_rx: [[u32; 2]; 5],
     pub media_rx2: [u32; 2],
+    /// Parcel sites (matrix, pore, boundary) for Rx2..Rx6.
+    pub parcel_rx: [[[u32; 2]; 5]; 3],
+    /// Pore exchange per species.
+    pub pore: [[u32; 2]; NSPEC],
 }
 
 pub struct Sim {
@@ -210,6 +219,7 @@ impl Sim {
             e0: 0,
             atoms0: [0; NELEM],
             signal: BTreeMap::new(),
+            next_parcel_uid: 1,
         };
         let mut sim = Sim::from_state_unchecked(st);
         // Initial temperature 300 everywhere, after all matter is placed.
@@ -243,6 +253,14 @@ impl Sim {
             keys.loose_rx[k] = rng::flux_key(seed, FluxDomain::ReactionRound, rx.id as u32);
         }
         keys.media_rx2 = rng::flux_key(seed, FluxDomain::ReactionRound, (3 << 8) | 2);
+        for (si, kind) in [1u32, 2, 4].iter().enumerate() {
+            for (k, rx) in CREDIT_REACTIONS.iter().enumerate() {
+                keys.parcel_rx[si][k] = rng::flux_key(seed, FluxDomain::ReactionRound, (kind << 8) | rx.id as u32);
+            }
+        }
+        for s in 0..NSPEC {
+            keys.pore[s] = rng::flux_key(seed, FluxDomain::PoreFlux, s as u32);
+        }
         let caps = Caps::of(&st.ruleset).unwrap_or_default();
         let mut sim = Sim {
             st,
@@ -295,6 +313,9 @@ impl Sim {
                 c[*t as usize] += m.present_pages() as u64 * CAP[G];
             }
         }
+        for (t, p) in &w.parcels {
+            c[*t as usize] += heat_cap(&p.matter());
+        }
         c
     }
 
@@ -328,6 +349,11 @@ impl Sim {
                 energy += enthalpy(&m) + mass(&m) as i128 * w.elev[*t as usize] as i128;
                 add_atoms(&mut atoms, &m);
             }
+        }
+        for (t, p) in &w.parcels {
+            let m = p.matter();
+            energy += enthalpy(&m) + mass(&m) as i128 * w.elev[*t as usize] as i128;
+            add_atoms(&mut atoms, &m);
         }
         let f = &self.st.flows;
         let expected = self.st.e0 + f.solar_in as i128 + f.sky_in as i128 - f.radiation_out as i128;
@@ -498,6 +524,7 @@ impl Sim {
             faces: &self.faces,
             tick: self.st.tick,
             m1: self.caps.m1,
+            parcels: self.caps.parcels,
             signal: &self.st.signal,
             dropped: &self.st.dropped,
         };
@@ -667,7 +694,7 @@ impl Sim {
             self.st.agents[i].receipt = Some((crate::intent::Outcome::Stale as u8, 0));
             return None;
         }
-        if w.occ[bt as usize] != 0 {
+        if w.occ[bt as usize] != 0 || w.blocked(bt) {
             self.st.agents[i].receipt = Some((crate::intent::Outcome::Blocked as u8, 0));
             return None;
         }

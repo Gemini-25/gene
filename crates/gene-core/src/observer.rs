@@ -97,6 +97,8 @@ pub struct M1Stats {
     pub foreign_births: u64,
     pub commits: u64,
     pub adoptions: u64,
+    pub parcels_created: u64,
+    pub parcel_reactions: u64,
 }
 
 #[derive(Clone, Debug, Default)]
