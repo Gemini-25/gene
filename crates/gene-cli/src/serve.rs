@@ -32,6 +32,7 @@ struct Shared {
     agents: Arc<Vec<u8>>,
     history: Arc<String>,
     behaviors: Arc<String>,
+    groups: Arc<String>,
     timeline: Arc<String>,
 }
 
@@ -57,6 +58,7 @@ pub fn serve(sim: Sim, o: ServeOpts) {
         agents: Arc::new(vec![0; 4]),
         history: Arc::new(String::from("{}")),
         behaviors: Arc::new(String::from("{}")),
+        groups: Arc::new(String::from("{}")),
         timeline: Arc::new(String::from("{}")),
     }));
     let (tx, rx) = mpsc::channel::<Req>();
@@ -222,6 +224,8 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
     let mut behavior = gene_core::behavior::Analyzer::default();
     let mut recent: Recent = HashMap::new();
     sim.obs.facts = Some(Vec::new());
+    let mut graph = gene_core::relations::Graph::default();
+    sim.obs.rel = Some(Vec::new());
     let mut timeline = Timeline { every: 4096, budget: 400_000_000, points: Vec::new() };
     timeline.record(&sim);
     let mut epoch = Instant::now();
@@ -241,9 +245,11 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                                 s.threads = sim.threads;
                                 sim = s;
                                 sim.obs.facts = Some(Vec::new());
+                                sim.obs.rel = Some(Vec::new());
                                 timeline.points.truncate(k + 1);
                                 hist.truncate(t);
                                 behavior = gene_core::behavior::Analyzer::default();
+                                graph = gene_core::relations::Graph::default();
                                 recent.clear();
                                 cache.refresh(&sim);
                                 shared.lock().unwrap().control.paused = true;
@@ -292,9 +298,15 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                 }
                 q.push_back(f);
             }
+            for f in sim.obs.rel.as_mut().unwrap().drain(..) {
+                graph.push(&f);
+            }
             if sim.st.tick % 4096 == 0 {
                 let alive: HashSet<u64> = sim.st.agents.iter().map(|a| a.uid).collect();
                 recent.retain(|u, _| alive.contains(u));
+                if graph.advance(sim.st.tick, &|u| alive.contains(&u)) {
+                    shared.lock().unwrap().groups = Arc::new(groups_json(&graph, sim.st.tick));
+                }
             }
             if sim.st.tick % 256 == 0 {
                 cache.refresh(&sim);
@@ -423,6 +435,53 @@ fn json_str(s: &str) -> String {
 }
 
 /// The most recently confirmed repeated behaviours (original §58) and the analysis counts.
+/// Groups of the last closed relation window (original §29), with the latest group events.
+fn groups_json(g: &gene_core::relations::Graph, tick: u64) -> String {
+    use gene_core::relations::{GroupEvent, MEDIA, PARCEL};
+    let groups: Vec<String> = g
+        .groups
+        .iter()
+        .map(|x| {
+            let agents: Vec<String> = x.agents.iter().map(|a| a.to_string()).collect();
+            format!(
+                "{{\"id\":{},\"agents\":[{}],\"parcels\":{},\"media\":{},\"kinds\":{},\"weight\":{},\"windows\":{},\"border\":{},\"hub\":{},\"civ\":{},\"parent\":{}}}",
+                x.id,
+                agents.join(","),
+                x.others.iter().filter(|n| n.0 == PARCEL).count(),
+                x.others.iter().filter(|n| n.0 == MEDIA).count(),
+                x.kinds,
+                x.weight,
+                x.windows,
+                x.border,
+                x.hub,
+                x.civ,
+                x.parent.map_or("null".into(), |p| p.to_string())
+            )
+        })
+        .collect();
+    let events: Vec<String> = g
+        .events
+        .iter()
+        .rev()
+        .take(12)
+        .map(|e| match e {
+            GroupEvent::New { window, id } => format!("{{\"w\":{window},\"kind\":\"new\",\"id\":{id}}}"),
+            GroupEvent::Split { window, id, from } => format!("{{\"w\":{window},\"kind\":\"split\",\"id\":{id},\"from\":{from}}}"),
+            GroupEvent::Merge { window, into, from } => format!("{{\"w\":{window},\"kind\":\"merge\",\"id\":{into},\"from\":{from}}}"),
+            GroupEvent::Ended { window, id } => format!("{{\"w\":{window},\"kind\":\"ended\",\"id\":{id}}}"),
+            GroupEvent::Civ { window, id, agents } => format!("{{\"w\":{window},\"kind\":\"civ\",\"id\":{id},\"agents\":{agents}}}"),
+        })
+        .collect();
+    format!(
+        "{{\"tick\":{tick},\"totals\":[{},{},{}],\"groups\":[{}],\"events\":[{}]}}",
+        g.totals[0],
+        g.totals[1],
+        g.totals[2],
+        groups.join(","),
+        events.join(",")
+    )
+}
+
 fn behaviors_json(an: &gene_core::behavior::Analyzer) -> String {
     let mut rep: Vec<&gene_core::behavior::Family> = an.families.iter().filter(|f| f.repeated_at.is_some()).collect();
     rep.sort_by_key(|f| std::cmp::Reverse((f.repeated_at, f.id)));
@@ -704,6 +763,10 @@ fn handle(mut stream: TcpStream, shared: &Arc<Mutex<Shared>>, tx: &mpsc::Sender<
         "/api/agent" => {
             let uid = query(q, "uid").and_then(|v| v.parse().ok()).unwrap_or(0);
             let s = ask(tx, |r| Req::Agent(uid, r)).unwrap_or_else(|| "{\"error\":\"timeout\"}".into());
+            respond(&mut stream, "200 OK", json, s.as_bytes())
+        }
+        "/api/groups" => {
+            let s = shared.lock().unwrap().groups.clone();
             respond(&mut stream, "200 OK", json, s.as_bytes())
         }
         "/api/behaviors" => {

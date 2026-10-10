@@ -171,6 +171,8 @@ impl EffectFact {
 pub struct Observer {
     /// Resolved effects for behaviour analysis; collected only when Some.
     pub facts: Option<Vec<EffectFact>>,
+    /// Interactions for the relation graph (original §58); collected only when Some.
+    pub rel: Option<Vec<crate::relations::RelFact>>,
     pub m1: M1Stats,
     pub tick: TickStats,
     pub acc: TickStats,

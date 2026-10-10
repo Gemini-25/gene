@@ -18,6 +18,7 @@ pub mod mutation;
 pub mod observer;
 pub mod parcels;
 pub mod records;
+pub mod relations;
 pub mod repro;
 pub mod rng;
 pub mod sim;

@@ -447,6 +447,23 @@ impl Sim {
 
     // ---- energy helpers used by effect resolution ----
 
+    /// Observer: one interaction for the relation graph (no effect on the world).
+    pub(crate) fn rel(&mut self, from: crate::relations::Node, to: crate::relations::Node, kind: u8, channel: u8, amount: u64) {
+        if let Some(v) = &mut self.obs.rel {
+            v.push(crate::relations::RelFact { tick: self.st.tick, from, to, kind, channel, amount });
+        }
+    }
+
+    /// Observer: agent i touched the parcel on tile t (a Use relation).
+    pub(crate) fn rel_use(&mut self, i: usize, t: u32) {
+        if self.obs.rel.is_some() {
+            if let Some(p) = self.st.world.parcels.get(&t) {
+                let (a, p) = (self.st.agents[i].uid, p.uid);
+                self.rel((0, a), (1, p), crate::relations::USE, 255, 1);
+            }
+        }
+    }
+
     /// Pay q from the agent's sealed budget; the energy becomes heat at `heat_tile`.
     pub(crate) fn pay(&mut self, i: usize, q: u32, heat_tile: u32) {
         let a = &mut self.st.agents[i];

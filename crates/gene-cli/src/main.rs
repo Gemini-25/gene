@@ -241,6 +241,8 @@ struct Summary {
     hash: String,
     /// JSON object: effect outcome counts per opcode and the M1 counters.
     effects: String,
+    /// JSON object: relation totals and group counts (original §58, §29).
+    relations: String,
 }
 
 /// Effect outcomes per opcode (nonzero only) and the M1 counters, as a JSON object.
@@ -263,6 +265,57 @@ fn behaviors_csv(an: &gene_core::behavior::Analyzer) -> String {
         );
     }
     out
+}
+
+fn write_groups(out: &mut impl Write, g: &gene_core::relations::Graph, tick: u64) {
+    use gene_core::relations::{MEDIA, PARCEL, WINDOW};
+    for x in &g.groups {
+        let kinds: String = ["R", "C", "U"].iter().enumerate().filter(|(k, _)| x.kinds & (1 << k) != 0).map(|(_, s)| *s).collect();
+        writeln!(
+            out,
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            tick / WINDOW - 1,
+            tick,
+            x.id,
+            x.agents.len(),
+            x.others.iter().filter(|n| n.0 == PARCEL).count(),
+            x.others.iter().filter(|n| n.0 == MEDIA).count(),
+            kinds,
+            x.weight,
+            x.windows,
+            x.border,
+            x.hub as u8,
+            x.civ as u8,
+            x.parent.map_or(String::new(), |p| p.to_string())
+        )
+        .unwrap();
+    }
+}
+
+fn relations_json(g: &gene_core::relations::Graph) -> String {
+    use gene_core::relations::GroupEvent;
+    let (mut new, mut splits, mut merges, mut civ) = (0, 0, 0, 0);
+    for e in &g.events {
+        match e {
+            GroupEvent::New { .. } => new += 1,
+            GroupEvent::Split { .. } => splits += 1,
+            GroupEvent::Merge { .. } => merges += 1,
+            GroupEvent::Civ { .. } => civ += 1,
+            GroupEvent::Ended { .. } => {}
+        }
+    }
+    format!(
+        "{{\"resource_mass\": {}, \"record_cells\": {}, \"use_contacts\": {}, \"groups_now\": {}, \"largest_now\": {}, \"groups_formed\": {}, \"splits\": {}, \"merges\": {}, \"civ_candidates\": {}}}",
+        g.totals[0],
+        g.totals[1],
+        g.totals[2],
+        g.groups.len(),
+        g.groups.iter().map(|x| x.agents.len()).max().unwrap_or(0),
+        new + splits,
+        splits,
+        merges,
+        civ
+    )
 }
 
 fn effects_json(sim: &Sim, an: &gene_core::behavior::Analyzer) -> String {
@@ -324,7 +377,7 @@ fn effects_json(sim: &Sim, an: &gene_core::behavior::Analyzer) -> String {
 
 fn summary_json(s: &Summary, o: &Opts) -> String {
     format!(
-        "{{\n  \"ruleset\": \"{}\",\n  \"founder\": \"{}\",\n  \"seed\": {},\n  \"size\": {},\n  \"agents\": {},\n  \"ticks_requested\": {},\n  \"ticks_run\": {},\n  \"extinct_at\": {},\n  \"final_pop\": {},\n  \"peak_pop\": {},\n  \"births\": {},\n  \"deaths_energy\": {},\n  \"deaths_body\": {},\n  \"max_generation\": {},\n  \"distinct_genomes\": {},\n  \"tps\": {:.1},\n  \"audit_ok\": {},\n  \"core_hash\": \"{}\",\n  \"effects\": {}\n}}\n",
+        "{{\n  \"ruleset\": \"{}\",\n  \"founder\": \"{}\",\n  \"seed\": {},\n  \"size\": {},\n  \"agents\": {},\n  \"ticks_requested\": {},\n  \"ticks_run\": {},\n  \"extinct_at\": {},\n  \"final_pop\": {},\n  \"peak_pop\": {},\n  \"births\": {},\n  \"deaths_energy\": {},\n  \"deaths_body\": {},\n  \"max_generation\": {},\n  \"distinct_genomes\": {},\n  \"tps\": {:.1},\n  \"audit_ok\": {},\n  \"core_hash\": \"{}\",\n  \"effects\": {},\n  \"relations\": {}\n}}\n",
         o.ruleset,
         o.founder,
         s.seed,
@@ -343,7 +396,8 @@ fn summary_json(s: &Summary, o: &Opts) -> String {
         s.tps,
         s.audit_ok,
         s.hash,
-        if s.effects.is_empty() { "null" } else { &s.effects }
+        if s.effects.is_empty() { "null" } else { &s.effects },
+        if s.relations.is_empty() { "null" } else { &s.relations }
     )
 }
 
@@ -372,6 +426,10 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     }
     let mut behavior = gene_core::behavior::Analyzer::default();
     sim.obs.facts = Some(Vec::new());
+    let mut graph = gene_core::relations::Graph::default();
+    let mut groups = open("groups.csv");
+    writeln!(groups, "window,tick,id,agents,parcels,media,kinds,weight,windows,border,hub,civ,parent").unwrap();
+    sim.obs.rel = Some(Vec::new());
     while sim.st.tick < t_end {
         sim.step();
         let t = sim.st.tick;
@@ -380,6 +438,15 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
         }
         if t % gene_core::behavior::WINDOW == 0 {
             behavior.flush(t);
+        }
+        for f in sim.obs.rel.as_mut().unwrap().drain(..) {
+            graph.push(&f);
+        }
+        if t % gene_core::relations::WINDOW == 0 {
+            let ag = &sim.st.agents;
+            if graph.advance(t, &|uid| ag.binary_search_by_key(&uid, |a| a.uid).is_ok()) {
+                write_groups(&mut groups, &graph, t);
+            }
         }
         s.peak_pop = s.peak_pop.max(sim.st.agents.len());
         for b in sim.obs.births.drain(..) {
@@ -463,6 +530,7 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     s.hash = hex(&sim.state_hash());
     behavior.finish();
     s.effects = effects_json(&sim, &behavior);
+    s.relations = relations_json(&graph);
     fs::write(o.out.join("behaviors.csv"), behaviors_csv(&behavior)).unwrap();
     fs::write(o.out.join("genomes.txt"), genome_report(&sim, &o.founder, 5)).unwrap();
     fs::write(o.out.join("summary.json"), summary_json(&s, o)).unwrap();

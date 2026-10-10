@@ -591,7 +591,42 @@ Founder-7(`assets/founder7.asm`)은 Founder-6에서 G가 모자랄 때의 행동
 - `behaviors.csv`: 창 3개 이상인 family. 처음 tick, 처음 개체, 창 수, intermediate 수, 개체 수, 반복 확정 tick, 대표 token 예시.
 - `summary.json`의 `effects.behavior`: 창·short·matched·novel·intermediate 수, family 수, 반복 family 수.
 
-**원본과의 차이.** context(tile G, 빛, 혼잡, 이동) 기반 표본, 관계 graph, artifact 동일성, 복사 계보는 아직 없다. 지금 세계에는 구조물과 공개 기록을 쓰는 행동이 관찰되지 않아서다(P1).
+**원본과의 차이.** context(tile G, 빛, 혼잡, 이동) 기반 표본은 아직 없다.
+
+### 17c. 관계 graph와 집단 (원본 §58, §29)
+
+관찰기 전용이다. 결과가 세계로 돌아가지 않는다(켜도 같은 seed의 CSV가 같음을 확인).
+
+**node.** (종류, UID). 개체 0, parcel 1, 매체 2.
+
+**사실.** 성공한 효과에서만 만든다. 단순 근접, READ, 같은 계통은 관계가 아니다.
+
+| 종류 | 사건 | 방향과 양 |
+| --- | --- | --- |
+| 자원 0 | 개체 사이 TRANSFER(주기, M1e의 꺼내기), 에너지 주기 | 준 쪽 → 받은 쪽. 물질은 질량(종별 channel), 에너지는 q(channel 15) |
+| 기록 1 | 공개 매체에서 COPY해 옴 / 공개 매체로 COPY함 | 매체 → 개체 / 개체 → 매체. 복사한 cell 수 |
+| 구조물 2 | parcel matrix·pore TRANSFER, LINK·UNLINK, parcel WORK, parcel 매체 WRITE·Resize·COPY, 조립체 이동(하중이 들어간 parcel) | 개체 → parcel. 성공 1회당 1 |
+
+**창과 weight.** 4096 tick 창마다 (from, to, 종류)별로 먼저 합한 뒤 weight = min(255, floor(log2(1 + 합)))로 바꾼다. 한 번의 이전을 작게 쪼개도 weight가 커지지 않는다. edge마다 마지막 4개 창만 남긴다.
+
+**집단 탐지(LPA).**
+- 무방향 weight = 남은 4개 창, 두 방향, 모든 종류의 합.
+- 처음 label은 자기 node key다. pass 순서는 BLAKE3(`group-a1.4\0`, 창 번호 LE, node 종류, UID LE)의 앞 8 byte, 다음 node key다.
+- 이웃 label별 weight 합이 가장 큰 label을 고른다. 동률이면 지금 label, 그다음 작은 key다. 최대 20 pass이고 변화가 없으면 멈춘다.
+- 창 끝에 살아 있는 개체가 2 이상인 label만 집단이다. 죽은 개체 node는 전파에는 남고 개체 수에는 들지 않는다.
+
+**집단 정보.** 살아 있는 개체, parcel·매체 node, 내부 edge 종류(bit), 내부 weight 합, 지속 창 수, 경계 구성원 수(자기 label 이웃 weight 비율 < 0.6), HubDependent(모든 내부 edge가 같은 parcel·매체 하나를 지남).
+
+**CivilizationLikeCandidate.** 살아 있는 개체 20 이상, 3창 연속 지속, 내부 관계 종류 2 이상. 개체 수 20은 화면 잡음 기준이지 세계 규칙이 아니다.
+
+**ID 유지.** 이전 집단과 새 집단의 개체 Jaccard ≥ 1/2인 쌍을 점수 내림차순(정수 교차 곱 비교), 이전 ID 오름차순으로 일대일 연결한다. 연결되지 않은 새 집단은 새 ID를 받고, 이전 집단과 개체가 겹치면 split(가장 많이 겹치는 쪽이 parent)이다. 연결되지 않은 이전 집단의 개체 과반이 다른 집단으로 갔으면 merge, 아니면 ended다.
+
+**출력.**
+- `groups.csv`: 창마다 집단 하나씩. window, tick, id, agents, parcels, media, kinds(R 자원, C 기록, U 구조물), weight, windows, border, hub, civ, parent.
+- `summary.json`의 `relations`: 종류별 총량, 지금 집단 수와 최대 크기, 생긴 집단·split·merge·문명 후보 수.
+- 화면: 색 "집단", 집단 목록과 최근 사건.
+
+**아직 없는 것.** 영토 heatmap, artifact 동일성, 복사 계보(원본 §58 나머지).
 
 ## 18. 첫 실험 E1: 조상 생존 (§49 축소판)
 

@@ -248,6 +248,9 @@ impl Sim {
         if matches!(r, MediaRef::Public { .. }) {
             self.obs.m1.public_writes += 1;
         }
+        if self.is_parcel_media(r) {
+            self.rel_use(i, mt);
+        }
         (Outcome::Ok, 1)
     }
 
@@ -268,9 +271,14 @@ impl Sim {
         match it.sub {
             0 => self.media_write_cell(i, target, r[4] as u32, r[5]),
             1 => {
+                let on_parcel = self.is_parcel_media(target);
                 let res = self.media_resize(i, target, r[5] as u32);
-                if matches!(target, MediaRef::Public { .. }) && matches!(res.0, Outcome::Ok | Outcome::Partial) {
+                let done = matches!(res.0, Outcome::Ok | Outcome::Partial);
+                if matches!(target, MediaRef::Public { .. }) && done {
                     self.obs.m1.public_resizes += 1;
+                }
+                if let (true, true, MediaRef::Public { tile, .. } | MediaRef::NewParcelMedia { tile }) = (done, on_parcel, target) {
+                    self.rel_use(i, tile);
                 }
                 res
             }
@@ -466,6 +474,19 @@ impl Sim {
             (_, MediaRef::Public { .. }) => self.obs.m1.copies_to_public += 1,
             (dom::OWN_DRAFT, MediaRef::Embryo) => self.obs.m1.draft_to_embryo += 1,
             _ => {}
+        }
+        if self.obs.rel.is_some() {
+            use crate::relations::{AGENT, MEDIA, RECORD};
+            let me = (AGENT, self.st.agents[i].uid);
+            if sd == dom::PUBLIC_TAPE {
+                self.rel((MEDIA, cap.src_uid), me, RECORD, 255, n as u64);
+            }
+            if let MediaRef::Public { tile, uid } = dst {
+                self.rel(me, (MEDIA, uid), RECORD, 255, n as u64);
+                if self.is_parcel_media(dst) {
+                    self.rel_use(i, tile); // a write on an artifact's record
+                }
+            }
         }
         (if n == count { Outcome::Ok } else { Outcome::Partial }, n)
     }

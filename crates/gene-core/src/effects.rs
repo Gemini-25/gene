@@ -280,6 +280,7 @@ impl Sim {
                 (Outcome::Capacity, 0)
             };
         }
+        let src_parcel = self.st.world.parcels.get(&src_tile).map(|p| p.uid);
         // move matter
         match src {
             Store::Inv => self.st.agents[i].inv[s] -= n as u16,
@@ -317,6 +318,22 @@ impl Sim {
             }
         }
         self.move_heat(src_tile, dst_tile, n * CAP[s]);
+        if self.obs.rel.is_some() {
+            use crate::relations::{AGENT, PARCEL, RESOURCE, USE};
+            let me = (AGENT, self.st.agents[i].uid);
+            let mass = n * MASS[s] as u64;
+            if let Some(j) = target {
+                let other = (AGENT, self.st.agents[j].uid);
+                let (from, to) = if let Store::Actor(_) = dst { (me, other) } else { (other, me) };
+                self.rel(from, to, RESOURCE, s as u8, mass);
+            }
+            if let (Store::Matrix(_) | Store::Pore(_), Some(p)) = (src, src_parcel) {
+                self.rel(me, (PARCEL, p), USE, s as u8, 1);
+            }
+            if let Store::Matrix(_) | Store::Pore(_) = dst {
+                self.rel_use(i, dst_tile);
+            }
+        }
         let me = self.tile_of(i);
         self.pay(i, (n * 16) as u32, me);
         let dug = MASS[s] as i64 * dz * n as i64;
@@ -379,7 +396,11 @@ impl Sim {
         self.pay_ug(i, n); // leaves the sender as available energy, not heat
         match target {
             None => self.st.agents[i].embryo.as_mut().unwrap().energy += n,
-            Some(j) => self.st.agents[j].energy += n,
+            Some(j) => {
+                self.st.agents[j].energy += n;
+                let (a, b) = (self.st.agents[i].uid, self.st.agents[j].uid);
+                self.rel((0, a), (0, b), crate::relations::RESOURCE, 15, n as u64);
+            }
         }
         (if n == amount { Outcome::Ok } else { Outcome::Partial }, n)
     }
