@@ -16,7 +16,7 @@ mod serve;
 const USAGE: &str = "gene — Gene M0 headless runner
 
 USAGE:
-  gene run    [--seed N] [--size S] [--agents A] [--ticks T] [--founder NAME|FILE]
+  gene run    [--seed N] [--size S] [--agents A] [--ticks T] [--founder NAME|FILE[+NAME|FILE...]]
               [--out DIR] [--stats-every K] [--map-every M] [--checkpoint-every C]
               [--audit-every K] [--keep-going] [--save-final] [--quiet] [--ruleset m0|m0b|m1a..m1f|m2] [--sim-threads N]
   gene batch  --seeds A-B|A,B,C-D [--threads N] [same options as run]  (one directory per seed)
@@ -28,6 +28,7 @@ USAGE:
   gene founders                          list built-in founders
 
 Defaults follow SPEC §3: size 512, agents 1000, founder founder4.
+Several founders joined with + share one world (E2): founder i runs program i mod n.
 Runs stop early at extinction unless --keep-going is given.";
 
 #[derive(Clone, Debug)]
@@ -137,6 +138,25 @@ fn founder_source(name: &str) -> String {
     }
 }
 
+/// Founder programs of `--founder a+b+c` (E2: several public ancestors in one world; founder i
+/// runs program i mod n).
+fn founder_programs(spec: &str) -> Vec<gene_core::genome::Program> {
+    spec.split('+').map(|n| isa::assemble(&founder_source(n)).unwrap_or_else(|e| die(format!("{n}: {e}")))).collect()
+}
+
+/// The founder program a program is nearest to (shortest listing of differences).
+fn nearest<'a>(founders: &'a [gene_core::genome::Program], p: &gene_core::genome::Program) -> Option<&'a gene_core::genome::Program> {
+    if founders.len() <= 1 {
+        return founders.first();
+    }
+    founders.iter().min_by_key(|f| program_diff(f, p).len())
+}
+
+/// Founder type of a genome: the index of the founder program with exactly this genome.
+fn founder_kind(founders: &[gene_core::genome::Program], genome: &[u8; 32]) -> u16 {
+    founders.iter().position(|f| hash_cells(&f.to_cells()) == *genome).unwrap_or(0) as u16
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(cmd) = args.first() else { die(USAGE) };
@@ -215,9 +235,9 @@ fn main() {
 }
 
 fn new_sim(o: &Opts) -> Sim {
-    let prog = isa::assemble(&founder_source(&o.founder)).unwrap_or_else(|e| die(e.to_string()));
+    let progs = founder_programs(&o.founder);
     let cfg = Config { seed: o.seed, width: o.size, height: o.size, agents: o.agents };
-    let mut sim = Sim::with_program_ruleset(cfg, &prog, &o.ruleset).unwrap_or_else(|e| die(format!("{e:?}")));
+    let mut sim = Sim::with_programs_ruleset(cfg, &progs, &o.ruleset).unwrap_or_else(|e| die(format!("{e:?}")));
     sim.threads = o.sim_threads.max(1);
     sim
 }
@@ -245,6 +265,8 @@ struct Summary {
     effects: String,
     /// JSON object: relation totals and group counts (original §58, §29).
     relations: String,
+    /// JSON object: high-level judge counts (SPEC §17f).
+    highlevel: String,
 }
 
 /// Effect outcomes per opcode (nonzero only) and the M1 counters, as a JSON object.
@@ -298,6 +320,47 @@ fn write_groups(out: &mut impl Write, g: &gene_core::relations::Graph, tick: u64
         )
         .unwrap();
     }
+}
+
+/// Repeated families with the judge's filter (SPEC §17f B).
+fn judge_csv(j: &[gene_core::judge::FamilyJudgement]) -> String {
+    let mut out = String::from("family,ok_tokens,tokens,carriers,fitness_x1000,founder_types,windows,founder_code_windows,founder_repertoire,pass\n");
+    for f in j {
+        out += &format!(
+            "{},{},{},{},{},{},{},{},{},{}\n",
+            f.id, f.ok, f.total, f.carriers, f.fitness_milli, f.types, f.windows, f.founder_windows, f.founder as u8, f.pass as u8
+        );
+    }
+    out
+}
+
+/// Chains of families used by two or more agents (SPEC §17f C), passing ones first, with what
+/// each step does.
+fn highlevel_csv(c: &[gene_core::judge::Candidate], an: &gene_core::behavior::Analyzer) -> String {
+    let mut out = String::from("chain,verdict,new,first_tick,occurrences,founder_code_occurrences,agents,phases,outputs,example_agents,steps\n");
+    for k in c {
+        let ch = &k.chain;
+        let steps: Vec<String> = ch
+            .families
+            .iter()
+            .map(|f| an.families[*f as usize].example.iter().take(4).map(gene_core::behavior::describe).collect::<Vec<_>>().join(" · "))
+            .collect();
+        out += &format!(
+            "{},{},{},{},{},{},{},{},{},{},\"{}\"\n",
+            ch.families.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(">"),
+            k.reject.unwrap_or("pass"),
+            k.new as u8,
+            ch.first_window * gene_core::behavior::WINDOW,
+            ch.occurrences,
+            ch.founder_occurrences,
+            ch.agent_count,
+            ch.phases.count_ones(),
+            ch.outputs,
+            ch.agents.iter().take(5).map(|a| a.to_string()).collect::<Vec<_>>().join(" "),
+            steps.join(" => ")
+        );
+    }
+    out
 }
 
 /// A public record lies on tile t (dropped, or on the parcel there).
@@ -434,7 +497,7 @@ fn effects_json(sim: &Sim, an: &gene_core::behavior::Analyzer) -> String {
 
 fn summary_json(s: &Summary, o: &Opts) -> String {
     format!(
-        "{{\n  \"ruleset\": \"{}\",\n  \"founder\": \"{}\",\n  \"seed\": {},\n  \"size\": {},\n  \"agents\": {},\n  \"ticks_requested\": {},\n  \"ticks_run\": {},\n  \"extinct_at\": {},\n  \"final_pop\": {},\n  \"peak_pop\": {},\n  \"births\": {},\n  \"deaths_energy\": {},\n  \"deaths_body\": {},\n  \"max_generation\": {},\n  \"distinct_genomes\": {},\n  \"tps\": {:.1},\n  \"audit_ok\": {},\n  \"core_hash\": \"{}\",\n  \"effects\": {},\n  \"relations\": {}\n}}\n",
+        "{{\n  \"ruleset\": \"{}\",\n  \"founder\": \"{}\",\n  \"seed\": {},\n  \"size\": {},\n  \"agents\": {},\n  \"ticks_requested\": {},\n  \"ticks_run\": {},\n  \"extinct_at\": {},\n  \"final_pop\": {},\n  \"peak_pop\": {},\n  \"births\": {},\n  \"deaths_energy\": {},\n  \"deaths_body\": {},\n  \"max_generation\": {},\n  \"distinct_genomes\": {},\n  \"tps\": {:.1},\n  \"audit_ok\": {},\n  \"core_hash\": \"{}\",\n  \"effects\": {},\n  \"relations\": {},\n  \"highlevel\": {}\n}}\n",
         o.ruleset,
         o.founder,
         s.seed,
@@ -454,7 +517,8 @@ fn summary_json(s: &Summary, o: &Opts) -> String {
         s.audit_ok,
         s.hash,
         if s.effects.is_empty() { "null" } else { &s.effects },
-        if s.relations.is_empty() { "null" } else { &s.relations }
+        if s.relations.is_empty() { "null" } else { &s.relations },
+        if s.highlevel.is_empty() { "null" } else { &s.highlevel }
     )
 }
 
@@ -482,7 +546,16 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
         write_map(&sim, &o.out.join(format!("map_{:07}.png", sim.st.tick)));
     }
     let mut behavior = gene_core::behavior::Analyzer::default();
+    behavior.log = Some(Vec::new());
     sim.obs.facts = Some(Vec::new());
+    let mut judge = gene_core::judge::Judge::default();
+    let founders = founder_programs(&o.founder);
+    for a in &sim.st.agents {
+        if a.generation == 0 {
+            let g = hash_cells(a.code.prefix(a.used_len).unwrap_or(&[]));
+            judge.founder(a.uid, founder_kind(&founders, &g), g);
+        }
+    }
     let mut graph = gene_core::relations::Graph::default();
     let mut artifacts = gene_core::artifacts::Artifacts::default();
     let mut lineage = gene_core::lineage::Lineage::default();
@@ -498,10 +571,16 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
         }
         if t % gene_core::behavior::WINDOW == 0 {
             behavior.flush(t);
+            for r in behavior.log.as_mut().unwrap().drain(..) {
+                judge.window(&r);
+            }
         }
         for f in sim.obs.rel.as_mut().unwrap().drain(..) {
             graph.push(&f);
             artifacts.push(&f);
+            if f.from.0 == gene_core::relations::AGENT {
+                judge.output(f.from.1, f.tick);
+            }
         }
         for f in sim.obs.lineage.as_mut().unwrap().drain(..) {
             lineage.push(&f);
@@ -516,6 +595,7 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
         }
         s.peak_pop = s.peak_pop.max(sim.st.agents.len());
         for b in sim.obs.births.drain(..) {
+            judge.birth(b.uid, b.parent, b.tick, b.genome_hash);
             writeln!(
                 births,
                 "{},{},{},{},{},{},{},{},{},{},{},{},{}",
@@ -536,6 +616,7 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
             .unwrap();
         }
         for d in sim.obs.deaths.drain(..) {
+            judge.death(d.uid, d.tick);
             let cause = match d.cause {
                 DeathCause::Energy => "energy",
                 DeathCause::Body => "body",
@@ -595,6 +676,21 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     s.distinct_genomes = distinct_genomes(&sim);
     s.hash = hex(&sim.state_hash());
     behavior.finish();
+    for r in behavior.log.as_mut().unwrap().drain(..) {
+        judge.window(&r);
+    }
+    let (judged, candidates) = judge.finish(&behavior.families, sim.st.tick);
+    fs::write(o.out.join("judge.csv"), judge_csv(&judged)).unwrap();
+    fs::write(o.out.join("highlevel.csv"), highlevel_csv(&candidates, &behavior)).unwrap();
+    s.highlevel = format!(
+        "{{\"families_judged\": {}, \"families_pass\": {}, \"new_families_pass\": {}, \"chains_seen\": {}, \"chains_pass\": {}, \"new_chains_pass\": {}}}",
+        judged.len(),
+        judged.iter().filter(|f| f.pass).count(),
+        judged.iter().filter(|f| f.pass && !f.founder).count(),
+        candidates.len(),
+        candidates.iter().filter(|c| c.pass()).count(),
+        candidates.iter().filter(|c| c.pass() && c.new).count()
+    );
     s.effects = effects_json(&sim, &behavior);
     if sim.st.tick % gene_core::relations::WINDOW != 0 {
         artifacts.scan(&sim.st.world, &|u| has_record(&sim, u), sim.st.tick); // the structures left at the end
@@ -872,7 +968,7 @@ fn program_diff(a: &gene_core::genome::Program, b: &gene_core::genome::Program) 
 }
 
 fn genome_report(sim: &Sim, founder: &str, top: usize) -> String {
-    let founder_prog = isa::assemble(&founder_source(founder)).ok();
+    let founders = founder_programs(founder);
     let mut census: BTreeMap<[u8; 32], (usize, u32, BTreeSet<u64>, u32, usize)> = BTreeMap::new();
     for (i, a) in sim.st.agents.iter().enumerate() {
         let h = hash_cells(a.code.prefix(a.used_len).unwrap_or(&[]));
@@ -899,8 +995,9 @@ fn genome_report(sim: &Sim, founder: &str, top: usize) -> String {
             roots.len(),
             gen
         ));
-        if let Some(fp) = &founder_prog {
-            out.push_str(&program_diff(fp, sim.st.agents[*idx].program()));
+        let p = sim.st.agents[*idx].program();
+        if let Some(fp) = nearest(&founders, p) {
+            out.push_str(&program_diff(fp, p));
         }
         out.push('\n');
     }

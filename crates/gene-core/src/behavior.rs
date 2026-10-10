@@ -141,12 +141,47 @@ struct Open {
     tokens: Vec<Token>,
 }
 
+/// One closed window, for the high-level judge (SPEC §17f). Kept only when `Analyzer::log`
+/// is Some.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowRecord {
+    pub uid: u64,
+    pub window: u64,
+    /// Matched or founded family; None for short or intermediate windows.
+    pub family: Option<u32>,
+    /// Tokens whose effect succeeded (Ok or Partial), and all tokens.
+    pub ok: u16,
+    pub total: u16,
+    /// A successful effect changed the world outside the agent (see `is_output`).
+    pub output: bool,
+}
+
+/// A successful token that changed the world outside the agent: matter moved, external work, a
+/// bond made or broken, a push, an emission, or a child released. Reading, walking, turning and
+/// private writes are not outputs.
+pub fn is_output(t: &Token) -> bool {
+    use crate::intent::sub;
+    if t[1] > 1 || t[0] == 255 {
+        return false;
+    }
+    let (opc, s) = ((t[0] >> 3) + crate::isa::op::READ, (t[0] & 7) as u16);
+    match opc {
+        crate::isa::op::TRANSFER => t[4] > 0,
+        crate::isa::op::WORK => t[2] != 255,
+        crate::isa::op::LINK | crate::isa::op::UNLINK | crate::isa::op::EMIT => true,
+        crate::isa::op::DRIVE => s == crate::bonds::DRIVE_PUSH || s == crate::contact::DRIVE_PUSH_ACTOR,
+        crate::isa::op::REPRO => s == sub::REPRO_RELEASE,
+        _ => false,
+    }
+}
+
 #[derive(Default)]
 pub struct Analyzer {
     open: BTreeMap<u64, Open>,
     pub families: Vec<Family>,
     index: HashMap<u64, Vec<u32>>,
     pub counts: Counts,
+    pub log: Option<Vec<WindowRecord>>,
 }
 
 pub enum Verdict {
@@ -192,7 +227,16 @@ impl Analyzer {
 
     fn close(&mut self, uid: u64, o: Open) {
         let tick = o.last_tick.unwrap_or(o.window * WINDOW);
-        self.classify(uid, tick, &o.tokens);
+        let v = self.classify(uid, tick, &o.tokens);
+        if let Some(log) = &mut self.log {
+            let family = match v {
+                Verdict::Matched(id) | Verdict::Novel(id) => Some(id),
+                Verdict::Short | Verdict::Intermediate(_) => None,
+            };
+            let ok = o.tokens.iter().filter(|t| t[1] <= 1).count().min(65535) as u16;
+            let output = o.tokens.iter().any(is_output);
+            log.push(WindowRecord { uid, window: o.window, family, ok, total: o.tokens.len().min(65535) as u16, output });
+        }
     }
 
     pub fn classify(&mut self, uid: u64, tick: u64, tokens: &[Token]) -> Verdict {

@@ -83,6 +83,18 @@ h2 button { font-size: 11px; padding: 1px 8px; min-height: 22px; margin-left: 6p
 .badge { display: inline-block; font-size: 10px; line-height: 15px; padding: 0 5px; border-radius: 8px; margin-left: 4px;
   border: 1px solid var(--border); color: var(--ink2); }
 .badge.civ { border-color: currentColor; color: var(--accent, #2f6fdf); font-weight: 600; }
+.steps { display: flex; flex-direction: column; gap: 2px; margin-top: 3px; }
+.steps code { margin: 0; padding-left: 14px; position: relative; }
+.steps code::before { content: "→"; position: absolute; left: 0; color: var(--muted); }
+.steps code:first-child::before { content: "•"; }
+.hl-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.hl-row a { color: var(--accent, #2f6fdf); cursor: pointer; text-decoration: none; font-size: 11px; }
+.hl-row a:hover { text-decoration: underline; }
+.rev-group { display: inline-flex; gap: 4px; white-space: nowrap; }
+.rev { font-size: 11px; min-height: 20px; padding: 0 7px; }
+.rev.on.yes { background: #2e7d4f; border-color: #2e7d4f; color: #fff; }
+.rev.on.no { background: #9a3b32; border-color: #9a3b32; color: #fff; }
+.behav li.miss { opacity: .62; }
 pre { font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--page);
   border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow-x: auto; white-space: pre; margin: 6px 0; }
 table.kv { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
@@ -150,6 +162,10 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
     <h2>새로 반복되는 행동 <span class="small" id="b-count"></span></h2>
     <div class="small">같은 효과 순서가 서로 다른 개체 2 이상, 창 3개 이상에서 나타난 것(원본 §58 A1.4). 최근 확정 순.</div>
     <ul class="behav" id="behav"></ul>
+    <h2>고수준 행동 후보 <span class="small" id="hl-count"></span></h2>
+    <div class="small">연속된 창에서 서로 다른 반복 행동이 차례로 이어진 것(SPEC §17f). 효과가 성공하고 번식 성과와 이어진 행동만, 개체 5 이상·하루의 두 때 이상·결과물이 있어야 통과. 조상 genome 그대로인 개체가 하는 것은 "조상"으로 표시. 마지막 판단은 사람이 한다: 예시 개체를 따라가 보고 ✓/✗.</div>
+    <ul class="behav" id="hl"></ul>
+    <div id="hl-fams"></div>
     <h2>집단 <span class="small" id="grp-count"></span></h2>
     <div class="small">실제 자원 이전·기록 복사·구조물 사용으로 묶인 개체 무리(원본 §29). 4096 tick마다 갱신. 색 버튼의 "집단"으로 지도에 표시.</div>
     <ul class="census" id="groups"></ul>
@@ -1358,6 +1374,84 @@ async function loadGroups() {
   if (colourMode === "group" && state && state.agents) { recolour(state.agents); snap.tick = -1; onSnapshot(state); setOverlays(state); }
 }
 
+const HL_REASON = { "family not repeated": "반복 안 된 단계", "family filtered": "실패·성과 없음", "few agents": "개체 부족", "one time of day": "한 때에만", "no output": "결과물 없음" };
+let hlTick = -1, hlReviews = {};
+// a family's example tokens in words; runs of the same action fold into "×n"
+function stepWords(st) {
+  const parts = [];
+  for (const [k, o, d, c] of st.t) {
+    let w = ACT[k] || "?";
+    if (k === 40 && c !== 255) w += " " + ((c & 0x40) ? "남의 " : "") + (SYM[c & 0x3f] || "E");
+    if (k === 56 && c !== 255) w += " " + c;
+    if (o > 1) w += `(${OUTK[o] || o})`;
+    const last = parts[parts.length - 1];
+    if (last && last.w === w) last.n++; else parts.push({ w, n: 1 });
+  }
+  return parts.map((p) => p.n > 1 ? `${p.w} ×${p.n}` : p.w).join(" · ");
+}
+function watchAgent(uid) {
+  selected = uid; loadAgent();
+  if (!follow) toggleFollow();
+  draw();
+}
+async function review(key, v) {
+  const r = await getJSON(`/api/review?chain=${key}&v=${v}`);
+  if (r.reviews) { hlReviews = r.reviews; hlTick = -1; loadHighlevel(); }
+}
+async function loadHighlevel() {
+  const r = await getJSON("/api/highlevel");
+  const h = r.judge;
+  if (!h || h.tick === undefined) { $("hl").innerHTML = '<li class="small">하루가 지나면 판정합니다</li>'; return; }
+  hlReviews = r.reviews || {};
+  if (h.tick === hlTick) return;
+  hlTick = h.tick;
+  const yes = Object.values(hlReviews).filter((v) => v).length;
+  $("hl-count").textContent = `(통과 ${h.chains_pass} · 새것 ${h.new_chains_pass} · 본 연쇄 ${h.chains_seen}${yes ? ` · 사람 확인 ${yes}` : ""})`;
+  const ul = $("hl"); ul.innerHTML = "";
+  for (const c of h.chains) {
+    const li = document.createElement("li");
+    const pass = c.verdict === "pass";
+    if (!pass) li.className = "miss";
+    const rv = hlReviews[c.key];
+    const verdict = pass ? '<span class="badge civ">통과</span>' : `<span class="badge" title="처음 걸린 규칙">${HL_REASON[c.verdict] || c.verdict}</span>`;
+    const origin = c.new ? '<span class="badge civ" title="조상 genome 그대로인 개체에서는 거의 안 나옴">새것</span>' : `<span class="badge" title="조상 code 발생 ${c.founder_occ}/${c.occ}">조상</span>`;
+    li.innerHTML = `<span>${c.families.map((f) => "#" + f).join(" → ")} ${verdict}${origin}
+      <span class="small">· 개체 ${c.agents} · ${c.occ}번 · 때 ${c.phases} · 결과물 ${c.outputs} · 처음 ${(c.first / 4096).toFixed(1)}일</span></span>
+      <div class="steps">${c.steps.map((x) => `<code title="${esc(x.raw)}">${esc(stepWords(x))}</code>`).join("")}</div>`;
+    const row = document.createElement("div");
+    row.className = "hl-row";
+    if (c.alive.length) {
+      const lab = document.createElement("span"); lab.className = "small"; lab.textContent = "따라가기";
+      row.appendChild(lab);
+      for (const u of c.alive) {
+        const a = document.createElement("a"); a.textContent = "#" + u; a.title = "이 개체를 선택하고 따라가기";
+        a.onclick = () => watchAgent(u);
+        row.appendChild(a);
+      }
+    } else {
+      const lab = document.createElement("span"); lab.className = "small"; lab.textContent = "예시 개체가 모두 죽음";
+      row.appendChild(lab);
+    }
+    const sp = document.createElement("span"); sp.style.flex = "1"; row.appendChild(sp);
+    const btns = document.createElement("span"); btns.className = "rev-group"; row.appendChild(btns);
+    for (const [v, label, tip] of [["yes", "✓ 맞음", "사람이 보고 고수준 행동이라고 확인"], ["no", "✗ 아님", "사람이 보고 아니라고 판단"]]) {
+      const b = document.createElement("button");
+      const on = rv === (v === "yes");
+      b.className = `rev ${v}${rv !== undefined && on ? " on" : ""}`;
+      b.textContent = label; b.title = tip;
+      b.onclick = () => review(c.key, rv !== undefined && on ? "clear" : v);
+      btns.appendChild(b);
+    }
+    li.appendChild(row);
+    ul.appendChild(li);
+  }
+  if (!h.chains.length) ul.innerHTML = '<li class="small">아직 없음 (서로 다른 반복 행동이 이어진 개체가 3 이상인 연쇄가 없음)</li>';
+  const nf = $("hl-fams");
+  nf.innerHTML = h.new_families.length
+    ? `<div class="small" style="margin-top:8px">창 하나 안의 새 행동(통과, 조상 아님) ${h.new_families_pass}개</div><ul class="behav">${h.new_families.map((f) => `<li>#${f.id} <span class="small">· 개체 ${f.carriers} · 창 ${f.windows} · 성과 ×${(f.fitness / 1000).toFixed(2)} · 처음 ${(f.first / 4096).toFixed(1)}일</span><code title="${esc(f.example.raw)}">${esc(stepWords(f.example))}</code></li>`).join("")}</ul>`
+    : "";
+}
+
 async function loadBehaviors() {
   const b = await getJSON("/api/behaviors");
   if (!b.recent) return;
@@ -1517,7 +1611,7 @@ async function slowPoll() {
   try {
     const h = await getJSON("/api/history");
     const t = h.tick && h.tick.length ? h.tick[h.tick.length - 1] : 0;
-    if (t !== lastHistTick) { lastHistTick = t; hist = h; later(drawCharts, 0); later(loadBehaviors, 400); later(loadGroups, 600); later(loadArtifacts, 800); later(loadTerritory, 1000); later(loadLineage, 1200); }
+    if (t !== lastHistTick) { lastHistTick = t; hist = h; later(drawCharts, 0); later(loadBehaviors, 400); later(loadGroups, 600); later(loadArtifacts, 800); later(loadTerritory, 1000); later(loadLineage, 1200); later(loadHighlevel, 1400); }
     const field = await getBin("/api/water");
     later(() => setField(field), 800);
     later(loadTimeline, 1200);

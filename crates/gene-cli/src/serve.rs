@@ -2,9 +2,8 @@
 //! read published snapshots or ask the simulation thread through a channel, so viewing never
 //! changes the world (original I07, SPEC §15).
 
-use crate::{die, founder_source, genome_color, hex, program_diff};
+use crate::{die, founder_kind, founder_programs, genome_color, hex, nearest, program_diff};
 use gene_core::genome::hash_cells;
-use gene_core::isa;
 use gene_core::sim::Sim;
 use gene_core::species::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -39,6 +38,11 @@ struct Shared {
     territory: Arc<String>,
     lineage: Arc<String>,
     timeline: Arc<String>,
+    /// High-level candidates (SPEC §17f), rebuilt every 4096 ticks.
+    highlevel: Arc<String>,
+    /// A person's verdict per chain key ("24-26"): true = confirmed, false = rejected (§17f D).
+    reviews: BTreeMap<String, bool>,
+    reviews_path: PathBuf,
 }
 
 enum Req {
@@ -68,6 +72,9 @@ pub fn serve(sim: Sim, o: ServeOpts) {
         territory: Arc::new(String::from("{}")),
         lineage: Arc::new(String::from("{\"writes\":0,\"copies\":0,\"cells\":0,\"damaged\":0,\"transfers\":0,\"recent\":[]}")),
         timeline: Arc::new(String::from("{}")),
+        highlevel: Arc::new(String::from("{}")),
+        reviews: load_reviews(&o.save_dir.join(REVIEWS)),
+        reviews_path: o.save_dir.join(REVIEWS),
     }));
     let (tx, rx) = mpsc::channel::<Req>();
     let listener = TcpListener::bind(("127.0.0.1", o.port)).unwrap_or_else(|e| die(format!("port {}: {e}", o.port)));
@@ -222,7 +229,7 @@ impl Timeline {
 }
 
 fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>, save_dir: PathBuf, founder: String) {
-    let founder_prog = isa::assemble(&founder_source(&founder)).ok();
+    let founders = founder_programs(&founder);
     let mut hist = Hist {
         tick: vec![],
         pop: vec![],
@@ -238,6 +245,8 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
     cache.refresh(&sim);
     hist.push(&sim, cache.distinct());
     let mut behavior = gene_core::behavior::Analyzer::default();
+    behavior.log = Some(Vec::new());
+    let mut judge = new_judge(&sim, &founders);
     let mut recent: Recent = HashMap::new();
     sim.obs.facts = Some(Vec::new());
     let mut graph = gene_core::relations::Graph::default();
@@ -270,6 +279,9 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                                 timeline.points.truncate(k + 1);
                                 hist.truncate(t);
                                 behavior = gene_core::behavior::Analyzer::default();
+                                behavior.log = Some(Vec::new());
+                                judge = new_judge(&sim, &founders);
+                                shared.lock().unwrap().highlevel = Arc::new(String::from("{}"));
                                 graph = gene_core::relations::Graph::default();
                                 arts = gene_core::artifacts::Artifacts::default();
                                 terr = gene_core::relations::Territory::new(sim.st.world.w, sim.st.world.h);
@@ -286,7 +298,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                     };
                     let _ = tx.send(msg);
                 }
-                other => answer(other, &sim, &cache, founder_prog.as_ref(), &save_dir, &recent),
+                other => answer(other, &sim, &cache, &founders, &save_dir, &recent),
             }
         }
         let ctl = shared.lock().unwrap().control;
@@ -335,6 +347,15 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                 graph.push(&f);
                 arts.push(&f);
                 terr.fact(&f, &|u| member.get(&u).copied());
+                if f.from.0 == gene_core::relations::AGENT {
+                    judge.output(f.from.1, f.tick);
+                }
+            }
+            for b in sim.obs.births.drain(..) {
+                judge.birth(b.uid, b.parent, b.tick, b.genome_hash);
+            }
+            for d in sim.obs.deaths.drain(..) {
+                judge.death(d.uid, d.tick);
             }
             let had = lin.transfers.len();
             for f in sim.obs.lineage.as_mut().unwrap().drain(..) {
@@ -364,11 +385,16 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                 let rec = |t: u32| st.dropped.contains_key(&t) || st.world.parcels.get(&t).is_some_and(|p| p.media.is_some());
                 arts.scan(&st.world, &rec, st.tick);
                 shared.lock().unwrap().artifacts = Arc::new(artifacts_json(&arts, st.tick));
+                let hl = highlevel_json(&judge, &behavior, &alive, st.tick);
+                shared.lock().unwrap().highlevel = Arc::new(hl);
             }
             if sim.st.tick % 256 == 0 {
                 cache.refresh(&sim);
                 hist.push(&sim, cache.distinct());
                 behavior.flush(sim.st.tick);
+                for r in behavior.log.as_mut().unwrap().drain(..) {
+                    judge.window(&r);
+                }
             }
             if sim.st.tick % timeline.every == 0 {
                 timeline.record(&sim);
@@ -625,6 +651,108 @@ fn lineage_json(l: &gene_core::lineage::Lineage) -> String {
     )
 }
 
+const REVIEWS: &str = "highlevel_reviews.json";
+
+/// The judge for a world as it is now: founder genomes are the founder programs' and those of
+/// generation-0 agents; every living agent is registered with its birth tick. The founder type
+/// of a later agent is that of the founder program nearest to its genome.
+fn new_judge(sim: &Sim, founders: &[gene_core::genome::Program]) -> gene_core::judge::Judge {
+    let mut j = gene_core::judge::Judge::default();
+    for p in founders {
+        j.founder_genome(hash_cells(&p.to_cells()));
+    }
+    let genome = |a: &gene_core::agent::Agent| hash_cells(a.code.prefix(a.used_len).unwrap_or(&[]));
+    for a in sim.st.agents.iter().filter(|a| a.generation == 0) {
+        let g = genome(a);
+        j.founder(a.uid, founder_kind(founders, &g), g);
+    }
+    for a in sim.st.agents.iter().filter(|a| a.generation != 0) {
+        let kind = nearest(founders, a.program()).and_then(|f| founders.iter().position(|x| std::ptr::eq(x, f))).unwrap_or(0) as u16;
+        j.known(a.uid, kind, a.birth_tick, genome(a));
+    }
+    j
+}
+
+fn load_reviews(path: &std::path::Path) -> BTreeMap<String, bool> {
+    let Ok(text) = std::fs::read_to_string(path) else { return BTreeMap::new() };
+    // {"24-26":true,...}: keys are digits and dashes only
+    text.trim()
+        .trim_start_matches('{')
+        .trim_end_matches('}')
+        .split(',')
+        .filter_map(|kv| {
+            let (k, v) = kv.split_once(':')?;
+            let k = k.trim().trim_matches('"');
+            (!k.is_empty() && k.bytes().all(|b| b.is_ascii_digit() || b == b'-')).then(|| (k.to_string(), v.trim() == "true"))
+        })
+        .collect()
+}
+
+fn reviews_json(r: &BTreeMap<String, bool>) -> String {
+    let items: Vec<String> = r.iter().map(|(k, v)| format!("\"{k}\":{v}")).collect();
+    format!("{{{}}}", items.join(","))
+}
+
+/// SPEC §17f for the viewer: chains (passing first, then the nearest misses) with what each
+/// step does and which example agents are still alive, plus new passing families.
+fn highlevel_json(j: &gene_core::judge::Judge, an: &gene_core::behavior::Analyzer, alive: &HashSet<u64>, now: u64) -> String {
+    let (judged, chains) = j.finish(&an.families, now);
+    // each step: the family's example tokens as [kind, outcome, direction, channel], and as text
+    let step = |f: u32| {
+        let ex = &an.families[f as usize].example;
+        let raw: Vec<String> = ex.iter().map(gene_core::behavior::describe).collect();
+        let toks: Vec<String> = ex.iter().map(|t| format!("[{},{},{},{}]", t[0], t[1], t[2], t[3])).collect();
+        format!("{{\"raw\":{},\"t\":[{}]}}", json_str(&raw.join(" · ")), toks.join(","))
+    };
+    let shown: Vec<String> = chains
+        .iter()
+        .filter(|c| c.pass() || c.chain.agent_count >= 3)
+        .take(16)
+        .map(|c| {
+            let ch = &c.chain;
+            let live: Vec<String> = ch.agents.iter().filter(|u| alive.contains(u)).take(6).map(|u| u.to_string()).collect();
+            format!(
+                "{{\"key\":\"{}\",\"families\":[{}],\"verdict\":\"{}\",\"new\":{},\"first\":{},\"occ\":{},\"founder_occ\":{},\"agents\":{},\"phases\":{},\"outputs\":{},\"alive\":[{}],\"steps\":[{}]}}",
+                ch.families.iter().map(|f| f.to_string()).collect::<Vec<_>>().join("-"),
+                ch.families.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(","),
+                c.reject.unwrap_or("pass"),
+                c.new,
+                ch.first_window * gene_core::behavior::WINDOW,
+                ch.occurrences,
+                ch.founder_occurrences,
+                ch.agent_count,
+                ch.phases.count_ones(),
+                ch.outputs,
+                live.join(","),
+                ch.families.iter().map(|f| step(*f)).collect::<Vec<_>>().join(",")
+            )
+        })
+        .collect();
+    let new_fams: Vec<String> = judged
+        .iter()
+        .filter(|f| f.pass && !f.founder)
+        .take(8)
+        .map(|f| {
+            let fam = &an.families[f.id as usize];
+            format!(
+                "{{\"id\":{},\"first\":{},\"carriers\":{},\"windows\":{},\"fitness\":{},\"example\":{}}}",
+                f.id, fam.first_tick, f.carriers, f.windows, f.fitness_milli, step(f.id)
+            )
+        })
+        .collect();
+    format!(
+        "{{\"tick\":{now},\"families_judged\":{},\"families_pass\":{},\"new_families_pass\":{},\"chains_seen\":{},\"chains_pass\":{},\"new_chains_pass\":{},\"chains\":[{}],\"new_families\":[{}]}}",
+        judged.len(),
+        judged.iter().filter(|f| f.pass).count(),
+        judged.iter().filter(|f| f.pass && !f.founder).count(),
+        chains.len(),
+        chains.iter().filter(|c| c.pass()).count(),
+        chains.iter().filter(|c| c.pass() && c.new).count(),
+        shown.join(","),
+        new_fams.join(",")
+    )
+}
+
 fn behaviors_json(an: &gene_core::behavior::Analyzer, now: u64) -> String {
     use gene_core::behavior::UseState;
     let mut rep: Vec<&gene_core::behavior::Family> = an.families.iter().filter(|f| f.repeated_at.is_some()).collect();
@@ -665,7 +793,7 @@ fn behaviors_json(an: &gene_core::behavior::Analyzer, now: u64) -> String {
 /// The last few resolved effects of each agent, for the agent panel.
 type Recent = HashMap<u64, VecDeque<gene_core::observer::EffectFact>>;
 
-fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::genome::Program>, save_dir: &PathBuf, recent: &Recent) {
+fn answer(req: Req, sim: &Sim, cache: &HashCache, founders: &[gene_core::genome::Program], save_dir: &PathBuf, recent: &Recent) {
     match req {
         Req::Agent(uid, tx) => {
             let Some(a) = sim.st.agents.iter().find(|a| a.uid == uid) else {
@@ -676,7 +804,7 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::ge
             let t = w.idx(a.x as u32, a.y as u32);
             let inv: Vec<String> =
                 (0..NSPEC).filter(|s| a.inv[*s] > 0).map(|s| format!("\"{}\":{}", SYMBOL[s], a.inv[s])).collect();
-            let diff = founder.map_or(String::new(), |f| program_diff(f, a.program()));
+            let diff = nearest(founders, a.program()).map_or(String::new(), |f| program_diff(f, a.program()));
             let emb = a.embryo.as_ref().map_or("null".to_string(), |e| {
                 format!(
                     "{{\"state\":{},\"raw_len\":{},\"capacity\":{},\"energy\":{},\"mutated\":{}}}",
@@ -741,7 +869,7 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::ge
                     b.used_len,
                     b.media.foreign,
                     json_str(&a.bank_progs.iter().find(|p| p.0 == b.media.uid).map_or(String::new(), |p| {
-                        founder.map_or(String::new(), |f| program_diff(f, &p.1))
+                        nearest(founders, &p.1).map_or(String::new(), |f| program_diff(f, &p.1))
                     }))
                 )),
                 a.retained.len(),
@@ -765,7 +893,7 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::ge
                 .take(12)
                 .map(|(h, (n, g, roots, idx))| {
                     let a = &sim.st.agents[*idx];
-                    let diff = founder.map_or(String::new(), |f| program_diff(f, a.program()));
+                    let diff = nearest(founders, a.program()).map_or(String::new(), |f| program_diff(f, a.program()));
                     format!(
                         "{{\"hash\":\"{}\",\"color\":{},\"count\":{},\"cells\":{},\"max_gen\":{},\"lineages\":{},\"diff\":{}}}",
                         &hex(h)[..16],
@@ -934,6 +1062,29 @@ fn handle(mut stream: TcpStream, shared: &Arc<Mutex<Shared>>, tx: &mpsc::Sender<
         "/api/groups" => {
             let s = shared.lock().unwrap().groups.clone();
             respond(&mut stream, "200 OK", json, s.as_bytes())
+        }
+        "/api/highlevel" => {
+            let sh = shared.lock().unwrap();
+            let body = format!("{{\"judge\":{},\"reviews\":{}}}", sh.highlevel, reviews_json(&sh.reviews));
+            drop(sh);
+            respond(&mut stream, "200 OK", json, body.as_bytes())
+        }
+        "/api/review" => {
+            let key = query(q, "chain").unwrap_or_default();
+            if key.is_empty() || key.len() > 64 || !key.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+                return respond(&mut stream, "400 Bad Request", json, b"{\"error\":\"chain\"}");
+            }
+            let mut sh = shared.lock().unwrap();
+            match query(q, "v").as_deref() {
+                Some("yes") => sh.reviews.insert(key, true),
+                Some("no") => sh.reviews.insert(key, false),
+                _ => sh.reviews.remove(&key),
+            };
+            let text = reviews_json(&sh.reviews);
+            let path = sh.reviews_path.clone();
+            drop(sh);
+            let saved = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new("."))).and_then(|_| std::fs::write(&path, &text)).is_ok();
+            respond(&mut stream, "200 OK", json, format!("{{\"saved\":{saved},\"reviews\":{text}}}").as_bytes())
         }
         "/api/behaviors" => {
             let s = shared.lock().unwrap().behaviors.clone();

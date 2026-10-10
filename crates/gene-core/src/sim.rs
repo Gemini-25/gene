@@ -225,24 +225,37 @@ impl Sim {
     }
 
     pub fn with_program_ruleset(config: Config, prog: &Program, ruleset: &str) -> Result<Sim, SimError> {
+        Self::with_programs_ruleset(config, std::slice::from_ref(prog), ruleset)
+    }
+
+    /// A world with several public ancestors (E2): founder i runs `progs[i % progs.len()]`.
+    /// With one program this is exactly `with_program_ruleset`.
+    pub fn with_programs_ruleset(config: Config, progs: &[Program], ruleset: &str) -> Result<Sim, SimError> {
         if Caps::of(ruleset).is_none() {
             return Err(SimError::BadSave("unknown ruleset"));
         }
-        let cells = prog.to_cells();
-        let parsed = genome::parse(&cells).map_err(|e| SimError::Founder(format!("{e:?}")))?;
-        let parsed = Arc::new(parsed);
+        if progs.is_empty() {
+            return Err(SimError::Founder("no founder program".into()));
+        }
+        let mut founders = Vec::with_capacity(progs.len());
+        for prog in progs {
+            let cells = prog.to_cells();
+            let parsed = genome::parse(&cells).map_err(|e| SimError::Founder(format!("{e:?}")))?;
+            founders.push((cells, Arc::new(parsed)));
+        }
         let world = world::generate(config.seed, config.width, config.height);
         let tiles = world::spawn_tiles(&world, config.seed, config.agents as usize)
             .ok_or(SimError::NotEnoughSpawnTiles)?;
         let mut agents = Vec::with_capacity(tiles.len());
         let mut next_media_uid = 1;
         for (i, &t) in tiles.iter().enumerate() {
+            let (cells, parsed) = &founders[i % founders.len()];
             let (x, y) = world.xy(t);
             let uid = i as u64 + 1;
             let mut inv = [0u16; NSPEC];
             inv[G] = 32;
             inv[S] = 4;
-            let code = Media::from_cells(next_media_uid, &cells);
+            let code = Media::from_cells(next_media_uid, cells);
             next_media_uid += 1;
             let mut a = Agent {
                 uid,
