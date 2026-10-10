@@ -237,11 +237,53 @@ struct Summary {
     tps: f64,
     audit_ok: bool,
     hash: String,
+    /// JSON object: effect outcome counts per opcode and the M1 counters.
+    effects: String,
+}
+
+/// Effect outcomes per opcode (nonzero only) and the M1 counters, as a JSON object.
+fn effects_json(sim: &Sim) -> String {
+    const OPS: [&str; 10] = ["READ", "WRITE", "DRIVE", "LINK", "UNLINK", "TRANSFER", "WORK", "EMIT", "REPRO", "COPY"];
+    const OUT: [&str; 15] = [
+        "Ok", "Partial", "Noop", "Boundary", "Blocked", "Energy", "Matter", "Capacity", "InvalidTarget", "Stale", "Limits",
+        "Format", "Occluded", "QueryLimit", "Busy",
+    ];
+    let mut ops = Vec::new();
+    for (k, row) in sim.obs.outcomes.iter().enumerate() {
+        let cells: Vec<String> =
+            row.iter().enumerate().filter(|(_, n)| **n > 0).map(|(o, n)| format!("\"{}\": {n}", OUT[o])).collect();
+        if !cells.is_empty() {
+            ops.push(format!("\"{}\": {{{}}}", OPS[k], cells.join(", ")));
+        }
+    }
+    let m = &sim.obs.m1;
+    let m1 = [
+        ("emits", m.emits),
+        ("signal_reads", m.signal_reads),
+        ("public_reads", m.public_reads),
+        ("copies_from_public", m.copies_from_public),
+        ("copies_to_public", m.copies_to_public),
+        ("draft_to_embryo", m.draft_to_embryo),
+        ("public_writes", m.public_writes),
+        ("drafts_created", m.drafts_created),
+        ("foreign_births", m.foreign_births),
+        ("commits", m.commits),
+        ("adoptions", m.adoptions),
+        ("parcels_created", m.parcels_created),
+        ("parcel_reactions", m.parcel_reactions),
+        ("links", m.links),
+        ("unlinks", m.unlinks),
+        ("assembly_moves", m.assembly_moves),
+        ("pushes", m.pushes),
+        ("load_failures", m.load_failures),
+    ];
+    let m1: Vec<String> = m1.iter().map(|(k, v)| format!("\"{k}\": {v}")).collect();
+    format!("{{\"outcomes\": {{{}}}, \"m1\": {{{}}}}}", ops.join(", "), m1.join(", "))
 }
 
 fn summary_json(s: &Summary, o: &Opts) -> String {
     format!(
-        "{{\n  \"ruleset\": \"{}\",\n  \"founder\": \"{}\",\n  \"seed\": {},\n  \"size\": {},\n  \"agents\": {},\n  \"ticks_requested\": {},\n  \"ticks_run\": {},\n  \"extinct_at\": {},\n  \"final_pop\": {},\n  \"peak_pop\": {},\n  \"births\": {},\n  \"deaths_energy\": {},\n  \"deaths_body\": {},\n  \"max_generation\": {},\n  \"distinct_genomes\": {},\n  \"tps\": {:.1},\n  \"audit_ok\": {},\n  \"core_hash\": \"{}\"\n}}\n",
+        "{{\n  \"ruleset\": \"{}\",\n  \"founder\": \"{}\",\n  \"seed\": {},\n  \"size\": {},\n  \"agents\": {},\n  \"ticks_requested\": {},\n  \"ticks_run\": {},\n  \"extinct_at\": {},\n  \"final_pop\": {},\n  \"peak_pop\": {},\n  \"births\": {},\n  \"deaths_energy\": {},\n  \"deaths_body\": {},\n  \"max_generation\": {},\n  \"distinct_genomes\": {},\n  \"tps\": {:.1},\n  \"audit_ok\": {},\n  \"core_hash\": \"{}\",\n  \"effects\": {}\n}}\n",
         o.ruleset,
         o.founder,
         s.seed,
@@ -259,7 +301,8 @@ fn summary_json(s: &Summary, o: &Opts) -> String {
         s.distinct_genomes,
         s.tps,
         s.audit_ok,
-        s.hash
+        s.hash,
+        if s.effects.is_empty() { "null" } else { &s.effects }
     )
 }
 
@@ -368,6 +411,7 @@ emits,signal_reads,public_reads,copies_from_public,copies_to_public,draft_to_emb
     s.max_generation = sim.st.agents.iter().map(|a| a.generation).max().unwrap_or(0);
     s.distinct_genomes = distinct_genomes(&sim);
     s.hash = hex(&sim.state_hash());
+    s.effects = effects_json(&sim);
     fs::write(o.out.join("genomes.txt"), genome_report(&sim, &o.founder, 5)).unwrap();
     fs::write(o.out.join("summary.json"), summary_json(&s, o)).unwrap();
     if o.save_final {
