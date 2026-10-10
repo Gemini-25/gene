@@ -26,6 +26,8 @@
 | M1d(결합·조립체) | ruleset `gene-m1-4`(`--ruleset m1d`): LINK/UNLINK 면 결합·고정·grip, 최대 유량 하중 검사, 16칸까지 조립체 평행 이동·회전, 밀기 |
 | 화면 | `gene serve`: 브라우저용 로컬 viewer(지도·재생·속도·개체 상세·genome 순위·탄소 그래프). Bevy는 보류 |
 
+진행 상황과 결정이 필요한 것: [`docs/NEXT.md`](docs/NEXT.md)
+
 ## 빠른 시작
 
 Rust 1.85 이상이 필요하다.
