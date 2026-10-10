@@ -2,7 +2,8 @@
 """Static SVG charts for docs/results/E1.md (no third-party packages).
 
 usage: e1_charts.py RUNS_DIR OUT_DIR
-RUNS_DIR must contain E1a_founder4/ and E1b_founder5/ batch directories.
+RUNS_DIR holds the batch directories E1a_founder4/, E1b_founder5/ and, when present, E1c_founder6/.
+Seeds still running are drawn up to where they are.
 """
 import csv, math, statistics as st, sys
 from pathlib import Path
@@ -38,20 +39,28 @@ def load(p):
 
 
 def seeds(batch):
-    return sorted(p for p in Path(batch).iterdir() if p.name.startswith("seed_"))
+    return sorted(p for p in Path(batch).iterdir() if p.name.startswith("seed_") and (p / "stats.csv").exists())
+
+
+# experiment directory, label, colour slot (colour follows the founder in every chart)
+EXPERIMENTS = [("E1a_founder4", "Founder-4", "s2"), ("E1b_founder5", "Founder-5", "s1"), ("E1c_founder6", "Founder-6", "s3")]
+
+
+def present(runs):
+    return [e for e in EXPERIMENTS if (Path(runs) / e[0]).is_dir() and seeds(Path(runs) / e[0])]
 
 
 def population_chart(runs, out):
     W, H = 760, 400
-    L, R, T, B = 64, 150, 64, 48
+    L, R, T, B = 64, 170, 64, 48
     pw, ph = W - L - R, H - T - B
     max_day = 49
-    ymin, ymax = 10, 3000
+    ymin, ymax = 10, 10000
     x = lambda d: L + pw * d / max_day
     y = lambda v: T + ph * (1 - (math.log10(v) - math.log10(ymin)) / (math.log10(ymax) - math.log10(ymin)))
     body = [f'<text x="{L}" y="26" class="t">Population per seed (log scale)</text>',
-            f'<text x="{L}" y="44" class="m">population at dawn each day (night survivors); 512×512 world, 1000 founders; thin lines single seeds, thick lines median of 20</text>']
-    for v in (10, 30, 100, 300, 1000, 3000):
+            f'<text x="{L}" y="44" class="m">population at dawn each day (night survivors); 512×512 world, 1000 founders; thin lines single seeds, thick lines median</text>']
+    for v in (10, 30, 100, 300, 1000, 3000, 10000):
         body.append(f'<line x1="{L}" x2="{L+pw}" y1="{y(v):.1f}" y2="{y(v):.1f}" stroke="var(--grid)" stroke-width="1"/>')
         body.append(f'<text x="{L-8}" y="{y(v)+4:.1f}" text-anchor="end" class="m num">{v if v < 1000 else str(v//1000)+"K"}</text>')
     for d in range(0, max_day + 1, 7):
@@ -68,19 +77,26 @@ def population_chart(runs, out):
             # tick 0 (start) and each dawn (tick = 3072 mod 4096): the population that survived the night
             pts = [(0.0, 1000)] + [(int(r["tick"]) / 4096, int(r["pop"])) for r in rows if int(r["tick"]) % 4096 == 3072]
             last = rows[-1]
-            if int(last["pop"]) == 0 and pts[-1][1] != 0:
+            extinct = int(last["pop"]) == 0
+            if extinct and pts[-1][1] != 0:
                 pts.append((int(last["tick"]) / 4096, 0))
-            per.append(pts)
+            per.append((pts, extinct))
         return per
 
     def median_line(per):
-        ticks = sorted({t for pts in per for t, _ in pts})
-        lookup = [dict(pts) for pts in per]
-        last = [pts[-1][0] for pts in per]
+        ticks = sorted({t for pts, _ in per for t, _ in pts})
         med = []
         for t in ticks:
-            vals = [lk.get(t, 0 if t > la else None) for lk, la in zip(lookup, last)]
-            vals = [v for v in vals if v is not None]
+            vals = []
+            for pts, extinct in per:
+                lk = dict(pts)
+                if t in lk:
+                    vals.append(lk[t])
+                elif extinct and t > pts[-1][0]:
+                    vals.append(0)
+            # a median needs every seed: stop where a seed still running has no value yet
+            if len(vals) < len(per):
+                break
             med.append((t, st.median(vals)))
         return med
 
@@ -89,29 +105,41 @@ def population_chart(runs, out):
         pts = [(d, max(v, ymin)) for d, v in pts if v >= ymin or v == 0]
         return " ".join(f"{'M' if i == 0 else 'L'}{x(d):.1f},{y(v):.1f}" for i, (d, v) in enumerate(pts))
 
-    b = series(Path(runs) / "E1b_founder5")
-    a = series(Path(runs) / "E1a_founder4")
-    for pts in b:
-        body.append(f'<path d="{path(pts)}" fill="none" stroke="var(--s1)" stroke-opacity="0.22" stroke-width="1"/>')
-    for pts in a:
-        body.append(f'<path d="{path(pts)}" fill="none" stroke="var(--s2)" stroke-opacity="0.22" stroke-width="1"/>')
-    mb, ma = median_line(b), median_line(a)
-    body.append(f'<path d="{path(mb)}" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>')
-    body.append(f'<path d="{path(ma)}" fill="none" stroke="var(--s2)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>')
-    # end labels
-    eb = [p for p in mb if p[1] >= ymin][-1]
-    body.append(f'<circle cx="{x(eb[0]):.1f}" cy="{y(eb[1]):.1f}" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"/>')
-    body.append(f'<text x="{x(eb[0])+10:.1f}" y="{y(eb[1])+4:.1f}" class="num">Founder-5 median {eb[1]:.0f}</text>')
-    ext_day = max(pts[-1][0] for pts in a)
-    body.append(f'<circle cx="{x(ext_day):.1f}" cy="{y(ymin):.1f}" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"/>')
-    body.append(f'<text x="{x(ext_day)+10:.1f}" y="{y(ymin)-8:.1f}">Founder-4: all 20 seeds extinct by day {ext_day:.1f}</text>')
+    exps = present(runs)
+    data = {name: series(Path(runs) / d) for d, name, _ in exps}
+    for _, name, c in exps:
+        for pts, _ in data[name]:
+            body.append(f'<path d="{path(pts)}" fill="none" stroke="var(--{c})" stroke-opacity="0.22" stroke-width="1"/>')
+    meds = {}
+    labels = []
+    for _, name, c in exps:
+        med = median_line(data[name])
+        meds[name] = med
+        body.append(f'<path d="{path(med)}" fill="none" stroke="var(--{c})" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>')
+        alive = [p for p in med if p[1] >= ymin]
+        if all(p[-1][1] == 0 for p, _ in data[name]):
+            ext_day = max(p[-1][0] for p, _ in data[name])
+            n = len(data[name])
+            body.append(f'<circle cx="{x(ext_day):.1f}" cy="{y(ymin):.1f}" r="4" fill="var(--{c})" stroke="var(--surface)" stroke-width="2"/>')
+            body.append(f'<text x="{x(ext_day)+10:.1f}" y="{y(ymin)-8:.1f}">{name}: all {n} seeds extinct by day {ext_day:.1f}</text>')
+        elif alive:
+            e = alive[-1]
+            body.append(f'<circle cx="{x(e[0]):.1f}" cy="{y(e[1]):.1f}" r="4" fill="var(--{c})" stroke="var(--surface)" stroke-width="2"/>')
+            labels.append([y(e[1]) + 4, x(e[0]) + 10, f"{name} median {e[1]:.0f}"])
+    # keep end labels at least 14 px apart
+    labels.sort()
+    for k in range(1, len(labels)):
+        labels[k][0] = max(labels[k][0], labels[k - 1][0] + 14)
+    for ly_, lx_, text in labels:
+        body.append(f'<text x="{lx_:.1f}" y="{ly_:.1f}" class="num">{text}</text>')
     # legend
     lx, ly = L + pw + 16, T + 8
-    for k, (c, name) in enumerate((("s1", "Founder-5"), ("s2", "Founder-4"))):
+    order = sorted(exps, key=lambda e: e[1], reverse=True)
+    for k, (_, name, c) in enumerate(order):
         body.append(f'<line x1="{lx}" x2="{lx+18}" y1="{ly+k*20}" y2="{ly+k*20}" stroke="var(--{c})" stroke-width="2"/>')
         body.append(f'<text x="{lx+24}" y="{ly+k*20+4}">{name}</text>')
-    Path(out, "population.svg").write_text(svg(W, H, "".join(body), "Population per seed, Founder-4 vs Founder-5"))
-    return mb
+    Path(out, "population.svg").write_text(svg(W, H, "".join(body), "Population per seed by founder"))
+    return meds
 
 
 def budget(batch):
@@ -127,18 +155,18 @@ def budget(batch):
 
 
 def budget_chart(runs, out):
-    bud = [("Founder-4", budget(Path(runs) / "E1a_founder4")), ("Founder-5", budget(Path(runs) / "E1b_founder5"))]
-    W, H = 760, 250
+    bud = [(name, budget(Path(runs) / d)) for d, name, _ in present(runs)]
+    W, H = 760, 194 + 56 * len(bud)
     L, R, T = 110, 40, 64
     pw = W - L - R
     vmax = 300
     x = lambda v: L + pw * v / vmax
     parts = (("upkeep_q", "upkeep", "s1"), ("vm_q", "VM", "s2"), ("attempt_q", "effect attempts", "s3"), ("effect_q", "effect amounts", "s4"))
     body = [f'<text x="{24}" y="26" class="t">First afternoon energy budget (q per agent-tick)</text>',
-            f'<text x="{24}" y="44" class="m">mean over 20 seeds, ticks 0–1024; the black tick is photosynthesis income</text>']
+            f'<text x="{24}" y="44" class="m">mean over seeds, ticks 0–1024; the black tick is photosynthesis income</text>']
     for v in range(0, vmax + 1, 50):
-        body.append(f'<line x1="{x(v):.1f}" x2="{x(v):.1f}" y1="{T}" y2="{T+120}" stroke="var(--grid)" stroke-width="1"/>')
-        body.append(f'<text x="{x(v):.1f}" y="{T+136}" text-anchor="middle" class="m num">{v}</text>')
+        body.append(f'<line x1="{x(v):.1f}" x2="{x(v):.1f}" y1="{T}" y2="{T+8+56*len(bud)}" stroke="var(--grid)" stroke-width="1"/>')
+        body.append(f'<text x="{x(v):.1f}" y="{T+24+56*len(bud)}" text-anchor="middle" class="m num">{v}</text>')
     for i, (name, bd) in enumerate(bud):
         yy = T + 18 + i * 56
         body.append(f'<text x="{L-12}" y="{yy+16}" text-anchor="end" style="fill:var(--ink)">{name}</text>')
@@ -152,49 +180,59 @@ def budget_chart(runs, out):
         inc = bd["income"]
         body.append(f'<line x1="{x(inc):.1f}" x2="{x(inc):.1f}" y1="{yy-6}" y2="{yy+30}" stroke="var(--ink)" stroke-width="2"/>')
         body.append(f'<text x="{x(inc):.1f}" y="{yy-10}" text-anchor="middle" class="m num">income {inc:.0f}</text>')
-    lx, ly = L, T + 158
+    lx, ly = L, T + 46 + 56 * len(bud)
     for k, (_, label, c) in enumerate(parts):
         body.append(f'<rect x="{lx+k*150}" y="{ly-9}" width="12" height="12" rx="2" fill="var(--{c})"/>')
         body.append(f'<text x="{lx+k*150+18}" y="{ly+2}">{label}</text>')
-    Path(out, "budget.svg").write_text(svg(W, H, "".join(body), "First afternoon energy budget, Founder-4 vs Founder-5"))
+    Path(out, "budget.svg").write_text(svg(W, H, "".join(body), "First afternoon energy budget by founder"))
     return bud
 
 
-def survival_chart(phase_rows, out):
-    W, H = 760, 320
-    L, R, T, B = 64, 40, 72, 56
+def survival_chart(groups, out):
+    """groups: [(name, colour, [(phase label, rate, n), ...]), ...] drawn as grouped bars."""
+    W, H = 760, 340
+    L, R, T, B = 64, 40, 92, 56
     pw, ph = W - L - R, H - T - B
-    n = len(phase_rows)
-    band = pw / n
+    phases = [lbl for lbl, _, _ in groups[0][2]]
+    band = pw / len(phases)
+    bw = 24
     y = lambda v: T + ph * (1 - v)
+    names = " vs ".join(g[0] for g in groups)
     body = [f'<text x="{L}" y="26" class="t">Newborns alive one day after birth, by birth time</text>',
-            f'<text x="{L}" y="44" class="m">Founder-5, all 20 seeds pooled; births in the last day of a run are excluded</text>']
+            f'<text x="{L}" y="44" class="m">{names}; seeds pooled; births in the last day of a run are excluded</text>']
+    for k, (name, c, _) in enumerate(groups):
+        body.append(f'<rect x="{L+k*130}" y="{56}" width="12" height="12" rx="2" fill="var(--{c})"/>')
+        body.append(f'<text x="{L+k*130+18}" y="{67}">{name}</text>')
     for v in (0, 0.25, 0.5, 0.75, 1.0):
         body.append(f'<line x1="{L}" x2="{L+pw}" y1="{y(v):.1f}" y2="{y(v):.1f}" stroke="var(--grid)" stroke-width="1"/>')
         body.append(f'<text x="{L-8}" y="{y(v)+4:.1f}" text-anchor="end" class="m num">{int(v*100)}%</text>')
-    yscale = y
-    for i, (label, rate, cnt) in enumerate(phase_rows):
-        cx = L + band * i + band / 2
-        if cnt:
-            top = yscale(rate)
-            bw = 24
-            hgt = T + ph - top
-            if hgt > 0:
-                r = min(4, hgt)
-                body.append(f'<path d="M{cx-bw/2:.1f},{T+ph} V{top+r:.1f} Q{cx-bw/2:.1f},{top:.1f} {cx-bw/2+r:.1f},{top:.1f} '
-                            f'H{cx+bw/2-r:.1f} Q{cx+bw/2:.1f},{top:.1f} {cx+bw/2:.1f},{top+r:.1f} V{T+ph} Z" fill="var(--s1)"/>')
-            body.append(f'<text x="{cx:.1f}" y="{top-6:.1f}" text-anchor="middle" class="num" style="fill:var(--ink)">{rate:.0%}</text>')
-            body.append(f'<text x="{cx:.1f}" y="{T+ph+32}" text-anchor="middle" class="m num">n={cnt}</text>')
-        body.append(f'<text x="{cx:.1f}" y="{T+ph+16}" text-anchor="middle" class="m">{label}</text>')
+    for i, label in enumerate(phases):
+        cx0 = L + band * i + band / 2
+        span = len(groups) * bw + (len(groups) - 1) * 6
+        for k, (name, c, rows) in enumerate(groups):
+            _, rate, cnt = rows[i]
+            cx = cx0 - span / 2 + bw / 2 + k * (bw + 6)
+            if cnt:
+                top = y(rate)
+                hgt = T + ph - top
+                if hgt > 0:
+                    r = min(4, hgt)
+                    body.append(f'<path d="M{cx-bw/2:.1f},{T+ph} V{top+r:.1f} Q{cx-bw/2:.1f},{top:.1f} {cx-bw/2+r:.1f},{top:.1f} '
+                                f'H{cx+bw/2-r:.1f} Q{cx+bw/2:.1f},{top:.1f} {cx+bw/2:.1f},{top+r:.1f} V{T+ph} Z" fill="var(--{c})">'
+                                f'<title>{name}, {label}: {rate:.0%} of {cnt}</title></path>')
+                body.append(f'<text x="{cx:.1f}" y="{top-6:.1f}" text-anchor="middle" class="num" style="fill:var(--ink);font-size:11px">{rate:.0%}</text>')
+        ns = " / ".join(f"{rows[i][2]:,}" for _, _, rows in groups)
+        body.append(f'<text x="{cx0:.1f}" y="{T+ph+16}" text-anchor="middle" class="m">{label}</text>')
+        body.append(f'<text x="{cx0:.1f}" y="{T+ph+32}" text-anchor="middle" class="m num">n={ns}</text>')
     body.append(f'<line x1="{L}" x2="{L+pw}" y1="{T+ph}" y2="{T+ph}" stroke="var(--axis)" stroke-width="1"/>')
     Path(out, "newborn_survival.svg").write_text(svg(W, H, "".join(body), "Newborn one-day survival by birth time"))
 
 
-def newborn_survival(runs):
+def newborn_survival(batch):
     """Pool births across seeds: survival >= 1 day by birth phase."""
     bins = [(0, 512, "dawn"), (512, 1024, "morning"), (1024, 1536, "early afternoon"), (1536, 2048, "late afternoon")]
     acc = {b[2]: [0, 0] for b in bins}
-    for sd in seeds(Path(runs) / "E1b_founder5"):
+    for sd in seeds(batch):
         deaths = {int(d["uid"]): int(d["age"]) for d in load(sd / "deaths.csv")}
         stats = load(sd / "stats.csv")
         if not stats:
@@ -217,10 +255,12 @@ def newborn_survival(runs):
 if __name__ == "__main__":
     runs, out = sys.argv[1], sys.argv[2]
     Path(out).mkdir(parents=True, exist_ok=True)
-    mb = population_chart(runs, out)
+    meds = population_chart(runs, out)
     bud = budget_chart(runs, out)
-    surv = newborn_survival(runs)
-    survival_chart(surv, out)
+    groups = [(name, c, newborn_survival(Path(runs) / d)) for d, name, c in present(runs) if d != "E1a_founder4"]
+    survival_chart(groups, out)
     print("budget:", {n: {k: round(v, 1) for k, v in b.items()} for n, b in bud})
-    print("survival by phase:", [(n, f"{r:.1%}", c) for n, r, c in surv])
-    print("Founder-5 median dawn population by day:", [(round(d, 2), v) for d, v in mb][::7])
+    for name, _, rows in groups:
+        print(f"survival by phase, {name}:", [(n, f"{r:.1%}", c) for n, r, c in rows])
+    for name, med in meds.items():
+        print(f"{name} median dawn population by day:", [(round(d, 2), v) for d, v in med][::7])
