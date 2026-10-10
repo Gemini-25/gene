@@ -167,6 +167,25 @@ pub struct WindowRecord {
 /// with other timings or directions (SPEC §17f). LINK, UNLINK, TRANSFER, EMIT and COPY ignore
 /// their sub-op, so it is set to 0 there: a mutated, unused immediate is not a new action.
 pub fn action_grams(tokens: &[Token]) -> Vec<u32> {
+    action_grams_impl(tokens)
+}
+
+/// The kinds of successful actions in a token sequence (sub-op 0 where it is unused), sorted:
+/// what a window does, regardless of order, timing, failures and repeats.
+pub fn action_set(tokens: &[Token]) -> Vec<u8> {
+    let mut v: Vec<u8> = tokens.iter().filter(|t| t[1] <= 1 && t[0] != 255).map(|t| norm_kind(t[0])).collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+fn norm_kind(k: u8) -> u8 {
+    use crate::isa::op;
+    let opc = (k >> 3) + op::READ;
+    if matches!(opc, op::LINK | op::UNLINK | op::TRANSFER | op::EMIT | op::COPY) { k & !7 } else { k }
+}
+
+fn action_grams_impl(tokens: &[Token]) -> Vec<u32> {
     let kind = |k: u8| -> u32 {
         use crate::isa::op;
         let opc = (k >> 3) + op::READ;

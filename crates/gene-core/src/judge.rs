@@ -15,7 +15,7 @@
 //! and timing) was seen in some window of founder code: a founder routine with other timings
 //! is not a new behaviour. D (a person checking on screen) happens in the viewer.
 
-use crate::behavior::{action_grams, Family, WindowRecord, UNKNOWN_SITUATION, WINDOW};
+use crate::behavior::{action_grams, action_set, Family, WindowRecord, UNKNOWN_SITUATION, WINDOW};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// Share of windows from unchanged founder genomes at which a behaviour is the founders' own.
@@ -274,6 +274,13 @@ impl Judge {
                 pass: success && linked,
             });
         }
+        // what each step of a chain does (successful action kinds), and the step sequences of
+        // chains founder code runs: a chain whose steps do the same is a founder chain with
+        // other timings or a failing action slipped in, not a new combination
+        let by_id: BTreeMap<u32, &Family> = families.iter().map(|f| (f.id, f)).collect();
+        let steps = |c: &Chain| -> Vec<Vec<u8>> { c.families.iter().map(|f| by_id.get(f).map_or(vec![], |f| action_set(&f.example))).collect() };
+        let founder_steps: BTreeSet<Vec<Vec<u8>>> =
+            self.chains.values().filter(|c| c.founder_occurrences > 0 && founders_own(c.founder_occurrences, c.occurrences)).map(steps).collect();
         let mut cands = Vec::new();
         for c in self.chains.values().filter(|c| c.agent_count >= 2) {
             let reject = if !c.families.iter().all(|f| pass.contains_key(f)) {
@@ -289,7 +296,8 @@ impl Judge {
             } else {
                 None
             };
-            let new = !founders_own(c.founder_occurrences, c.occurrences) || c.families.iter().any(|f| founder.get(f) == Some(&false));
+            let new_family = c.families.iter().any(|f| founder.get(f) == Some(&false));
+            let new = new_family || (!founders_own(c.founder_occurrences, c.occurrences) && !founder_steps.contains(&steps(c)));
             cands.push(Candidate { chain: c.clone(), new, reject });
         }
         cands.sort_by_key(|c| (c.reject.is_some(), std::cmp::Reverse(c.new), std::cmp::Reverse(c.chain.agent_count), c.chain.families.clone()));
@@ -382,6 +390,49 @@ mod tests {
         let by = |id| judged.iter().find(|f| f.id == id).unwrap();
         assert!(by(7).founder, "same actions in the same order as founder code");
         assert!(!by(8).founder, "a new order of successful actions");
+    }
+
+    #[test]
+    fn a_founder_chain_with_a_failing_action_slipped_in_is_not_new() {
+        let mut j = Judge::default();
+        for u in 1..=20 {
+            j.founder(100 + u, 0, [0; 32]);
+        }
+        let alloc: crate::behavior::Token = [64, 0, 255, 255, 1, 0, 0, 0];
+        let grow: crate::behavior::Token = [65, 0, 255, 255, 1, 2, 0, 0];
+        let bad_step: crate::behavior::Token = [67, 8, 255, 255, 0, 1, 0, 0];
+        let copy: crate::behavior::Token = [72, 0, 255, 255, 2, 1, 0, 0];
+        // founder code runs 7 > 8 (allocate and grow, then copy); mutants run 17 > 8, where 17
+        // is 7 with a failing step in the middle
+        for u in 1..=6 {
+            let f = 100 + u;
+            for (k, w) in [10u64, 18].into_iter().enumerate() {
+                j.output(f, w * WINDOW + 1);
+                j.window(&rec(f, w, 7, 9));
+                j.window(&rec(f, w + 1, 8, 9));
+                let m = u;
+                if k == 0 {
+                    j.birth(m, f, 0, [1; 32]);
+                }
+                j.output(m, (w + 40) * WINDOW + 1);
+                j.window(&rec(m, w + 40, 17, 9));
+                j.window(&rec(m, w + 41, 8, 9));
+                j.birth(1000 + 10 * u + k as u64, m, (w + 40) * WINDOW, [1; 32]);
+            }
+        }
+        // founder windows have shown these action triples
+        let g = action_grams(&[alloc, grow, grow])[0];
+        j.window(&WindowRecord { uid: 101, window: 90, family: Some(7), ok: 4, total: 4, output: true, ctx: 2, grams: [g, 0, 0, 0, 0, 0, 0, 0] });
+        let mut f7 = fam(7, 10 * WINDOW);
+        f7.example = vec![alloc, grow, grow, grow];
+        let mut f17 = fam(17, 50 * WINDOW);
+        f17.example = vec![alloc, grow, bad_step, grow];
+        let mut f8 = fam(8, 11 * WINDOW);
+        f8.example = vec![copy; 4];
+        let (_, cands) = j.finish(&[f7, f8, f17], 100 * WINDOW);
+        let c = cands.iter().find(|c| c.chain.families == vec![17, 8]).expect("chain 17 > 8");
+        assert_eq!(c.chain.founder_occurrences, 0);
+        assert!(!c.new, "same steps as the founder chain 7 > 8");
     }
 
     #[test]
