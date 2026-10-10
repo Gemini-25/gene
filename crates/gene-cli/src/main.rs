@@ -247,12 +247,13 @@ struct Summary {
 
 /// Effect outcomes per opcode (nonzero only) and the M1 counters, as a JSON object.
 /// Behaviour families seen in at least 3 windows (original §58), oldest first.
-fn behaviors_csv(an: &gene_core::behavior::Analyzer) -> String {
-    let mut out = String::from("family,first_tick,first_agent,last_tick,windows,near,agents,repeated_at,example\n");
+fn behaviors_csv(an: &gene_core::behavior::Analyzer, now: u64) -> String {
+    use gene_core::behavior::UseState;
+    let mut out = String::from("family,first_tick,first_agent,last_tick,windows,near,agents,repeated_at,state_at_end,example\n");
     for f in an.families.iter().filter(|f| f.windows >= 3) {
         let ex: Vec<String> = f.example.iter().map(gene_core::behavior::describe).collect();
         out += &format!(
-            "{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{}\n",
             f.id,
             f.first_tick,
             f.first_uid,
@@ -261,6 +262,11 @@ fn behaviors_csv(an: &gene_core::behavior::Analyzer) -> String {
             f.near,
             f.agents.len(),
             f.repeated_at.map_or(String::new(), |t| t.to_string()),
+            match f.use_state(now) {
+                UseState::LiveUsers => "live",
+                UseState::Fading => "fading",
+                UseState::NotObserved => "not_observed",
+            },
             ex.join(" | ")
         );
     }
@@ -594,7 +600,7 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     s.relations = relations_json(&graph, &artifacts, &lineage);
     fs::write(o.out.join("lineage.csv"), lineage_csv(&lineage)).unwrap();
     fs::write(o.out.join("artifacts.csv"), artifacts_csv(&artifacts)).unwrap();
-    fs::write(o.out.join("behaviors.csv"), behaviors_csv(&behavior)).unwrap();
+    fs::write(o.out.join("behaviors.csv"), behaviors_csv(&behavior, sim.st.tick)).unwrap();
     fs::write(o.out.join("genomes.txt"), genome_report(&sim, &o.founder, 5)).unwrap();
     fs::write(o.out.join("summary.json"), summary_json(&s, o)).unwrap();
     if o.save_final {

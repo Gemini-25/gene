@@ -591,6 +591,8 @@ Founder-7(`assets/founder7.asm`)은 Founder-6에서 G가 모자랄 때의 행동
 - `behaviors.csv`: 창 3개 이상인 family. 처음 tick, 처음 개체, 창 수, intermediate 수, 개체 수, 반복 확정 tick, 대표 token 예시.
 - `summary.json`의 `effects.behavior`: 창·short·matched·novel·intermediate 수, family 수, 반복 family 수.
 
+**사용 상태(원본 §58 기술 상태).** 반복 family마다 마지막으로 나타난 tick으로 정한다: 4096 tick 안이면 LiveUsers(사용 중), 3 × 4096 tick 안이면 Fading(뜸해짐), 그보다 오래면 NotObserved(관찰 안 됨). 다시 나타나면 LiveUsers로 돌아온다. 행동 증거만 쓴다. 기록이나 구조물만 남은 상태(DormantRecord, ArtifactOnly)는 §17d, §17e의 출력으로 따로 본다. `behaviors.csv`의 state_at_end 열과 화면 배지로 보인다.
+
 **원본과의 차이.** context(tile G, 빛, 혼잡, 이동) 기반 표본은 아직 없다.
 
 ### 17c. 관계 graph와 집단 (원본 §58, §29)
@@ -685,7 +687,7 @@ bin = min(16, floor(log2(1 + n)))이다. parcel이 없는 tile의 parcel 필드�
 - `lineage.csv`: tick, agent, media, author, kind(kin/non-kin), cells, via(learned/birth).
 - `summary.json`의 `relations`: record_writes, record_copies, copied_cells, bit_damage, transfers_kin, transfers_nonkin.
 
-**원본과의 차이.** 기술 상태(LiveUsers, DormantRecord, ArtifactOnly, NotObserved)와 Recent Innovations 알림 규칙은 아직 없다. module 단위가 아니라 사용 구간 전체로 실행 증거를 본다.
+**원본과의 차이.** module 단위가 아니라 사용 구간 전체로 실행 증거를 본다. 기술 상태는 행동 family에만 붙였다(§17b).
 
 ## 18. 첫 실험 E1: 조상 생존 (§49 축소판)
 

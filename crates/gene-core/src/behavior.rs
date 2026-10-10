@@ -99,6 +99,33 @@ pub struct Family {
     pub example: Vec<Token>,
 }
 
+/// Use state of a family (original §58 기술 상태), from when it was last seen. Only behaviour
+/// evidence is used here; records and artifacts are reported separately.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UseState {
+    /// Seen within the last 4096 ticks.
+    LiveUsers,
+    /// Last seen 4096..3 * 4096 ticks ago.
+    Fading,
+    /// Not seen for three 4096-tick windows.
+    NotObserved,
+}
+
+pub const USE_WINDOW: u64 = 4096;
+
+impl Family {
+    pub fn use_state(&self, now: u64) -> UseState {
+        let gap = now.saturating_sub(self.last_tick);
+        if gap < USE_WINDOW {
+            UseState::LiveUsers
+        } else if gap < 3 * USE_WINDOW {
+            UseState::Fading
+        } else {
+            UseState::NotObserved
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Counts {
     pub windows: u64,
@@ -280,6 +307,25 @@ mod tests {
 
     fn fact(tick: u64, uid: u64, kind: u8, outcome: u8) -> EffectFact {
         EffectFact { tick, uid, kind, outcome, dir: 255, channel: 255, actual: 1 }
+    }
+
+    #[test]
+    fn use_state_follows_the_last_sighting() {
+        let f = Family {
+            id: 0,
+            sketch: vec![],
+            first_tick: 0,
+            first_uid: 0,
+            last_tick: 10_000,
+            windows: 3,
+            near: 0,
+            agents: Default::default(),
+            repeated_at: None,
+            example: vec![],
+        };
+        assert_eq!(f.use_state(10_000 + 4095), UseState::LiveUsers);
+        assert_eq!(f.use_state(10_000 + 4096), UseState::Fading);
+        assert_eq!(f.use_state(10_000 + 3 * 4096), UseState::NotObserved);
     }
 
     #[test]

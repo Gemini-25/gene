@@ -1343,7 +1343,9 @@ async function loadBehaviors() {
   const ul = $("behav"); ul.innerHTML = "";
   for (const f of b.recent) {
     const li = document.createElement("li");
-    li.innerHTML = `<span>#${f.id} · ${(f.repeated / 4096).toFixed(1)}일째 확정 <span class="small">· 처음 ${(f.first / 4096).toFixed(1)}일 · 개체 ${f.agents} · 창 ${f.windows}</span></span>
+    const ST = { live: ["사용 중", "지난 4096 tick 안에 다시 나타남"], fading: ["뜸해짐", "4096 tick 넘게 안 보임"], gone: ["관찰 안 됨", "3일 넘게 안 보임"] };
+    const st = ST[f.state] || ["", ""];
+    li.innerHTML = `<span>#${f.id} · ${(f.repeated / 4096).toFixed(1)}일째 확정 <span class="badge${f.state === "live" ? " civ" : ""}" title="${st[1]}">${st[0]}</span> <span class="small">· 처음 ${(f.first / 4096).toFixed(1)}일 · 개체 ${f.agents} · 창 ${f.windows}</span></span>
       <code>${esc(f.example)}</code>`;
     ul.appendChild(li);
   }

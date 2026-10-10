@@ -380,7 +380,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
             sh.snapshot = Arc::new(snap);
             sh.agents = Arc::new(agents_bin(&sim, &cache));
             sh.history = Arc::new(hist.json());
-            sh.behaviors = Arc::new(behaviors_json(&behavior));
+            sh.behaviors = Arc::new(behaviors_json(&behavior, sim.st.tick));
             sh.timeline = Arc::new(timeline.json());
             dirty = ran > 0;
         }
@@ -607,7 +607,8 @@ fn lineage_json(l: &gene_core::lineage::Lineage) -> String {
     )
 }
 
-fn behaviors_json(an: &gene_core::behavior::Analyzer) -> String {
+fn behaviors_json(an: &gene_core::behavior::Analyzer, now: u64) -> String {
+    use gene_core::behavior::UseState;
     let mut rep: Vec<&gene_core::behavior::Family> = an.families.iter().filter(|f| f.repeated_at.is_some()).collect();
     rep.sort_by_key(|f| std::cmp::Reverse((f.repeated_at, f.id)));
     let items: Vec<String> = rep
@@ -616,12 +617,18 @@ fn behaviors_json(an: &gene_core::behavior::Analyzer) -> String {
         .map(|f| {
             let ex: Vec<String> = f.example.iter().map(gene_core::behavior::describe).collect();
             format!(
-                "{{\"id\":{},\"first\":{},\"repeated\":{},\"windows\":{},\"agents\":{},\"example\":{}}}",
+                "{{\"id\":{},\"first\":{},\"repeated\":{},\"windows\":{},\"agents\":{},\"state\":\"{}\",\"last\":{},\"example\":{}}}",
                 f.id,
                 f.first_tick,
                 f.repeated_at.unwrap(),
                 f.windows,
                 f.agents.len(),
+                match f.use_state(now) {
+                    UseState::LiveUsers => "live",
+                    UseState::Fading => "fading",
+                    UseState::NotObserved => "gone",
+                },
+                f.last_tick,
                 json_str(&ex.join(" · "))
             )
         })
