@@ -164,12 +164,18 @@ pub struct WindowRecord {
 /// Ordered triples of successful actions, ignoring direction, amount and timing: each gram is
 /// kind0 << 16 | kind1 << 8 | kind2 (kind = (opcode - 0x20) << 3 | sub-op), plus 1 so 0 means
 /// none. The judge uses them to tell a new combination of actions from a founder routine run
-/// with other timings or directions (SPEC §17f).
+/// with other timings or directions (SPEC §17f). LINK, UNLINK, TRANSFER, EMIT and COPY ignore
+/// their sub-op, so it is set to 0 there: a mutated, unused immediate is not a new action.
 pub fn action_grams(tokens: &[Token]) -> Vec<u32> {
+    let kind = |k: u8| -> u32 {
+        use crate::isa::op;
+        let opc = (k >> 3) + op::READ;
+        if matches!(opc, op::LINK | op::UNLINK | op::TRANSFER | op::EMIT | op::COPY) { (k & !7) as u32 } else { k as u32 }
+    };
     let mut g: Vec<u32> = tokens
         .windows(3)
         .filter(|w| w.iter().all(|t| t[1] <= 1 && t[0] != 255))
-        .map(|w| ((w[0][0] as u32) << 16 | (w[1][0] as u32) << 8 | w[2][0] as u32) + 1)
+        .map(|w| (kind(w[0][0]) << 16 | kind(w[1][0]) << 8 | kind(w[2][0])) + 1)
         .collect();
     g.sort_unstable();
     g.dedup();
