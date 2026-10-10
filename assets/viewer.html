@@ -348,12 +348,19 @@ void main() {
   float wRock = clamp(smoothstep(0.66, 0.9, he) + smoothstep(0.45, 0.9, slope) * 0.6, 0.0, 1.0);
   float wDry = (1.0 - smoothstep(0.18, 0.42, m)) * (1.0 - wRock);
   float wSoil = smoothstep(0.78, 0.97, m) * (1.0 - wRock) * 0.7;
+  // ground without loose water dries out: grass and damp soil give way to parched earth
+  float wv0 = texture(u_field, p / u_world).r * 255.0;
+  float parch = (1.0 - smoothstep(0.5, 6.0, wv0)) * (1.0 - wRock);
+  wDry = mix(wDry, 1.0 - wRock, parch);
+  wSoil *= 1.0 - parch;
   float wGrass = max(0.0, 1.0 - wRock - wDry - wSoil);
   vec2 uv = p / 3.0;
   vec3 col = wGrass * texture(u_ground, vec3(uv, 0.0)).rgb * mix(vec3(0.84, 0.94, 0.86), vec3(1.1, 1.06, 0.84), lp)
            + wDry * texture(u_ground, vec3(uv * 1.3 + 0.37, 1.0)).rgb
            + wRock * texture(u_ground, vec3(uv * 0.7 + 0.71, 2.0)).rgb
            + wSoil * texture(u_ground, vec3(uv + 0.13, 3.0)).rgb;
+  // parched: dusty and less saturated than naturally dry ground
+  col = mix(col, vec3(dot(col, vec3(0.35, 0.45, 0.2))) * vec3(1.06, 0.94, 0.80), parch * 0.5);
   col *= shade;
   float wv = texture(u_field, p / u_world).r * 255.0;
   col *= 1.0 - 0.14 * smoothstep(24.0, 48.0, wv);
