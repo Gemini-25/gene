@@ -15,7 +15,8 @@
 | 에너지·원자 장부 | 시험에서는 매 tick 정확히 일치, 실행 중에는 4096 tick마다 검사 |
 | 결정론 | 같은 seed면 같은 hash. 저장 후 이어 간 결과도 같음 |
 | E1-a: Founder-4(원본 §57) | 20/20 seed가 첫 밤에 전멸 |
-| E1-b: Founder-5(개정판) | [`docs/results/E1.md`](docs/results/E1.md) |
+| E1-b: Founder-5(개정판) | 20/20 seed가 49일 생존. 그러나 계속 줄어 마지막 개체 수 중앙값 66 ([`docs/results/E1.md`](docs/results/E1.md)) |
+| E1-c: Founder-6(오전에만 번식) | 진행 중 |
 | 속도(512², 개체 약 1,700) | 약 190 TPS, 단일 thread. 명세 목표 S1(500+) 미달, 병목은 환경 수송 |
 | M1a(신호·공개 기록·초안) | ruleset `gene-m1-1`(`--ruleset m1a`) |
 | M1b(학습 채택) | ruleset `gene-m1-2`(`--ruleset m1b`): DraftCommit, learned binding, 실행 중 옛 코드 보존 |
