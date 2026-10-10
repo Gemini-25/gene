@@ -111,6 +111,7 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
     <button data-tps="0">MAX</button>
     <button id="save">저장</button>
     <button id="sig" title="M1 신호 장 표시">신호</button>
+    <button id="terr" title="집단의 영토(16×16칸): 방문 · 물질 이동 · 구조물 사용. 한 집단이 60% 이상일 때만 그 색">영토</button>
     <button id="colour" title="개체 색 기준: genome · 계통 · 집단 · 에너지 · 세대">색: genome</button>
     <button id="theme" title="자동 / 밝게 / 어둡게">테마: 자동</button>
   </div>
@@ -182,6 +183,7 @@ let view = { scale: 1, ox: 0, oy: 0, fitted: false };   // css px per tile, offs
 let zoomTo = null;                                      // smoothed wheel zoom target
 let terrainTex = null, fieldTex = null, parcelTex = null, sigTex = null, groundTex = null, noiseTex = null;
 let parcelBuf = null, sigBuf = null, agentTex = null, agentBuf = null, lastAgentTiles = [];
+let terrTex = null, terrBuf = null, terrCells = [1, 1], terrLayer = -1, terrData = null; // -1 off, 0 visits, 1 matter, 2 structures
 const DOT_LOD = 6;   // device px per tile below which agents are drawn by the terrain pass
 const fps = { frames: 0, since: performance.now(), value: 0, scale: 1, lowered: 0, good: 0, start: performance.now() };
 window.__fps = () => fps.value;
@@ -367,9 +369,9 @@ void main() {
 const FS_TERRAIN = `#version 300 es
 precision highp float;
 in vec2 v_p;
-uniform sampler2D u_albedo, u_weights, u_detail, u_field, u_parc, u_sig, u_noise, u_agents;
+uniform sampler2D u_albedo, u_weights, u_detail, u_field, u_parc, u_sig, u_noise, u_agents, u_terr2;
 uniform vec2 u_world;
-uniform float u_time, u_light, u_ppt, u_showSig, u_bakeR, u_flat, u_agentDots, u_mini;
+uniform float u_time, u_light, u_ppt, u_showSig, u_bakeR, u_flat, u_agentDots, u_mini, u_showTerr, u_cell;
 uniform vec4 u_rect;
 out vec4 o;
 float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
@@ -460,6 +462,18 @@ void main() {
     float r0 = length(f - 0.5);
     if ((pf & 1) != 0) col = mix(col, vec3(0.15, 0.14, 0.14), smoothstep(0.12, 0.09, r0));
     if ((pf & 2) != 0) col = mix(col, vec3(0.95, 0.85, 0.35), smoothstep(0.03, 0.0, abs(r0 - 0.42)));
+  }
+  if (u_showTerr > 0.5) {
+    // territory wash per 16x16 cell, with a faint outline where the owner changes
+    vec2 cp = p / u_cell;
+    ivec2 ci = ivec2(floor(cp));
+    vec4 T = texelFetch(u_terr2, ci, 0);
+    col = mix(col, T.rgb, T.a * 0.6);
+    vec2 cf = fract(cp);
+    float e = min(min(cf.x, cf.y), min(1.0 - cf.x, 1.0 - cf.y)) * u_cell * u_ppt;
+    vec4 Tx = texelFetch(u_terr2, ci + ivec2(cf.x > 0.5 ? 1 : -1, 0), 0), Ty = texelFetch(u_terr2, ci + ivec2(0, cf.y > 0.5 ? 1 : -1), 0);
+    float diff = max(float(any(greaterThan(abs(Tx.rgb - T.rgb), vec3(0.02)))), float(any(greaterThan(abs(Ty.rgb - T.rgb), vec3(0.02)))));
+    col = mix(col, T.rgb * 0.6, diff * max(T.a, 0.3) * smoothstep(2.0, 0.5, e) * 0.8);
   }
   if (u_showSig > 0.5) {
     float s = texelFetch(u_sig, ti, 0).r * 255.0 - 128.0;
@@ -713,6 +727,8 @@ function setTerrain(bin) {
   parcelBuf = new Uint8Array(4 * W * H); parcelTex = tex2d(W, H, parcelBuf, gl.NEAREST);
   sigBuf = new Uint8Array(4 * W * H).fill(128); sigTex = tex2d(W, H, sigBuf, gl.NEAREST);
   agentBuf = new Uint8Array(4 * W * H); agentTex = tex2d(W, H, agentBuf, gl.NEAREST);
+  terrCells = [Math.ceil(W / 16), Math.ceil(H / 16)];
+  terrBuf = new Uint8Array(4 * terrCells[0] * terrCells[1]); terrTex = tex2d(terrCells[0], terrCells[1], terrBuf, gl.NEAREST);
   bake.r = Math.max(2, Math.min(16, Math.floor(1024 / Math.max(W, H))));
   bake.w = W * bake.r; bake.h = H * bake.r;
   bake.front = bakeTarget(bake.w, bake.h); bake.back = bakeTarget(bake.w, bake.h);
@@ -917,13 +933,14 @@ function drawFrame(now) {
   gl.uniform2f(u.u_world, W, H); gl.uniform3f(u.u_view, ...vu); gl.uniform2f(u.u_vp, cw, ch); gl.uniform1f(u.u_flip, -1);
   gl.uniform1f(u.u_bakeR, bake.r); gl.uniform1f(u.u_flat, DEBUG.includes("flat") ? 1 : 0);
   gl.uniform1f(u.u_time, t); gl.uniform1f(u.u_light, light); gl.uniform1f(u.u_ppt, view.scale * dpr); gl.uniform1f(u.u_showSig, showSignal ? 1 : 0);
+  gl.uniform1f(u.u_showTerr, terrLayer >= 0 && terrTex ? 1 : 0); gl.uniform1f(u.u_cell, 16);
   const dots = view.scale * dpr < DOT_LOD;
   dotsOn = dots;
   if (dots && agentTexStale) setAgentTexture();
   gl.uniform1f(u.u_agentDots, dots && !DEBUG.includes("noagents") ? 1 : 0);
   gl.uniform1f(u.u_mini, 0);
   const units = [[u.u_albedo, bake.front.albedo], [u.u_weights, bake.front.weights], [u.u_detail, detailTex], [u.u_field, fieldTex],
-    [u.u_parc, parcelTex], [u.u_sig, sigTex], [u.u_noise, noiseTex], [u.u_agents, agentTex]];
+    [u.u_parc, parcelTex], [u.u_sig, sigTex], [u.u_noise, noiseTex], [u.u_agents, agentTex], [u.u_terr2, terrTex]];
   units.forEach(([loc, tx], i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tx); gl.uniform1i(loc, i); });
   gl.disable(gl.BLEND);
   if (!DEBUG.includes("noterrain")) { gl.bindVertexArray(quadVao); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); }
@@ -959,7 +976,7 @@ function drawMinimap(cw, ch, dpr, r, light, t) {
   gl.useProgram(progT.p);
   const u = progT.u;
   gl.uniform3f(u.u_view, g.k, g.ox, g.oy); gl.uniform2f(u.u_vp, g.size, g.size);
-  gl.uniform1f(u.u_ppt, g.k); gl.uniform1f(u.u_agentDots, 1); gl.uniform1f(u.u_mini, 1); gl.uniform1f(u.u_showSig, 0);
+  gl.uniform1f(u.u_ppt, g.k); gl.uniform1f(u.u_agentDots, 1); gl.uniform1f(u.u_mini, 1); gl.uniform1f(u.u_showSig, 0); gl.uniform1f(u.u_showTerr, 0);
   const s = view.scale;
   gl.uniform4f(u.u_rect, -view.ox / s, -view.oy / s, (r.width - view.ox) / s, (r.height - view.oy) / s);
   // zoomed in, the agent texture is only kept for the minimap: refresh it at most once a second
@@ -1315,6 +1332,37 @@ async function control(q) { await fetch("/api/control?" + q); poll(); }
 $("play").onclick = () => control(state && state.paused ? "play=1" : "pause=1");
 $("step").onclick = () => control("step=1");
 $("sig").onclick = () => { showSignal = !showSignal; $("sig").classList.toggle("on", showSignal); draw(); };
+const TERR_NAMES = ["방문", "물질", "구조물"];
+$("terr").onclick = () => {
+  terrLayer = terrLayer >= 2 ? -1 : terrLayer + 1;
+  $("terr").textContent = terrLayer < 0 ? "영토" : "영토: " + TERR_NAMES[terrLayer];
+  $("terr").classList.toggle("on", terrLayer >= 0);
+  setTerritory(); draw();
+};
+// owner colour per cell; alpha by log amount; cells with no clear owner stay faint grey
+function setTerritory() {
+  if (!terrTex) return;
+  terrBuf.fill(0);
+  if (terrLayer >= 0 && terrData && terrData.layers) {
+    const L = terrData.layers[terrLayer];
+    let max = 1;
+    for (let k = 1; k < L.length; k += 2) max = Math.max(max, L[k]);
+    const lm = Math.log2(1 + max);
+    for (let k = 0, cell = 0; k < L.length; k += 2, cell++) {
+      if (cell >= terrCells[0] * terrCells[1] || L[k + 1] === 0) continue;
+      const c = L[k] ? lineageColour(L[k] * 7919) : 0x8a8a8a;
+      terrBuf[4 * cell] = (c >> 16) & 255; terrBuf[4 * cell + 1] = (c >> 8) & 255; terrBuf[4 * cell + 2] = c & 255;
+      terrBuf[4 * cell + 3] = Math.round(255 * (L[k] ? 0.35 + 0.65 * Math.log2(1 + L[k + 1]) / lm : 0.25));
+    }
+  }
+  upload(terrTex, terrCells[0], terrCells[1], terrBuf);
+}
+async function loadTerritory() {
+  const t = await getJSON("/api/territory");
+  if (!t.layers) return;
+  terrData = t;
+  if (terrLayer >= 0) { setTerritory(); draw(); }
+}
 $("step100").onclick = () => control("step=100");
 $("colour").onclick = () => {
   colourMode = COLOUR_MODES[(COLOUR_MODES.indexOf(colourMode) + 1) % COLOUR_MODES.length];
@@ -1423,7 +1471,7 @@ async function slowPoll() {
   try {
     const h = await getJSON("/api/history");
     const t = h.tick && h.tick.length ? h.tick[h.tick.length - 1] : 0;
-    if (t !== lastHistTick) { lastHistTick = t; hist = h; later(drawCharts, 0); later(loadBehaviors, 400); later(loadGroups, 600); later(loadArtifacts, 800); }
+    if (t !== lastHistTick) { lastHistTick = t; hist = h; later(drawCharts, 0); later(loadBehaviors, 400); later(loadGroups, 600); later(loadArtifacts, 800); later(loadTerritory, 1000); }
     const field = await getBin("/api/water");
     later(() => setField(field), 800);
     later(loadTimeline, 1200);

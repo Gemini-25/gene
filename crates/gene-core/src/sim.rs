@@ -448,9 +448,9 @@ impl Sim {
     // ---- energy helpers used by effect resolution ----
 
     /// Observer: one interaction for the relation graph (no effect on the world).
-    pub(crate) fn rel(&mut self, from: crate::relations::Node, to: crate::relations::Node, kind: u8, channel: u8, amount: u64) {
+    pub(crate) fn rel(&mut self, from: crate::relations::Node, to: crate::relations::Node, kind: u8, channel: u8, amount: u64, tile: u32) {
         if let Some(v) = &mut self.obs.rel {
-            v.push(crate::relations::RelFact { tick: self.st.tick, from, to, kind, channel, amount });
+            v.push(crate::relations::RelFact { tick: self.st.tick, from, to, kind, channel, amount, tile });
         }
     }
 
@@ -459,7 +459,7 @@ impl Sim {
         if self.obs.rel.is_some() {
             if let Some(p) = self.st.world.parcels.get(&t) {
                 let (a, p) = (self.st.agents[i].uid, p.uid);
-                self.rel((0, a), (1, p), crate::relations::USE, act, 1);
+                self.rel((0, a), (1, p), crate::relations::USE, act, 1, t);
             }
         }
     }

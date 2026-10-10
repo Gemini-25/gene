@@ -325,12 +325,13 @@ impl Sim {
             if let Some(j) = target {
                 let other = (AGENT, self.st.agents[j].uid);
                 let (from, to) = if let Store::Actor(_) = dst { (me, other) } else { (other, me) };
-                self.rel(from, to, RESOURCE, s as u8, mass);
+                let here = self.tile_of(i);
+                self.rel(from, to, RESOURCE, s as u8, mass, here);
             }
             use crate::relations::act;
             if let (Store::Matrix(_) | Store::Pore(_), Some(p)) = (src, src_parcel) {
                 let a = if let Store::Matrix(_) = src { act::MATRIX_OUT } else { act::PORE };
-                self.rel(me, (PARCEL, p), USE, a, 1);
+                self.rel(me, (PARCEL, p), USE, a, 1, src_tile);
             }
             if let Store::Matrix(_) | Store::Pore(_) = dst {
                 self.rel_use(i, dst_tile, if let Store::Matrix(_) = dst { act::MATRIX_IN } else { act::PORE });
@@ -401,7 +402,8 @@ impl Sim {
             Some(j) => {
                 self.st.agents[j].energy += n;
                 let (a, b) = (self.st.agents[i].uid, self.st.agents[j].uid);
-                self.rel((0, a), (0, b), crate::relations::RESOURCE, 15, n as u64);
+                let here = self.tile_of(i);
+                self.rel((0, a), (0, b), crate::relations::RESOURCE, 15, n as u64, here);
             }
         }
         (if n == amount { Outcome::Ok } else { Outcome::Partial }, n)

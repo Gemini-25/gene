@@ -64,6 +64,8 @@ pub struct RelFact {
     pub channel: u8,
     /// Mass (resource), cells (record) or 1 per contact (use).
     pub amount: u64,
+    /// Where it happened: the parcel's tile for a use, else the acting agent's tile.
+    pub tile: u32,
 }
 
 /// A cluster of the last closed window.
@@ -294,6 +296,109 @@ impl Graph {
     }
 }
 
+/// Territory display cell size in tiles (original §29 영토).
+pub const CELL: u32 = 16;
+/// Heatmap layers: visits (agent samples), matter moved (in and out), structure use.
+pub const VISITS: usize = 0;
+pub const MATTER: usize = 1;
+pub const STRUCTURE: usize = 2;
+/// Share of a cell a group needs to own it on the map.
+const OWN_TENTHS: u64 = 6;
+
+/// Per group heatmaps on 16x16-tile cells. Each window keeps floor(3/4) of the old values and
+/// adds the new observations. Observer only; never a permission cache for the world.
+#[derive(Default)]
+pub struct Territory {
+    pub cw: u32,
+    pub ch: u32,
+    width: u32,
+    maps: BTreeMap<u64, [Vec<u64>; 3]>,
+    cur: BTreeMap<u64, [Vec<u64>; 3]>,
+}
+
+impl Territory {
+    pub fn new(width: u32, height: u32) -> Territory {
+        Territory { cw: width.div_ceil(CELL), ch: height.div_ceil(CELL), width, ..Territory::default() }
+    }
+
+    fn add(&mut self, group: u64, layer: usize, tile: u32, n: u64) {
+        let (x, y) = (tile % self.width, tile / self.width);
+        let k = ((y / CELL) * self.cw + x / CELL) as usize;
+        let cells = (self.cw * self.ch) as usize;
+        let m = self.cur.entry(group).or_insert_with(|| [vec![0; cells], vec![0; cells], vec![0; cells]]);
+        m[layer][k] += n;
+    }
+
+    /// One position sample of a group member.
+    pub fn visit(&mut self, group: u64, tile: u32) {
+        self.add(group, VISITS, tile, 1);
+    }
+
+    /// A relation fact, credited to the group of each agent end.
+    pub fn fact(&mut self, f: &RelFact, group_of: &dyn Fn(u64) -> Option<u64>) {
+        let layer = match f.kind {
+            RESOURCE => MATTER,
+            USE => STRUCTURE,
+            _ => return,
+        };
+        let mut seen = None;
+        for n in [f.from, f.to] {
+            if n.0 != AGENT {
+                continue;
+            }
+            if let Some(g) = group_of(n.1) {
+                if seen != Some(g) {
+                    self.add(g, layer, f.tile, f.amount);
+                    seen = Some(g);
+                }
+            }
+        }
+    }
+
+    /// End of a window: old values decay to floor(3/4), new ones are added.
+    pub fn close(&mut self) {
+        for m in self.maps.values_mut() {
+            for layer in m.iter_mut() {
+                for v in layer.iter_mut() {
+                    *v -= v.div_ceil(4);
+                }
+            }
+        }
+        for (g, new) in std::mem::take(&mut self.cur) {
+            let m = self.maps.entry(g).or_insert_with(|| [vec![0; new[0].len()], vec![0; new[0].len()], vec![0; new[0].len()]]);
+            for l in 0..3 {
+                for (a, b) in m[l].iter_mut().zip(&new[l]) {
+                    *a += b;
+                }
+            }
+        }
+        self.maps.retain(|_, m| m.iter().any(|l| l.iter().any(|&v| v > 0)));
+    }
+
+    /// Owner of each cell on a layer: (group, amount) when one group holds at least 0.6 of the
+    /// cell's total, else (0, total).
+    pub fn owners(&self, layer: usize) -> Vec<(u64, u64)> {
+        let cells = (self.cw * self.ch) as usize;
+        let mut out = vec![(0u64, 0u64); cells];
+        let mut best = vec![(0u64, 0u64); cells];
+        for (&g, m) in &self.maps {
+            for (k, &v) in m[layer].iter().enumerate() {
+                out[k].1 += v;
+                if v > best[k].1 {
+                    best[k] = (g, v);
+                }
+            }
+        }
+        for k in 0..cells {
+            let total = out[k].1;
+            if total > 0 && best[k].1 * 10 >= total * OWN_TENTHS {
+                out[k] = (best[k].0, total);
+            }
+        }
+        out
+    }
+}
+
 /// min(255, floor(log2(1 + sum))).
 pub fn weight(sum: u64) -> u8 {
     (63 - (sum.saturating_add(1)).leading_zeros()).min(255) as u8
@@ -360,7 +465,7 @@ mod tests {
     use super::*;
 
     fn fact(tick: u64, a: Node, b: Node, kind: u8, amount: u64) -> RelFact {
-        RelFact { tick, from: a, to: b, kind, channel: 255, amount }
+        RelFact { tick, from: a, to: b, kind, channel: 255, amount, tile: 0 }
     }
 
     #[test]
@@ -418,6 +523,24 @@ mod tests {
         assert_eq!(g.groups.len(), 1);
         assert!(g.groups[0].civ);
         assert!(g.events.iter().any(|e| matches!(e, GroupEvent::Civ { agents: 24, .. })));
+    }
+
+    #[test]
+    fn territory_decays_and_needs_a_clear_owner() {
+        let mut t = Territory::new(64, 64);
+        for _ in 0..8 {
+            t.visit(1, 0); // cell (0, 0)
+        }
+        for _ in 0..3 {
+            t.visit(1, 20); // cell (1, 0), shared
+            t.visit(2, 21);
+        }
+        t.close();
+        let own = t.owners(VISITS);
+        assert_eq!(own[0], (1, 8));
+        assert_eq!(own[1], (0, 6), "3 of 6 is below 0.6");
+        t.close();
+        assert_eq!(t.owners(VISITS)[0], (1, 6), "floor(3/4) of 8");
     }
 
     #[test]

@@ -172,7 +172,7 @@ mod tests {
     }
 
     fn built(a: &mut Artifacts, parcel: u64, agent: u64) {
-        a.push(&RelFact { tick: 0, from: (0, agent), to: (PARCEL, parcel), kind: USE, channel: act::MATRIX_IN, amount: 1 });
+        a.push(&RelFact { tick: 0, from: (0, agent), to: (PARCEL, parcel), kind: USE, channel: act::MATRIX_IN, amount: 1, tile: 0 });
     }
 
     #[test]

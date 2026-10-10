@@ -34,6 +34,7 @@ struct Shared {
     behaviors: Arc<String>,
     groups: Arc<String>,
     artifacts: Arc<String>,
+    territory: Arc<String>,
     timeline: Arc<String>,
 }
 
@@ -61,6 +62,7 @@ pub fn serve(sim: Sim, o: ServeOpts) {
         behaviors: Arc::new(String::from("{}")),
         groups: Arc::new(String::from("{}")),
         artifacts: Arc::new(String::from("{}")),
+        territory: Arc::new(String::from("{}")),
         timeline: Arc::new(String::from("{}")),
     }));
     let (tx, rx) = mpsc::channel::<Req>();
@@ -228,6 +230,8 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
     sim.obs.facts = Some(Vec::new());
     let mut graph = gene_core::relations::Graph::default();
     let mut arts = gene_core::artifacts::Artifacts::default();
+    let mut terr = gene_core::relations::Territory::new(sim.st.world.w, sim.st.world.h);
+    let mut member: BTreeMap<u64, u64> = BTreeMap::new();
     sim.obs.rel = Some(Vec::new());
     let mut timeline = Timeline { every: 4096, budget: 400_000_000, points: Vec::new() };
     timeline.record(&sim);
@@ -254,6 +258,8 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                                 behavior = gene_core::behavior::Analyzer::default();
                                 graph = gene_core::relations::Graph::default();
                                 arts = gene_core::artifacts::Artifacts::default();
+                                terr = gene_core::relations::Territory::new(sim.st.world.w, sim.st.world.h);
+                                member.clear();
                                 recent.clear();
                                 cache.refresh(&sim);
                                 shared.lock().unwrap().control.paused = true;
@@ -305,12 +311,24 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
             for f in sim.obs.rel.as_mut().unwrap().drain(..) {
                 graph.push(&f);
                 arts.push(&f);
+                terr.fact(&f, &|u| member.get(&u).copied());
+            }
+            if sim.st.tick % 256 == 0 && !member.is_empty() {
+                for a in &sim.st.agents {
+                    if let Some(&g) = member.get(&a.uid) {
+                        terr.visit(g, sim.st.world.idx(a.x as u32, a.y as u32));
+                    }
+                }
             }
             if sim.st.tick % 4096 == 0 {
                 let alive: HashSet<u64> = sim.st.agents.iter().map(|a| a.uid).collect();
                 recent.retain(|u, _| alive.contains(u));
                 if graph.advance(sim.st.tick, &|u| alive.contains(&u)) {
-                    shared.lock().unwrap().groups = Arc::new(groups_json(&graph, sim.st.tick));
+                    member = graph.membership();
+                    terr.close();
+                    let mut sh = shared.lock().unwrap();
+                    sh.groups = Arc::new(groups_json(&graph, sim.st.tick));
+                    sh.territory = Arc::new(territory_json(&terr, sim.st.tick));
                 }
                 let st = &sim.st;
                 let rec = |t: u32| st.dropped.contains_key(&t) || st.world.parcels.get(&t).is_some_and(|p| p.media.is_some());
@@ -532,6 +550,17 @@ fn artifacts_json(a: &gene_core::artifacts::Artifacts, tick: u64) -> String {
         a.repeated.len() - repeated,
         items.join(",")
     )
+}
+
+/// Territory owners per layer (visits, matter, structure): flat [group, amount] per cell.
+fn territory_json(t: &gene_core::relations::Territory, tick: u64) -> String {
+    let layers: Vec<String> = (0..3)
+        .map(|l| {
+            let cells: Vec<String> = t.owners(l).iter().map(|(g, n)| format!("{g},{n}")).collect();
+            format!("[{}]", cells.join(","))
+        })
+        .collect();
+    format!("{{\"tick\":{tick},\"cw\":{},\"ch\":{},\"cell\":{},\"layers\":[{}]}}", t.cw, t.ch, gene_core::relations::CELL, layers.join(","))
 }
 
 fn behaviors_json(an: &gene_core::behavior::Analyzer) -> String {
@@ -819,6 +848,10 @@ fn handle(mut stream: TcpStream, shared: &Arc<Mutex<Shared>>, tx: &mpsc::Sender<
         }
         "/api/artifacts" => {
             let s = shared.lock().unwrap().artifacts.clone();
+            respond(&mut stream, "200 OK", json, s.as_bytes())
+        }
+        "/api/territory" => {
+            let s = shared.lock().unwrap().territory.clone();
             respond(&mut stream, "200 OK", json, s.as_bytes())
         }
         "/api/groups" => {

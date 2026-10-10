@@ -478,11 +478,12 @@ impl Sim {
         if self.obs.rel.is_some() {
             use crate::relations::{AGENT, MEDIA, RECORD};
             let me = (AGENT, self.st.agents[i].uid);
+            let here = self.tile_of(i);
             if sd == dom::PUBLIC_TAPE {
-                self.rel((MEDIA, cap.src_uid), me, RECORD, 255, n as u64);
+                self.rel((MEDIA, cap.src_uid), me, RECORD, 255, n as u64, here);
             }
             if let MediaRef::Public { tile, uid } = dst {
-                self.rel(me, (MEDIA, uid), RECORD, 255, n as u64);
+                self.rel(me, (MEDIA, uid), RECORD, 255, n as u64, here);
                 if self.is_parcel_media(dst) {
                     self.rel_use(i, tile, crate::relations::act::RECORD); // a write on an artifact's record
                 }
