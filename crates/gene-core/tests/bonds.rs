@@ -342,3 +342,101 @@ loop:
     assert!(a.obs.m1.assembly_moves > 0 && a.obs.m1.pushes > 0, "{:?}", a.obs.m1);
     assert_eq!(a.state_hash(), b.state_hash());
 }
+
+#[test]
+fn sixteen_parcels_move_as_one() {
+    let mut s = sim(PUSH, RULESET_M1D);
+    // near-frictionless ground: each 1-unit parcel needs a load of 1
+    s.st.world.mu.iter_mut().for_each(|m| *m = 1);
+    let mut prev = None;
+    for y in (4..=19).rev() {
+        let t = put(&mut s, 20, y, 1, 0);
+        if let Some(p) = prev {
+            bond(&mut s, p, 0, 1);
+        }
+        prev = Some(t);
+    }
+    let r = run(&mut s, 1);
+    assert_eq!(r[0], Some((OK, 16)));
+    assert!(at(&s, 20, 3).is_some() && at(&s, 20, 19).is_none());
+}
+
+#[test]
+fn a_wall_is_not_pushed_onto_another_agent() {
+    let prog = assemble(PUSH).unwrap();
+    let mut s = Sim::with_program_ruleset(Config { seed: 5, width: 64, height: 64, agents: 2 }, &prog, RULESET_M1D).unwrap();
+    s.fixture_place(0, 20, 20, 0);
+    s.fixture_place(1, 20, 18, 2); // faces south, toward the wall
+    s.st.agents[0].energy = 60000;
+    s.fixture_rebase();
+    put(&mut s, 20, 19, 16, 128);
+    s.step();
+    assert!(s.audit_ok());
+    let pusher = s.st.agents.iter().find(|a| (a.x, a.y) == (20, 20)).unwrap();
+    assert_eq!(pusher.receipt.map(|r| r.0), Some(Outcome::Blocked as u8));
+    assert!(s.st.world.blocked(s.st.world.idx(20, 19)), "the wall stays");
+}
+
+#[test]
+fn rotation_does_not_swing_a_wall_into_an_agent() {
+    let src = "
+.module 0
+    CONST r0, 2
+    CONST r1, 0
+    CONST r2, -1
+    CONST r4, 5
+    CONST r5, 255
+    LINK 0
+    CONST r5, 1
+    DRIVE 1
+spin:
+    YIELD
+    JUMP spin
+";
+    let prog = assemble(src).unwrap();
+    let mut s = Sim::with_program_ruleset(Config { seed: 5, width: 64, height: 64, agents: 2 }, &prog, RULESET_M1D).unwrap();
+    s.fixture_place(0, 20, 20, 0);
+    s.fixture_place(1, 21, 19, 1); // where the wall would land
+    s.st.agents[0].energy = 60000;
+    let w = &mut s.st.world;
+    w.elev.iter_mut().for_each(|e| *e = 0);
+    w.mu.iter_mut().for_each(|m| *m = 256);
+    s.fixture_rebase();
+    let a = put(&mut s, 20, 19, 16, 0);
+    put(&mut s, 20, 18, 16, 128);
+    bond(&mut s, a, 0, 32);
+    let uid0 = s.st.agents[0].uid;
+    for _ in 0..2 {
+        s.step();
+        assert!(s.audit_ok());
+    }
+    let me = s.st.agents.iter().find(|a| a.uid == uid0).unwrap();
+    assert_eq!(me.receipt.map(|r| r.0), Some(Outcome::Blocked as u8));
+    assert!(at(&s, 20, 18).is_some(), "nothing moved");
+}
+
+#[test]
+fn death_releases_the_grip() {
+    let src = "
+.module 0
+    CONST r0, 2
+    CONST r1, 0
+    CONST r2, -1
+    CONST r4, 5
+    CONST r5, 10
+    LINK 0
+spin:
+    YIELD
+    JUMP spin
+";
+    let mut s = sim(src, RULESET_M1D);
+    let t = put(&mut s, 20, 19, 16, 0);
+    run(&mut s, 1);
+    assert_eq!(s.st.world.parcels[&t].grip, 10);
+    s.st.agents[0].energy = 0;
+    s.fixture_rebase();
+    s.step();
+    assert!(s.st.agents.is_empty(), "starved");
+    assert!(s.audit_ok());
+    assert_eq!((s.st.world.parcels[&t].grip, s.st.world.parcels[&t].grip_uid), (0, 0));
+}
