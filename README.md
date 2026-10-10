@@ -1,6 +1,6 @@
 # Gene
 
-인공문명 진화 시뮬레이터의 첫 단계(M0)다. 공개된 최소 조상 하나에서 시작해, 정해진 물리 규칙만으로 생존·번식·변이가 일어나는지 관찰한다. 문명, 직업, 기술은 엔진에 넣지 않는다. 그런 것이 생기는지는 실행 결과로 판정한다.
+인공문명 진화 시뮬레이터다. 원본 설계의 기본 제품(M0 물리·생명과 M1 정보·구조물·접촉)을 구현했다. 공개된 최소 조상 하나에서 시작해, 정해진 물리 규칙만으로 생존·번식·변이와 그 너머가 일어나는지 관찰한다. 문명, 직업, 기술은 엔진에 넣지 않는다. 그런 것이 생기는지는 실행 결과로 판정한다.
 
 - 현행 규칙: [`docs/SPEC.md`](docs/SPEC.md). 유일한 기준 문서다.
 - 원본 설계서 R10: [`docs/archive/R10-original-design.md`](docs/archive/R10-original-design.md). 보관용 근거 자료다.
@@ -10,14 +10,15 @@
 
 | 항목 | 상태 |
 | --- | --- |
-| M0 엔진(`gene-core`) | 구현 완료 |
+| 엔진(`gene-core`) | M0와 M1(M1a..M1f) 구현 완료 |
+| 관찰층 | 행동 family와 사용 상태, 관계 graph·집단·영토, 반복 구조물, 복사 계보와 전달 증거(원본 §58, §29). 세계에는 영향 없음 |
 | 시험 | 111개 통과 (단위 38, 장부·결정론·병렬 5, VM·이동 10, M1a/b 9, parcel 6, 결합·조립체 15, 접촉 15, parcel 매체 10, 복사 계보 1, 조상 크기 1, CLI 1) |
 | 에너지·원자 장부 | 시험에서는 매 tick 정확히 일치, 실행 중에는 4096 tick마다 검사 |
 | 결정론 | 같은 seed면 같은 hash. 저장 후 이어 간 결과도 같음 |
 | E1-a: Founder-4(원본 §57) | 20/20 seed가 첫 밤에 전멸 |
 | E1-b: Founder-5(개정판) | 20/20 seed가 49일 생존. 그러나 계속 줄어 마지막 개체 수 중앙값 66 ([`docs/results/E1.md`](docs/results/E1.md)) |
-| E1-c: Founder-6(오전에만 번식) | 진행 중. 7,000 가까이 늘었다가 감소. 죽은 유기물이 쌓이며 공기의 C가 줄어듦 |
-| E1-d: Founder-7(죽은 G 수거) | E1-c 뒤 자동 실행. 소규모 점검에서 Founder-6보다 개체 수 2배 |
+| E1-c: Founder-6(오전에만 번식) | 20/20 seed가 49일 생존. 9일째 약 5,300까지 늘었다가 감소(마지막 중앙값 663). 원인은 신생아 사망: 물과 탄소가 죽은 유기물에 갇혀 39일째 땅의 81%에 물이 없음 |
+| E1-d: Founder-7(죽은 G 수거) | 진행 중. 중간까지 같은 날 Founder-6의 약 3배. 다음 함정은 죽은 개체의 코드 기록 |
 | P1: M1 기능의 자연 발견 | 소규모 4 seed에서 없음. m0와 m1d 결과가 완전히 같음 ([`docs/results/P1_M1_pilot.md`](docs/results/P1_M1_pilot.md)) |
 | 속도(512², 개체 약 1,700) | 약 190 TPS, 단일 thread. 명세 목표 S1(500+) 미달, 병목은 환경 수송. Think·수송·환경은 `--sim-threads N`으로 병렬(결과 동일) |
 | M1a(신호·공개 기록·초안) | ruleset `gene-m1-1`(`--ruleset m1a`) |
@@ -45,21 +46,23 @@ cargo test --release                      # 전체 시험
 cargo build --release
 
 # 작은 세계에서 한 번 실행
-./target/release/gene run --founder founder5 --size 128 --agents 64 --ticks 40000 --out runs/demo
+./target/release/gene run --founder founder7 --size 128 --agents 64 --ticks 40000 --save-final --out runs/demo
 
 # 명세 기본값(512², 1000 개체)으로 seed 여러 개를 병렬 실행
-./target/release/gene batch --seeds 1-20 --threads 4 --founder founder5 --ticks 200000 --out runs/E1b
+./target/release/gene batch --seeds 1-20 --threads 4 --founder founder7 --ticks 200000 --out runs/E1d
 
 # 브라우저 화면: http://127.0.0.1:8080/ 를 연다 (처음엔 일시정지 상태)
-./target/release/gene serve --founder founder5 --size 256 --agents 300
-./target/release/gene serve --load runs/demo/final.bin --founder founder5   # 저장 상태 이어 보기
+./target/release/gene serve --founder founder7 --size 256 --agents 300
+./target/release/gene serve --load runs/demo/final.bin --founder founder7   # 저장 상태 이어 보기
+./target/release/gene serve --ruleset m1f --founder my.asm               # M1 기능 전체로
 
 # 조상 프로그램 어셈블·역어셈블
-./target/release/gene asm assets/founder5.asm
+./target/release/gene asm assets/founder7.asm
 ./target/release/gene founders
 
 # 결과 요약
-python3 scripts/e1_summary.py runs/E1b
+python3 scripts/e1_summary.py runs/E1d
+python3 scripts/e1_newborns.py runs/E1d   # 신생아 생존
 ```
 
 `--founder`에는 `founder4`..`founder7` 또는 어셈블리 파일 경로를 줄 수 있다. `--ruleset`은 `m0`(기본), `m1a`, `m1b`, `m1c`, `m1d`, `m1e`, `m1f`다. `m1f`가 M1 기능 전체다. 실행마다 다음 파일이 생긴다.
