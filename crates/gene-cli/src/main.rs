@@ -20,6 +20,7 @@ USAGE:
   gene batch  --seeds A-B [--threads N] [same options as run]  (one directory per seed)
   gene resume --from CHECKPOINT [--ticks T] [--out DIR] [...]
   gene asm    FILE.asm                   assemble, print size, hash and disassembly
+  gene inspect SAVE.bin [--founder NAME]  genome census of a saved state with diffs against the founder
   gene founders                          list built-in founders
 
 Defaults follow SPEC §3: size 512, agents 1000, founder founder4.
@@ -150,6 +151,13 @@ fn main() {
                 hex(&hash_cells(&cells))
             );
             print!("{}", isa::disassemble(&p));
+        }
+        "inspect" => {
+            let path = args.get(1).unwrap_or_else(|| die("inspect SAVE.bin"));
+            parse_opts(&args[2..], &mut o);
+            let bytes = fs::read(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
+            let sim = Sim::load(&bytes).unwrap_or_else(|e| die(format!("{path}: {e:?}")));
+            print!("{}", genome_report(&sim, &o.founder, 5));
         }
         "founders" => {
             for name in ["founder4", "founder5"] {
@@ -317,6 +325,7 @@ upkeep_q,vm_q,attempt_q,effect_q,photosynthesis,respiration,moves,inert,loose_G,
     s.max_generation = sim.st.agents.iter().map(|a| a.generation).max().unwrap_or(0);
     s.distinct_genomes = distinct_genomes(&sim);
     s.hash = hex(&sim.state_hash());
+    fs::write(o.out.join("genomes.txt"), genome_report(&sim, &o.founder, 5)).unwrap();
     fs::write(o.out.join("summary.json"), summary_json(&s, o)).unwrap();
     if o.save_final {
         fs::write(o.out.join("final.bin"), sim.save()).unwrap();
@@ -487,4 +496,88 @@ fn batch(o: &Opts, seeds: std::ops::RangeInclusive<u64>, threads: usize) {
         )
         .unwrap();
     }
+}
+
+/// Instruction-level diff (LCS) between two programs, module by module in order.
+fn program_diff(a: &gene_core::genome::Program, b: &gene_core::genome::Program) -> String {
+    let lines = |p: &gene_core::genome::Program| -> Vec<String> {
+        let mut v = vec![format!(
+            ".header entry={} point={} structural={} weights={:?}",
+            p.entry_tag, p.point_threshold, p.structural_threshold, p.weights
+        )];
+        for m in &p.modules {
+            v.push(format!(".module {}", m.tag));
+            for pc in 0..m.len {
+                v.push(format!("  {}", isa::disassemble_word(p.words[(m.start + pc) as usize])));
+            }
+        }
+        v
+    };
+    let (x, y) = (lines(a), lines(b));
+    let (n, m) = (x.len(), y.len());
+    let mut dp = vec![vec![0u16; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            dp[i][j] = if x[i] == y[j] { dp[i + 1][j + 1] + 1 } else { dp[i + 1][j].max(dp[i][j + 1]) };
+        }
+    }
+    let (mut i, mut j, mut out, mut pos) = (0, 0, String::new(), 0usize);
+    while i < n || j < m {
+        if i < n && j < m && x[i] == y[j] {
+            i += 1;
+            j += 1;
+            pos += 1;
+        } else if j < m && (i == n || dp[i][j + 1] >= dp[i + 1][j]) {
+            out.push_str(&format!("  + [{pos:4}] {}\n", y[j].trim()));
+            j += 1;
+            pos += 1;
+        } else {
+            out.push_str(&format!("  - [{pos:4}] {}\n", x[i].trim()));
+            i += 1;
+        }
+    }
+    if out.is_empty() {
+        if a == b {
+            out.push_str("  (identical to the founder)\n");
+        } else {
+            out.push_str("  (same decoded instructions; differs only in operand bits the VM ignores)\n");
+        }
+    }
+    out
+}
+
+fn genome_report(sim: &Sim, founder: &str, top: usize) -> String {
+    let founder_prog = isa::assemble(&founder_source(founder)).ok();
+    let mut census: BTreeMap<[u8; 32], (usize, u32, BTreeSet<u64>, u32, usize)> = BTreeMap::new();
+    for (i, a) in sim.st.agents.iter().enumerate() {
+        let h = hash_cells(a.code.prefix(a.used_len).unwrap_or(&[]));
+        let e = census.entry(h).or_insert((0, a.used_len, BTreeSet::new(), 0, i));
+        e.0 += 1;
+        e.2.insert(a.root);
+        e.3 = e.3.max(a.generation);
+    }
+    let mut v: Vec<_> = census.into_iter().collect();
+    v.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then(a.0.cmp(&b.0)));
+    let mut out = format!(
+        "tick {}  population {}  distinct genomes {}  founder {}\n\n",
+        sim.st.tick,
+        sim.st.agents.len(),
+        v.len(),
+        founder
+    );
+    for (h, (count, len, roots, gen, idx)) in v.iter().take(top) {
+        out.push_str(&format!(
+            "genome {}  carriers {}  cells {}  founder lineages {}  max generation {}\n",
+            &hex(h)[..16],
+            count,
+            len,
+            roots.len(),
+            gen
+        ));
+        if let Some(fp) = &founder_prog {
+            out.push_str(&program_diff(fp, sim.st.agents[*idx].program()));
+        }
+        out.push('\n');
+    }
+    out
 }
