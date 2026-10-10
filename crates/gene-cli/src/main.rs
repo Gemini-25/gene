@@ -680,6 +680,7 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
         lineage.code(a.code.uid, a.uid);
     }
     sim.obs.lineage = Some(Vec::new());
+    let mut genomes = GenomeCache::default();
     let mut groups = open("groups.csv");
     writeln!(groups, "window,tick,id,agents,parcels,media,kinds,weight,windows,border,hub,civ,parent").unwrap();
     sim.obs.rel = Some(Vec::new());
@@ -763,7 +764,7 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
             }
         }
         if t % o.stats_every == 0 || newly_extinct || t == t_end {
-            write_stats(&mut stats, &mut sim);
+            write_stats(&mut stats, &mut sim, &mut genomes);
         }
         if o.map_every > 0 && (t % o.map_every == 0 || newly_extinct || t == t_end) {
             write_map(&sim, &o.out.join(format!("map_{t:07}.png")));
@@ -813,7 +814,7 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     s.deaths_energy = sim.obs.total_deaths_energy;
     s.deaths_body = sim.obs.total_deaths_body;
     s.max_generation = sim.st.agents.iter().map(|a| a.generation).max().unwrap_or(0);
-    s.distinct_genomes = distinct_genomes(&sim);
+    s.distinct_genomes = genomes.distinct(&sim);
     s.hash = hex(&sim.state_hash());
     behavior.finish();
     for r in situated(&sim, behavior.log.as_mut().unwrap()) {
@@ -847,17 +848,24 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     s
 }
 
-fn distinct_genomes(sim: &Sim) -> usize {
-    let set: BTreeSet<[u8; 32]> = sim
-        .st
-        .agents
-        .iter()
-        .map(|a| hash_cells(a.code.prefix(a.used_len).unwrap_or(&[])))
-        .collect();
-    set.len()
+/// Genome hash per living agent, kept across stats rows: inherited code never changes during a
+/// life, so only newborns are hashed.
+#[derive(Default)]
+struct GenomeCache(std::collections::HashMap<u64, [u8; 32]>);
+
+impl GenomeCache {
+    fn distinct(&mut self, sim: &Sim) -> usize {
+        let ag = &sim.st.agents;
+        let alive: std::collections::HashSet<u64> = ag.iter().map(|a| a.uid).collect();
+        self.0.retain(|u, _| alive.contains(u));
+        for a in ag {
+            self.0.entry(a.uid).or_insert_with(|| hash_cells(a.code.prefix(a.used_len).unwrap_or(&[])));
+        }
+        self.0.values().collect::<BTreeSet<_>>().len()
+    }
 }
 
-fn write_stats(out: &mut impl Write, sim: &mut Sim) {
+fn write_stats(out: &mut impl Write, sim: &mut Sim, genomes: &mut GenomeCache) {
     let acc = sim.obs.take_acc();
     let ag = &sim.st.agents;
     let n = ag.len().max(1) as f64;
@@ -890,7 +898,7 @@ fn write_stats(out: &mut impl Write, sim: &mut Sim) {
         ag.iter().filter(|a| a.embryo.is_some()).count(),
         ag.iter().map(|a| a.generation).max().unwrap_or(0),
         ag.iter().map(|a| a.generation as f64).sum::<f64>() / n,
-        distinct_genomes(sim),
+        genomes.distinct(sim),
         ag.iter().map(|a| a.used_len as f64).sum::<f64>() / n,
         acc.upkeep_q,
         acc.vm_q,
