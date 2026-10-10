@@ -248,6 +248,7 @@ impl Timeline {
 
 fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>, save_dir: PathBuf, founder: String) {
     let founders = founder_programs(&founder);
+    let habits = Habits::new(&founders, &founder);
     let mut hist = Hist {
         tick: vec![],
         pop: vec![],
@@ -324,7 +325,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                     };
                     let _ = tx.send(msg);
                 }
-                other => answer(other, &sim, &cache, &founders, &save_dir, &recent),
+                other => answer(other, &sim, &cache, &founders, &habits, &save_dir, &recent),
             }
         }
         let ctl = shared.lock().unwrap().control;
@@ -821,7 +822,51 @@ fn behaviors_json(an: &gene_core::behavior::Analyzer, now: u64) -> String {
 /// The last few resolved effects of each agent, for the agent panel.
 type Recent = HashMap<u64, VecDeque<gene_core::observer::EffectFact>>;
 
-fn answer(req: Req, sim: &Sim, cache: &HashCache, founders: &[gene_core::genome::Program], save_dir: &PathBuf, recent: &Recent) {
+/// Which founder's habit each module of a genome is (SPEC §16f): module content that only one
+/// founder has is that founder's habit; content shared by several founders (the common main
+/// module, empty hooks) is no one's; content no founder has is a mutated module.
+struct Habits(HashMap<u32, String>, HashSet<u32>);
+
+impl Habits {
+    fn new(founders: &[gene_core::genome::Program], spec: &str) -> Habits {
+        let names: Vec<&str> = spec.split('+').collect();
+        let mut owners: HashMap<u32, BTreeSet<usize>> = HashMap::new();
+        for (k, p) in founders.iter().enumerate() {
+            for (_, h) in gene_core::observer::module_hashes(p) {
+                owners.entry(h).or_default().insert(k);
+            }
+        }
+        let mut own = HashMap::new();
+        let mut shared = HashSet::new();
+        for (h, o) in owners {
+            if o.len() == 1 {
+                own.insert(h, names.get(*o.iter().next().unwrap()).unwrap_or(&"?").rsplit('/').next().unwrap_or("?").to_string());
+            } else {
+                shared.insert(h);
+            }
+        }
+        Habits(own, shared)
+    }
+
+    /// JSON list of {tag, from}: from is a founder name, "" for shared content, null if mutated.
+    fn json(&self, p: &gene_core::genome::Program) -> String {
+        let items: Vec<String> = gene_core::observer::module_hashes(p)
+            .iter()
+            .map(|(t, h)| {
+                let from = match (self.0.get(h), self.1.contains(h)) {
+                    (Some(n), _) => json_str(n),
+                    (None, true) => "\"\"".into(),
+                    (None, false) => "null".into(),
+                };
+                format!("{{\"tag\":{t},\"from\":{from}}}")
+            })
+            .collect();
+        format!("[{}]", items.join(","))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn answer(req: Req, sim: &Sim, cache: &HashCache, founders: &[gene_core::genome::Program], habits: &Habits, save_dir: &PathBuf, recent: &Recent) {
     match req {
         Req::Agent(uid, tx) => {
             let Some(a) = sim.st.agents.iter().find(|a| a.uid == uid) else {
@@ -855,7 +900,7 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founders: &[gene_core::genome:
                 "{{\"uid\":{},\"parent\":{},\"root\":{},\"generation\":{},\"age\":{},\"x\":{},\"y\":{},\"orient\":{},\
 \"energy\":{},\"photo_credit\":{},\"body_g\":{},\"shell_s\":{},\"abrasion\":{},\"inv\":{{{}}},\"children\":{},\"genome\":\"{}\",\
 \"cells\":{},\"pages\":{},\"upkeep\":{},\"theta\":{},\"tile_light_peak\":{},\"tile_elev\":{},\"tile_water\":{},\
-\"recent\":[{}],\"pc\":[{},{}],\"fault\":{},\"regs\":[{}],\"mem\":[{}],\"embryo\":{},\"draft\":{},\"learned\":{},\"retained\":{},\"diff\":{}}}",
+\"recent\":[{}],\"pc\":[{},{}],\"fault\":{},\"regs\":[{}],\"mem\":[{}],\"embryo\":{},\"draft\":{},\"learned\":{},\"retained\":{},\"diff\":{},\"habits\":{}}}",
                 a.uid,
                 a.parent,
                 a.root,
@@ -901,7 +946,8 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founders: &[gene_core::genome:
                     }))
                 )),
                 a.retained.len(),
-                json_str(&diff)
+                json_str(&diff),
+                habits.json(a.program()),
             );
             let _ = tx.send(s);
         }

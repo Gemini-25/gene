@@ -66,14 +66,12 @@ def main(run, n, names):
         print(f"{a} parent line, {b} founder genome: {len(ts)} births, first at day {min(ts) / DAY:.1f}")
     # habit combinations (modular founders): which founder each non-empty hook module came from
     if modules and births and "modules" in births[0]:
-        stubs = {}
+        owners_of = {}  # module content hash -> founders having it at any tag
         for nm, mods in modules.items():
             for t, h in mods.items():
-                stubs.setdefault((t, h), set()).add(nm)
-        origin = {}  # (tag, hash) -> founder whose own habit this is (shared modules are not habits)
-        for (t, h), owners in stubs.items():
-            if len(owners) == 1 and t != "0":
-                origin[(t, h)] = next(iter(owners))
+                owners_of.setdefault(h, set()).add(nm)
+        # a habit is content only one founder has (shared content: the main module and empty hooks)
+        origin = {h: next(iter(o)) for h, o in owners_of.items() if len(o) == 1}
         combos = {}
         for b in births:
             if not b.get("modules"):
@@ -81,11 +79,12 @@ def main(run, n, names):
             hab = set()
             for m in b["modules"].split(";"):
                 t, h = m.split(":")
-                if (t, h) in origin:
-                    hab.add((t, origin[(t, h)]))
+                if h in origin:
+                    hab.add((t, origin[h]))
             owners = {o for _, o in hab}
             root_kind = names[(int(b["root"]) - 1) % n] if names else None
-            if len(owners) >= 2 or (owners and root_kind and owners != {root_kind} and len(owners) == 1):
+            own = {(t, origin[h]) for t, h in modules.get(root_kind, {}).items() if h in origin}
+            if hab != own and owners - {root_kind}:
                 key = tuple(sorted(hab))
                 combos.setdefault(key, []).append(int(b["tick"]))
         for key, ts in sorted(combos.items(), key=lambda kv: -len(kv[1])):

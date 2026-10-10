@@ -1357,6 +1357,7 @@ async function loadAgent() {
     <tr><td>tile</td><td>θ ${a.theta} · 최대광 ${a.tile_light_peak} · 고도 ${a.tile_elev} · 물 ${a.tile_water}</td></tr>
     <tr><td>genome</td><td>${a.genome} · ${a.cells} cell · ${a.pages} 페이지</td></tr>
     <tr><td>VM</td><td>module ${a.pc[0]} pc ${a.pc[1]} · fault ${a.fault}</td></tr>
+    ${habitRow(a)}
   </table>
   <div class="small" style="margin-top:6px">최근 행동 (새것부터)</div>
   <table class="kv">${(a.recent || []).map((f) => `<tr><td>tick ${f.tick.toLocaleString()}</td><td>${describeAct(f)}</td></tr>`).join("") || "<tr><td colspan=2 class=empty>아직 없음</td></tr>"}</table>
@@ -1364,6 +1365,17 @@ async function loadAgent() {
   <div class="small">작업 기억 [0..31]</div><pre>${a.mem.join(" ")}</pre>
   <div class="small">조상과의 명령어 차이 (상속 코드)</div><pre>${esc(a.diff)}</pre>
   ${a.learned ? `<div class="small">조상과의 명령어 차이 (학습 코드)</div><pre>${esc(a.learned.diff)}</pre>` : ""}`;
+}
+// habit modules of modular founders (SPEC §16f): which founder each hook came from
+const HOOK = { 1: "먹이를 찾은 뒤", 2: "길을 잃었을 때", 3: "부유하게 쉴 때" };
+function habitRow(a) {
+  if (!a.habits || a.habits.length < 2) return "";
+  const own = a.habits.filter((h) => h.tag !== 0 && h.from !== "");
+  if (!own.length) return `<tr><td>습관</td><td>없음 (빈 hook만)</td></tr>`;
+  const parts = own.map((h) => `${HOOK[h.tag] || "tag " + h.tag}: ${h.from === null ? "<b>변이된 module</b>" : esc(KIND_SHORT[h.from] || h.from)}`);
+  const from = new Set(own.filter((h) => h.from).map((h) => h.from));
+  const mix = from.size > 1 ? ' <span class="badge civ" title="둘 이상의 조상에게서 온 습관">습관 조합</span>' : "";
+  return `<tr><td>습관</td><td>${parts.join(" · ")}${mix}</td></tr>`;
 }
 async function loadCensus() {
   const g = await getJSON("/api/genomes");
