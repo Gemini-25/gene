@@ -292,15 +292,14 @@ struct Summary {
     highlevel: String,
 }
 
-/// Effect outcomes per opcode (nonzero only) and the M1 counters, as a JSON object.
 /// Behaviour families seen in at least 3 windows (original §58), oldest first.
 fn behaviors_csv(an: &gene_core::behavior::Analyzer, now: u64) -> String {
     use gene_core::behavior::UseState;
-    let mut out = String::from("family,first_tick,first_agent,last_tick,windows,near,agents,repeated_at,state_at_end,example\n");
+    let mut out = String::from("family,first_tick,first_agent,last_tick,windows,near,agents,contexts,repeated_at,state_at_end,example\n");
     for f in an.families.iter().filter(|f| f.windows >= 3) {
         let ex: Vec<String> = f.example.iter().map(gene_core::behavior::describe).collect();
         out += &format!(
-            "{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{}\n",
             f.id,
             f.first_tick,
             f.first_uid,
@@ -308,6 +307,7 @@ fn behaviors_csv(an: &gene_core::behavior::Analyzer, now: u64) -> String {
             f.windows,
             f.near,
             f.agents.len(),
+            f.contexts.len(),
             f.repeated_at.map_or(String::new(), |t| t.to_string()),
             match f.use_state(now) {
                 UseState::LiveUsers => "live",
@@ -342,6 +342,25 @@ fn write_groups(out: &mut impl Write, g: &gene_core::relations::Graph, tick: u64
             x.parent.map_or(String::new(), |p| p.to_string())
         )
         .unwrap();
+    }
+}
+
+/// Each living agent's place for the behaviour context (original §58): G loose and residue at
+/// its tile, the light now, and the other agents within 2 tiles.
+pub(crate) fn place_of(sim: &Sim) -> impl Fn(u64) -> Option<gene_core::behavior::Place> + '_ {
+    let at: std::collections::HashMap<u64, usize> = sim.st.agents.iter().enumerate().map(|(i, a)| (a.uid, i)).collect();
+    move |uid| {
+        let a = &sim.st.agents[*at.get(&uid)?];
+        let w = &sim.st.world;
+        let (x, y) = (a.x as i64, a.y as i64);
+        let mut crowd = 0;
+        for yy in (y - 2).max(0)..=(y + 2).min(w.h as i64 - 1) {
+            for xx in (x - 2).max(0)..=(x + 2).min(w.w as i64 - 1) {
+                crowd += ((xx, yy) != (x, y) && w.occ[w.idx(xx as u32, yy as u32) as usize] != 0) as u32;
+            }
+        }
+        let t = w.idx(a.x as u32, a.y as u32);
+        Some(gene_core::behavior::Place { g: w.loose_total(t, gene_core::species::G), light: w.light(t, sim.st.tick), crowd })
     }
 }
 
@@ -710,7 +729,7 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
             behavior.push(&f);
         }
         if t % gene_core::behavior::WINDOW == 0 {
-            behavior.flush(t);
+            behavior.flush_at(t, place_of(&sim));
             for r in situated(&sim, behavior.log.as_mut().unwrap()) {
                 judge.window(&r);
             }
@@ -838,7 +857,7 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     s.max_generation = sim.st.agents.iter().map(|a| a.generation).max().unwrap_or(0);
     s.distinct_genomes = genomes.distinct(&sim);
     s.hash = hex(&sim.state_hash());
-    behavior.finish();
+    behavior.finish_at(place_of(&sim));
     for r in situated(&sim, behavior.log.as_mut().unwrap()) {
         judge.window(&r);
     }

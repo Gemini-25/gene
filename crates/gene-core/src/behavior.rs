@@ -7,6 +7,11 @@
 //! A window joins the best family with Jhat >= 3/4, founds a new family when Jhat < 1/4 against
 //! every candidate, and otherwise stays "intermediate" (similar but not the same). A family seen
 //! in 3 windows from at least 2 agents is a RepeatedBehavior.
+//!
+//! Each closed window also gets a context (original §58): the stock of G at the agent's tile,
+//! the light there, how crowded it is and how much the agent walked. Once the archive is large,
+//! the families compared are the ones sharing hashes with the window plus fixed hash samples of
+//! the same context and of the whole archive.
 
 use crate::observer::EffectFact;
 use serde::{Deserialize, Serialize};
@@ -19,6 +24,12 @@ const INDEX_K: usize = 8;
 const MAX_CANDIDATES: usize = 1024;
 /// Archive size up to which every family is compared.
 const FULL_SCAN: usize = 1536;
+/// Size of each fixed hash sample of families (per context, and of the whole archive).
+const SAMPLE: usize = 256;
+/// Number of contexts (5 G bins x 4 light bins x 3 crowding bins x 4 movement bins).
+pub const CONTEXTS: u8 = 240;
+/// Context of a window whose agent was gone when the window closed.
+pub const UNKNOWN_CONTEXT: u8 = 255;
 
 pub type Token = [u8; 8];
 
@@ -83,6 +94,68 @@ pub fn jhat(a: &[u64], b: &[u64]) -> (usize, usize) {
     (both, u)
 }
 
+/// What the world showed at the agent's tile when a window closed (original §58): G loose and
+/// residue, the light, and the other agents within 2 tiles (Chebyshev).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Place {
+    pub g: u64,
+    pub light: u64,
+    pub crowd: u32,
+}
+
+/// Context id 0..240 from the place and the window's successful moves. Bins (original §58):
+/// G 0 / 1..3 / 4..15 / 16..63 / 64+, light 0 / 1..8191 / 8192..32767 / 32768+, crowding
+/// 0..2 / 3..6 / 7+, moves 0 / 1..7 / 8..31 / 32+.
+pub fn context(p: &Place, moves: u32) -> u8 {
+    let g = match p.g {
+        0 => 0,
+        1..=3 => 1,
+        4..=15 => 2,
+        16..=63 => 3,
+        _ => 4,
+    };
+    let l = match p.light {
+        0 => 0,
+        1..=8191 => 1,
+        8192..=32767 => 2,
+        _ => 3,
+    };
+    let c = match p.crowd {
+        0..=2 => 0,
+        3..=6 => 1,
+        _ => 2,
+    };
+    let m = match moves {
+        0 => 0,
+        1..=7 => 1,
+        8..=31 => 2,
+        _ => 3,
+    };
+    ((g * 4 + l) * 3 + c) * 4 + m
+}
+
+/// Successful translations in a window's tokens.
+pub fn moves(tokens: &[Token]) -> u32 {
+    let step = (crate::isa::op::DRIVE - crate::isa::op::READ) << 3 | crate::intent::sub::DRIVE_TRANSLATE as u8;
+    tokens.iter().filter(|t| t[0] == step && t[1] <= 1).count() as u32
+}
+
+/// Fixed sample key of a family: the first 8 bytes of BLAKE3("behavior-sample\0" + id).
+fn sample_key(id: u32) -> u64 {
+    let mut h = blake3::Hasher::new();
+    h.update(b"behavior-sample\0");
+    h.update(&id.to_le_bytes());
+    u64::from_le_bytes(h.finalize().as_bytes()[..8].try_into().unwrap())
+}
+
+/// Keep the `SAMPLE` smallest keys.
+fn sample_insert(set: &mut BTreeSet<(u64, u32)>, id: u32) {
+    set.insert((sample_key(id), id));
+    if set.len() > SAMPLE {
+        set.pop_last();
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Family {
     pub id: u32,
@@ -98,6 +171,8 @@ pub struct Family {
     pub repeated_at: Option<u64>,
     /// First tokens of the founding window, for a readable description.
     pub example: Vec<Token>,
+    /// Contexts of its windows (`context`); unknown ones are left out.
+    pub contexts: BTreeSet<u8>,
 }
 
 /// Use state of a family (original §58 기술 상태), from when it was last seen. Only behaviour
@@ -236,6 +311,9 @@ pub struct Analyzer {
     open: BTreeMap<u64, Open>,
     pub families: Vec<Family>,
     index: HashMap<u64, Vec<u32>>,
+    /// Fixed hash samples: of the whole archive, and of the families seen in each context.
+    sample: BTreeSet<(u64, u32)>,
+    ctx_sample: BTreeMap<u8, BTreeSet<(u64, u32)>>,
     pub counts: Counts,
     pub log: Option<Vec<WindowRecord>>,
 }
@@ -253,7 +331,7 @@ impl Analyzer {
         let w = f.tick / WINDOW;
         if self.open.get(&f.uid).is_some_and(|o| o.window != w) {
             let o = self.open.remove(&f.uid).unwrap();
-            self.close(f.uid, o);
+            self.close(f.uid, o, None);
         }
         let o = self.open.entry(f.uid).or_insert(Open { window: w, last_tick: None, tokens: Vec::new() });
         let first = o.tokens.is_empty();
@@ -264,26 +342,36 @@ impl Analyzer {
 
     /// Close every window that ended before `tick` (call at window boundaries and at the end).
     pub fn flush(&mut self, tick: u64) {
+        self.flush_at(tick, |_| None);
+    }
+
+    /// As `flush`, with each agent's place now (None for agents that are gone).
+    pub fn flush_at(&mut self, tick: u64, place: impl Fn(u64) -> Option<Place>) {
         let w = tick / WINDOW;
         let done: Vec<u64> = self.open.iter().filter(|(_, o)| o.window < w).map(|(u, _)| *u).collect();
         for uid in done {
             let o = self.open.remove(&uid).unwrap();
-            self.close(uid, o);
+            self.close(uid, o, place(uid));
         }
     }
 
     /// Close everything still open (end of a run).
     pub fn finish(&mut self) {
+        self.finish_at(|_| None);
+    }
+
+    pub fn finish_at(&mut self, place: impl Fn(u64) -> Option<Place>) {
         let all: Vec<u64> = self.open.keys().copied().collect();
         for uid in all {
             let o = self.open.remove(&uid).unwrap();
-            self.close(uid, o);
+            self.close(uid, o, place(uid));
         }
     }
 
-    fn close(&mut self, uid: u64, o: Open) {
+    fn close(&mut self, uid: u64, o: Open, place: Option<Place>) {
         let tick = o.last_tick.unwrap_or(o.window * WINDOW);
-        let v = self.classify(uid, tick, &o.tokens);
+        let ctx = place.map_or(UNKNOWN_CONTEXT, |p| context(&p, moves(&o.tokens)));
+        let v = self.classify_in(uid, tick, &o.tokens, ctx);
         if let Some(log) = &mut self.log {
             let family = match v {
                 Verdict::Matched(id) | Verdict::Novel(id) => Some(id),
@@ -309,6 +397,11 @@ impl Analyzer {
     }
 
     pub fn classify(&mut self, uid: u64, tick: u64, tokens: &[Token]) -> Verdict {
+        self.classify_in(uid, tick, tokens, UNKNOWN_CONTEXT)
+    }
+
+    /// Classify a window seen in context `ctx` (`UNKNOWN_CONTEXT` if not known).
+    pub fn classify_in(&mut self, uid: u64, tick: u64, tokens: &[Token], ctx: u8) -> Verdict {
         self.counts.windows += 1;
         if tokens.len() < 3 {
             self.counts.short += 1;
@@ -318,7 +411,7 @@ impl Analyzer {
         // best family by Jhat over the candidates; ties go to the oldest family
         let mut best: Option<(u32, usize, usize)> = None;
         let mut all_novel = true;
-        for id in self.candidates(&sk) {
+        for id in self.candidates(&sk, ctx) {
             let (i, u) = jhat(&sk, &self.families[id as usize].sketch);
             if 4 * i >= u {
                 all_novel = false;
@@ -340,6 +433,9 @@ impl Analyzer {
                 f.agents.insert(uid);
                 if f.repeated_at.is_none() && f.windows >= 3 && f.agents.len() >= 2 {
                     f.repeated_at = Some(tick);
+                }
+                if ctx != UNKNOWN_CONTEXT && f.contexts.insert(ctx) {
+                    sample_insert(self.ctx_sample.entry(ctx).or_default(), id);
                 }
                 Verdict::Matched(id)
             }
@@ -365,16 +461,22 @@ impl Analyzer {
                     agents: BTreeSet::from([uid]),
                     repeated_at: None,
                     example: tokens.iter().take(6).copied().collect(),
+                    contexts: BTreeSet::new(),
                 });
+                sample_insert(&mut self.sample, id);
+                if ctx != UNKNOWN_CONTEXT {
+                    self.families[id as usize].contexts.insert(ctx);
+                    sample_insert(self.ctx_sample.entry(ctx).or_default(), id);
+                }
                 Verdict::Novel(id)
             }
         }
     }
 
     /// Families to compare: all of them while the archive is small; otherwise the families
-    /// sharing one of the window's 8 smallest hashes (most shared first, at most 1024), plus the
-    /// 256 oldest and the 256 newest as a fixed sample.
-    fn candidates(&self, sk: &[u64]) -> Vec<u32> {
+    /// sharing one of the window's 8 smallest hashes (most shared first, at most 1024), plus
+    /// the fixed hash samples of the window's context and of the whole archive (256 each).
+    fn candidates(&self, sk: &[u64], ctx: u8) -> Vec<u32> {
         let n = self.families.len();
         if n <= FULL_SCAN {
             return (0..n as u32).collect();
@@ -388,8 +490,10 @@ impl Analyzer {
         let mut ranked: Vec<(u32, u32)> = shared.into_iter().collect();
         ranked.sort_unstable_by_key(|(id, c)| (std::cmp::Reverse(*c), *id));
         let mut out: BTreeSet<u32> = ranked.into_iter().take(MAX_CANDIDATES).map(|(id, _)| id).collect();
-        out.extend(0..256u32);
-        out.extend((n as u32 - 256)..n as u32);
+        out.extend(self.sample.iter().map(|(_, id)| *id));
+        if let Some(c) = self.ctx_sample.get(&ctx) {
+            out.extend(c.iter().map(|(_, id)| *id));
+        }
         out.into_iter().collect()
     }
 }
@@ -435,6 +539,7 @@ mod tests {
             agents: Default::default(),
             repeated_at: None,
             example: vec![],
+            contexts: Default::default(),
         };
         assert_eq!(f.use_state(10_000 + 4095), UseState::LiveUsers);
         assert_eq!(f.use_state(10_000 + 4096), UseState::Fading);
@@ -491,6 +596,38 @@ mod tests {
         an.finish();
         assert_eq!(an.families[0].windows, 5);
         assert!(an.families[0].repeated_at.is_none());
+    }
+
+    #[test]
+    fn context_bins_follow_the_original_table() {
+        let p = |g, light, crowd| Place { g, light, crowd };
+        assert_eq!(context(&p(0, 0, 0), 0), 0);
+        assert_eq!(context(&p(64, 32768, 7), 32), CONTEXTS - 1);
+        assert_eq!(context(&p(3, 8191, 2), 7), ((1 * 4 + 1) * 3) * 4 + 1);
+        assert_eq!(context(&p(4, 8192, 3), 8), ((2 * 4 + 2) * 3 + 1) * 4 + 2);
+        let step = [(crate::isa::op::DRIVE - crate::isa::op::READ) << 3, 0, 0, 255, 1, 0, 0, 0];
+        let turn = [step[0] | 1, 0, 0, 255, 1, 0, 0, 0];
+        let blocked = [step[0], 4, 0, 255, 0, 0, 0, 0];
+        assert_eq!(moves(&[step, turn, blocked, step]), 2);
+    }
+
+    #[test]
+    fn a_large_archive_still_compares_the_same_context_sample() {
+        // 2000 distinct one-off families, then a window that repeats family 1000 but shares
+        // none of its 8 smallest hashes with the index: only a sample can find it.
+        let mut an = Analyzer::default();
+        let ctx = 17;
+        for i in 0..2000u32 {
+            let tokens: Vec<Token> = (0..4u8).map(|k| [5 << 3, 0, k, (i % 251) as u8, (i / 251) as u8, k, 0, 0]).collect();
+            an.classify_in(i as u64, i as u64 * WINDOW, &tokens, if i == 1000 { ctx } else { 3 });
+        }
+        assert_eq!(an.families.len(), 2000);
+        let in_ctx = an.ctx_sample.get(&ctx).map_or(0, |c| c.len());
+        assert_eq!(in_ctx, 1);
+        let cands = an.candidates(&[u64::MAX], ctx);
+        assert!(cands.contains(&1000), "the context sample is compared");
+        assert!(cands.len() <= 1 + SAMPLE);
+        assert_eq!(an.families[1000].contexts, BTreeSet::from([ctx]));
     }
 
     #[test]

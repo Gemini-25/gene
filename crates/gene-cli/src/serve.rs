@@ -2,7 +2,7 @@
 //! read published snapshots or ask the simulation thread through a channel, so viewing never
 //! changes the world (original I07, SPEC §15).
 
-use crate::{die, founder_kind, founder_programs, genome_color, hex, nearest, program_diff, situated};
+use crate::{die, founder_kind, founder_programs, genome_color, hex, nearest, place_of, program_diff, situated};
 use gene_core::genome::hash_cells;
 use gene_core::sim::Sim;
 use gene_core::species::*;
@@ -418,7 +418,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
             if sim.st.tick % 256 == 0 {
                 cache.refresh(&sim);
                 hist.push(&sim, cache.distinct());
-                behavior.flush(sim.st.tick);
+                behavior.flush_at(sim.st.tick, place_of(&sim));
                 for r in situated(&sim, behavior.log.as_mut().unwrap()) {
                     judge.window(&r);
                 }
@@ -792,12 +792,13 @@ fn behaviors_json(an: &gene_core::behavior::Analyzer, now: u64) -> String {
         .map(|f| {
             let ex: Vec<String> = f.example.iter().map(gene_core::behavior::describe).collect();
             format!(
-                "{{\"id\":{},\"first\":{},\"repeated\":{},\"windows\":{},\"agents\":{},\"state\":\"{}\",\"last\":{},\"example\":{}}}",
+                "{{\"id\":{},\"first\":{},\"repeated\":{},\"windows\":{},\"agents\":{},\"contexts\":{},\"state\":\"{}\",\"last\":{},\"example\":{}}}",
                 f.id,
                 f.first_tick,
                 f.repeated_at.unwrap(),
                 f.windows,
                 f.agents.len(),
+                f.contexts.len(),
                 match f.use_state(now) {
                     UseState::LiveUsers => "live",
                     UseState::Fading => "fading",

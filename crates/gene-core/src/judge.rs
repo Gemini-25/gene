@@ -326,6 +326,7 @@ mod tests {
             agents: Default::default(),
             repeated_at: Some(first_tick),
             example: vec![],
+            contexts: Default::default(),
         }
     }
 
