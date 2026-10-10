@@ -109,8 +109,54 @@ pub struct M1Stats {
     pub load_failures: u64,
 }
 
+/// One resolved effect, as the behaviour analysis sees it (original §58). Observer only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EffectFact {
+    pub tick: u64,
+    pub uid: u64,
+    /// (opcode - 0x20) << 3 | sub-op; 255 when the sub-op does not fit.
+    pub kind: u8,
+    pub outcome: u8,
+    /// Actor-relative direction 0..3 (front, right, back, left), 255 when there is none.
+    pub dir: u8,
+    /// Species 0..9 / energy 15 / signal channel / bond target, 255 when there is none.
+    pub channel: u8,
+    pub actual: u32,
+}
+
+impl EffectFact {
+    pub fn new(tick: u64, uid: u64, it: &crate::intent::Intent, outcome: u8, actual: u32) -> EffectFact {
+        use crate::intent::{dom, sub, unpack};
+        use crate::isa::op;
+        let r = it.r;
+        let kind = if (op::READ..=op::COPY).contains(&it.opc) && it.sub < 8 { (it.opc - op::READ) << 3 | it.sub as u8 } else { 255 };
+        let vec_dir = |dx: u16, dy: u16| match (dx as i16, dy as i16) {
+            (0, -1) => 0,
+            (1, 0) => 1,
+            (0, 1) => 2,
+            (-1, 0) => 3,
+            _ => 255,
+        };
+        let (dir, channel) = match it.opc {
+            op::DRIVE if it.sub == sub::DRIVE_TRANSLATE => (if r[5] <= 3 { r[5] as u8 } else { 255 }, 255),
+            op::DRIVE => (255, (r[5] & 3) as u8),
+            op::TRANSFER => {
+                let ext = |a: u16| unpack(a).filter(|(d, o)| *o > 0 && *d != dom::SELF).map(|(_, o)| o - 1);
+                (ext(r[0]).or(ext(r[1])).unwrap_or(255), if r[3] < 16 { r[3] as u8 } else { 255 })
+            }
+            op::WORK | op::LINK | op::UNLINK => (vec_dir(r[1], r[2]), if it.opc == op::WORK { 255 } else { r[4].min(255) as u8 }),
+            op::EMIT => (255, (r[3] & 3) as u8),
+            op::REPRO if it.sub == sub::REPRO_RELEASE => ((r[5] & 3) as u8, 255),
+            _ => (255, 255),
+        };
+        EffectFact { tick, uid, kind, outcome, dir, channel, actual }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Observer {
+    /// Resolved effects for behaviour analysis; collected only when Some.
+    pub facts: Option<Vec<EffectFact>>,
     pub m1: M1Stats,
     pub tick: TickStats,
     pub acc: TickStats,

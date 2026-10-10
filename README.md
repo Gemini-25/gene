@@ -11,7 +11,7 @@
 | 항목 | 상태 |
 | --- | --- |
 | M0 엔진(`gene-core`) | 구현 완료 |
-| 시험 | 66개 통과 (단위 19, 장부·결정론·병렬 5, VM·이동 10, M1a/b 9, parcel 6, 결합·조립체 15, 조상 크기 1, CLI 1) |
+| 시험 | 71개 통과 (단위 24, 장부·결정론·병렬 5, VM·이동 10, M1a/b 9, parcel 6, 결합·조립체 15, 조상 크기 1, CLI 1) |
 | 에너지·원자 장부 | 시험에서는 매 tick 정확히 일치, 실행 중에는 4096 tick마다 검사 |
 | 결정론 | 같은 seed면 같은 hash. 저장 후 이어 간 결과도 같음 |
 | E1-a: Founder-4(원본 §57) | 20/20 seed가 첫 밤에 전멸 |
@@ -60,7 +60,9 @@ python3 scripts/e1_summary.py runs/E1b
 | `births.csv` | 출생 사건: 부모, 세대, genome hash, 변이 종류 |
 | `deaths.csv` | 사망 사건: 원인, 나이, 자식 수 |
 | `map_*.png` | 지형(고도·물)과 개체(genome별 색) |
-| `summary.json` | 설정, 결과, 상태 hash, 속도 |
+| `summary.json` | 설정, 결과, 상태 hash, 속도, 효과 결과별 횟수, M1 계수, 행동 family 요약 |
+| `genomes.txt` | 마지막 시점의 많은 genome과 founder 대비 차이 |
+| `behaviors.csv` | 반복되는 행동 family(원본 §58 A1.4): 처음 나타난 tick, 개체 수, 대표 효과 순서 |
 
 ## 구조
 
@@ -74,6 +76,7 @@ crates/gene-core   시뮬레이션 core (Bevy·관찰기에 의존하지 않음)
   records.rs       신호·공개 기록·초안·학습 채택 (M1a, M1b)
   parcels.rs       구조물 parcel: WORK, pore 교환, 내부 화학 (M1c)
   bonds.rs         결합·grip, 하중 graph, 조립체 이동 (M1d, stage 5)
+  behavior.rs      행동 token·sketch·family (관찰 전용, 원본 §58)
   repro.rs         배아 상태 기계
   mutation.rs      point·구조 변이 8종
   motion.rs        동시 이동 의존 graph (stage 6)

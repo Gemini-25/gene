@@ -556,6 +556,43 @@ Founder-7(`assets/founder7.asm`)은 Founder-6에서 G가 모자랄 때의 행동
 | `map_<tick>.png` | 고도, 물, 개체(계통 색) |
 | `summary.json` | 실행 설정, 최종 상태, hash, 성능 |
 
+### 17b. 행동 family (원본 §58, 분석 버전 A1.4)
+
+관찰기 전용이다. 결과가 세계로 돌아가지 않으며, 켜고 꺼도 CoreHash가 같다.
+
+**token.** 확정된 효과 하나가 8 byte token이 된다. 성공량 0인 결과와 실패도 token을 남긴다.
+
+| byte | 내용 |
+| --- | --- |
+| 0 | 종류 = (opcode − 0x20) << 3 \| sub-op |
+| 1 | 결과(Outcome) |
+| 2 | 행위자 기준 방향 0..3(앞, 오른쪽, 뒤, 왼쪽). 없으면 255 |
+| 3 | channel: TRANSFER 종(0..9, energy 15), EMIT 신호 channel, LINK 대상(면 0..3, anchor 4, grip 5). 없으면 255 |
+| 4 | magnitude = min(16, floor(log2(1 + 실제량))) |
+| 5 | 같은 개체의 직전 효과와의 tick 차이 bin: 0, 1, 2..3, 4..7, 8..15, 16 이상 → 0..5 |
+| 6 | flags: bit0 = 창의 첫 token(이때 지연 bin은 0) |
+| 7 | 0 |
+
+**sketch.** 창은 [256k, 256(k+1)) tick이다.
+- 창 안 token의 연속 3개(24 byte) 앞에 `behavior-a1.4\0`을 붙여 BLAKE3 hash하고 앞 8 byte를 LE u64로 읽는다.
+- 서로 다른 hash 중 가장 작은 128개가 sketch다.
+- token이 3개 미만인 창은 ShortTrace로 세고 family를 만들지 않는다.
+
+**비교.** 두 sketch의 합집합에서 가장 작은 min(128, |합집합|)개를 U로 잡는다. U 중 양쪽에 다 있는 개수가 I다. Jhat = I/|U|이며, 판정은 정수 비교(4I ≥ 3|U|, 4I < |U|)로 한다.
+
+**family.** 창 하나를 후보 family의 대표 sketch와 비교한다.
+- 후보: archive가 1536개 이하이면 전부다. 그보다 많으면 창의 가장 작은 hash 8개를 공유하는 family(공유 수 내림차순, 최대 1024), 가장 오래된 256개, 가장 새로운 256개다.
+- 가장 좋은 후보의 Jhat ≥ 3/4이면 그 family의 창이 된다. 동률은 오래된 family다.
+- 모든 후보와 Jhat < 1/4이면 새 family를 만든다(novel). 대표 sketch는 처음 창의 것이고 바꾸지 않는다.
+- 그 사이면 intermediate로 세고 억지로 분류하지 않는다.
+- 창 3개 이상, 서로 다른 개체 2 이상이 되면 RepeatedBehavior다.
+
+**출력.**
+- `behaviors.csv`: 창 3개 이상인 family. 처음 tick, 처음 개체, 창 수, intermediate 수, 개체 수, 반복 확정 tick, 대표 token 예시.
+- `summary.json`의 `effects.behavior`: 창·short·matched·novel·intermediate 수, family 수, 반복 family 수.
+
+**원본과의 차이.** context(tile G, 빛, 혼잡, 이동) 기반 표본, 관계 graph, artifact 동일성, 복사 계보는 아직 없다. 지금 세계에는 구조물과 공개 기록을 쓰는 행동이 관찰되지 않아서다(P1).
+
 ## 18. 첫 실험 E1: 조상 생존 (§49 축소판)
 
 **사전 고정 조건.**

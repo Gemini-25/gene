@@ -242,7 +242,28 @@ struct Summary {
 }
 
 /// Effect outcomes per opcode (nonzero only) and the M1 counters, as a JSON object.
-fn effects_json(sim: &Sim) -> String {
+/// Behaviour families seen in at least 3 windows (original §58), oldest first.
+fn behaviors_csv(an: &gene_core::behavior::Analyzer) -> String {
+    let mut out = String::from("family,first_tick,first_agent,last_tick,windows,near,agents,repeated_at,example\n");
+    for f in an.families.iter().filter(|f| f.windows >= 3) {
+        let ex: Vec<String> = f.example.iter().map(gene_core::behavior::describe).collect();
+        out += &format!(
+            "{},{},{},{},{},{},{},{},{}\n",
+            f.id,
+            f.first_tick,
+            f.first_uid,
+            f.last_tick,
+            f.windows,
+            f.near,
+            f.agents.len(),
+            f.repeated_at.map_or(String::new(), |t| t.to_string()),
+            ex.join(" | ")
+        );
+    }
+    out
+}
+
+fn effects_json(sim: &Sim, an: &gene_core::behavior::Analyzer) -> String {
     const OPS: [&str; 10] = ["READ", "WRITE", "DRIVE", "LINK", "UNLINK", "TRANSFER", "WORK", "EMIT", "REPRO", "COPY"];
     const OUT: [&str; 15] = [
         "Ok", "Partial", "Noop", "Boundary", "Blocked", "Energy", "Matter", "Capacity", "InvalidTarget", "Stale", "Limits",
@@ -278,7 +299,18 @@ fn effects_json(sim: &Sim) -> String {
         ("load_failures", m.load_failures),
     ];
     let m1: Vec<String> = m1.iter().map(|(k, v)| format!("\"{k}\": {v}")).collect();
-    format!("{{\"outcomes\": {{{}}}, \"m1\": {{{}}}}}", ops.join(", "), m1.join(", "))
+    let c = &an.counts;
+    let behavior = format!(
+        "\"windows\": {}, \"short\": {}, \"matched\": {}, \"novel\": {}, \"intermediate\": {}, \"families\": {}, \"repeated\": {}",
+        c.windows,
+        c.short,
+        c.matched,
+        c.novel,
+        c.intermediate,
+        an.families.len(),
+        an.families.iter().filter(|f| f.repeated_at.is_some()).count()
+    );
+    format!("{{\"outcomes\": {{{}}}, \"m1\": {{{}}}, \"behavior\": {{{}}}}}", ops.join(", "), m1.join(", "), behavior)
 }
 
 fn summary_json(s: &Summary, o: &Opts) -> String {
@@ -328,9 +360,17 @@ emits,signal_reads,public_reads,copies_from_public,copies_to_public,draft_to_emb
     if o.map_every > 0 {
         write_map(&sim, &o.out.join(format!("map_{:07}.png", sim.st.tick)));
     }
+    let mut behavior = gene_core::behavior::Analyzer::default();
+    sim.obs.facts = Some(Vec::new());
     while sim.st.tick < t_end {
         sim.step();
         let t = sim.st.tick;
+        for f in sim.obs.facts.as_mut().unwrap().drain(..) {
+            behavior.push(&f);
+        }
+        if t % gene_core::behavior::WINDOW == 0 {
+            behavior.flush(t);
+        }
         s.peak_pop = s.peak_pop.max(sim.st.agents.len());
         for b in sim.obs.births.drain(..) {
             writeln!(
@@ -411,7 +451,9 @@ emits,signal_reads,public_reads,copies_from_public,copies_to_public,draft_to_emb
     s.max_generation = sim.st.agents.iter().map(|a| a.generation).max().unwrap_or(0);
     s.distinct_genomes = distinct_genomes(&sim);
     s.hash = hex(&sim.state_hash());
-    s.effects = effects_json(&sim);
+    behavior.finish();
+    s.effects = effects_json(&sim, &behavior);
+    fs::write(o.out.join("behaviors.csv"), behaviors_csv(&behavior)).unwrap();
     fs::write(o.out.join("genomes.txt"), genome_report(&sim, &o.founder, 5)).unwrap();
     fs::write(o.out.join("summary.json"), summary_json(&s, o)).unwrap();
     if o.save_final {

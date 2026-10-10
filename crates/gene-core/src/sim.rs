@@ -658,8 +658,12 @@ impl Sim {
             if let Some(child) = self.try_birth(i, child_uid) {
                 newborn.push(child);
             }
-            if let Some((o, _)) = self.st.agents[i].receipt {
+            if let Some((o, act)) = self.st.agents[i].receipt {
                 self.obs.record_outcome(crate::isa::op::REPRO, crate::intent::sub::REPRO_RELEASE, o);
+                let a = &self.st.agents[i];
+                if let (Some(f), Some(it)) = (&mut self.obs.facts, &a.s.intent) {
+                    f.push(crate::observer::EffectFact::new(self.st.tick, a.uid, it, o, act as u32));
+                }
             }
         }
         if dead.iter().any(|d| *d) {

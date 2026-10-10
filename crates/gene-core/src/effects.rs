@@ -99,6 +99,9 @@ impl Sim {
         let a = &mut self.st.agents[i];
         a.receipt = Some((res.0 as u8, res.1.min(65535) as u16));
         self.obs.record_outcome(it.opc, it.sub, res.0 as u8);
+        if let Some(f) = &mut self.obs.facts {
+            f.push(crate::observer::EffectFact::new(self.st.tick, a.uid, it, res.0 as u8, res.1));
+        }
     }
 
     fn store_tile(&self, i: usize, s: Store) -> Result<u32, Outcome> {
