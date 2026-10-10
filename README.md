@@ -16,13 +16,15 @@
 | 결정론 | 같은 seed면 같은 hash. 저장 후 이어 간 결과도 같음 |
 | E1-a: Founder-4(원본 §57) | 20/20 seed가 첫 밤에 전멸 |
 | E1-b: Founder-5(개정판) | 20/20 seed가 49일 생존. 그러나 계속 줄어 마지막 개체 수 중앙값 66 ([`docs/results/E1.md`](docs/results/E1.md)) |
-| E1-c: Founder-6(오전에만 번식) | 진행 중 |
-| 속도(512², 개체 약 1,700) | 약 190 TPS, 단일 thread. 명세 목표 S1(500+) 미달, 병목은 환경 수송 |
+| E1-c: Founder-6(오전에만 번식) | 진행 중. 7,000 가까이 늘었다가 감소. 죽은 유기물이 쌓이며 공기의 C가 줄어듦 |
+| E1-d: Founder-7(죽은 G 수거) | E1-c 뒤 자동 실행. 소규모 점검에서 Founder-6보다 개체 수 2배 |
+| P1: M1 기능의 자연 발견 | 소규모 4 seed에서 없음. m0와 m1d 결과가 완전히 같음 ([`docs/results/P1_M1_pilot.md`](docs/results/P1_M1_pilot.md)) |
+| 속도(512², 개체 약 1,700) | 약 190 TPS, 단일 thread. 명세 목표 S1(500+) 미달, 병목은 환경 수송. Think·수송·환경은 `--sim-threads N`으로 병렬(결과 동일) |
 | M1a(신호·공개 기록·초안) | ruleset `gene-m1-1`(`--ruleset m1a`) |
 | M1b(학습 채택) | ruleset `gene-m1-2`(`--ruleset m1b`): DraftCommit, learned binding, 실행 중 옛 코드 보존 |
 | M1c(구조물 parcel) | ruleset `gene-m1-3`(`--ruleset m1c`): 짓기·압축·내부 저장·차폐·통행 차단·내부 화학 |
 | M1d(결합·조립체) | ruleset `gene-m1-4`(`--ruleset m1d`): LINK/UNLINK 면 결합·고정·grip, 최대 유량 하중 검사, 16칸까지 조립체 평행 이동·회전, 밀기 |
-| 화면 | `gene serve`: 브라우저용 로컬 viewer(지도·재생·속도·개체 상세·genome 순위). Bevy는 보류 |
+| 화면 | `gene serve`: 브라우저용 로컬 viewer(지도·재생·속도·개체 상세·genome 순위·탄소 그래프). Bevy는 보류 |
 
 ## 빠른 시작
 
@@ -50,7 +52,7 @@ cargo build --release
 python3 scripts/e1_summary.py runs/E1b
 ```
 
-`--founder`에는 `founder4`, `founder5`, `founder6` 또는 어셈블리 파일 경로를 줄 수 있다. `--ruleset`은 `m0`(기본), `m1a`, `m1b`, `m1c`, `m1d`다. 실행마다 다음 파일이 생긴다.
+`--founder`에는 `founder4`..`founder7` 또는 어셈블리 파일 경로를 줄 수 있다. `--ruleset`은 `m0`(기본), `m1a`, `m1b`, `m1c`, `m1d`다. 실행마다 다음 파일이 생긴다.
 
 | 파일 | 내용 |
 | --- | --- |
@@ -79,7 +81,7 @@ crates/gene-core   시뮬레이션 core (Bevy·관찰기에 의존하지 않음)
   sim.rs           tick 순서, 장부, 저장·이어하기
 crates/gene-cli    실행기 `gene` (run, batch, resume, serve, inspect, asm)
   serve.rs         로컬 viewer 서버 (std만 사용, 시뮬레이션 thread가 상태를 단독 소유)
-assets/            공개 조상 founder4/5/6.asm, viewer.html
+assets/            공개 조상 founder4..7.asm, viewer.html
 scripts/           결과 집계
 docs/              명세, 결과, 원본 보관본
 ```

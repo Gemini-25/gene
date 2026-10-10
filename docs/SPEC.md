@@ -592,9 +592,10 @@ Founder-7(`assets/founder7.asm`)은 Founder-6에서 G가 모자랄 때의 행동
 기준 구현은 단일 thread 직렬이다. 병렬화는 같은 hash를 내는 경우에만 들인다.
 
 - **수송(stage 7):** 같은 color의 edge는 endpoint를 공유하지 않으므로, 각 edge가 한 띠 안에 들어가도록 행 단위 띠로 나눠 병렬 처리한다(동쪽 edge는 아무 행 경계, 남쪽 edge는 color 2면 짝수 행 경계, color 3이면 홀수 행 경계).
+- **Think(stage 2):** 각 VM은 공유 세계를 읽고 자기 개체만 쓴다. 그래서 개체 32 이상이면 개체 단위로 병렬 실행한다. 에너지 집계는 그 뒤 개체 순서대로 직렬로 더한다.
 - **환경(stage 8):** 개체와 버려진 기록이 없는 due tile은 띠 단위로 병렬 처리하고, 나머지는 직렬 경로로 처리한다.
 - residue가 있으면 직렬로 돌아간다.
-- `threads` 값은 상태에 포함되지 않으며, 시험이 1 thread와 4 thread의 hash가 같음을 확인한다.
+- `threads` 값은 상태에 포함되지 않으며, 시험이 1 thread와 4 thread의 hash가 같음을 확인한다. 30,000 tick CLI 실행에서 `stats.csv`와 `births.csv`가 byte 단위로 같았다.
 
 ## 20. 원본과 다르거나 원본이 비워 둔 결정
 
