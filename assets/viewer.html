@@ -9,6 +9,7 @@
   color-scheme: light;
   --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
   --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10); --accent: #2a78d6; --accent2: #eb6834;
+  --kind-1: #eb6834; --kind-2: #6250d6; --kind-3: #eda100; --kind-4: #2a78d6; --kind-5: #1baf7a; --kind-6: #e87ba4;
   --btn: #f0efec; --btn-on: #2a78d6; --btn-on-ink: #ffffff;
 }
 @media (prefers-color-scheme: dark) {
@@ -16,6 +17,7 @@
     color-scheme: dark;
     --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
     --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --accent: #3987e5; --accent2: #d95926;
+    --kind-1: #d95926; --kind-2: #9085e9; --kind-3: #c98500; --kind-4: #3987e5; --kind-5: #199e70; --kind-6: #d55181;
     --btn: #2c2c2a; --btn-on: #3987e5; --btn-on-ink: #0b0b0b;
   }
 }
@@ -23,6 +25,7 @@
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
   --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --accent: #3987e5; --accent2: #d95926;
+  --kind-1: #d95926; --kind-2: #9085e9; --kind-3: #c98500; --kind-4: #3987e5; --kind-5: #199e70; --kind-6: #d55181;
   --btn: #2c2c2a; --btn-on: #3987e5; --btn-on-ink: #0b0b0b;
 }
 * { box-sizing: border-box; }
@@ -81,6 +84,9 @@ h2 button { font-size: 11px; padding: 1px 8px; min-height: 22px; margin-left: 6p
 .behav code { display: block; font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink2);
   white-space: normal; overflow-wrap: anywhere; margin-top: 2px; }
 .small { color: var(--muted); font-size: 11px; }
+.legend-row { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--ink2); margin-bottom: 2px; }
+.legend-row span { display: inline-flex; align-items: center; gap: 5px; }
+.legend-row i { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
 .arts { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; margin-top: 6px; }
 .art { border: 1px solid var(--border); border-radius: 8px; padding: 6px; text-align: center; font-size: 11px; color: var(--ink2); }
 .art canvas { width: 70px; height: 70px; display: block; margin: 0 auto 4px; }
@@ -154,6 +160,11 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
     </div>
     <h2>개체 수</h2>
     <canvas class="chart" id="c-pop"></canvas>
+    <div id="kinds-box" style="display:none">
+      <h2>조상 종류별 개체 수</h2>
+      <div class="legend-row" id="kinds-legend"></div>
+      <canvas class="chart" id="c-kinds"></canvas>
+    </div>
     <h2>고유 genome 수</h2>
     <canvas class="chart" id="c-gen"></canvas>
     <h2>공기 중 탄소 (loose C)</h2>
@@ -423,7 +434,8 @@ void main() {
     vec4 d = texture(u_detail, p / 3.0) - 0.5;
     col *= 1.0 + dot(texture(u_weights, uv), d) * 2.4 * mag;
   }
-  if (wa < 0.6 && u_ppt > 3.0) {
+  if (wa < 0.6 && u_ppt > 7.0) {
+    // sub-tile marks (dead matter, dry cracks, records) are under 2 px below 7 px per tile: skip
     vec4 F = texelFetch(u_field, ti, 0);
     vec2 sc = floor(f * 4.0), sf = fract(f * 4.0);
     float h = hash(vec2(ti) * 4.0 + sc);
@@ -936,9 +948,9 @@ function drawFrame(now) {
     // adaptive resolution: keep the frame rate, give back sharpness when there is headroom.
     // A raise that the frame rate could not hold sets a ceiling for a while (doubling up to two
     // minutes), so the scale does not probe up and down every few seconds.
-    if (DEBUG.includes("fixed") || now - fps.start < 3000) {} else if (fps.value < 50 && fps.scale > 0.4) {
+    if (DEBUG.includes("fixed") || now - fps.start < 3000) {} else if (fps.value < 50 && fps.scale > 0.3) {
       if (now - fps.raised < 2500) { fps.ceiling = fps.scale; fps.ceilingUntil = now + fps.backoff; fps.backoff = Math.min(120000, fps.backoff * 2); }
-      fps.scale = Math.max(0.4, fps.scale * 0.85); fps.lowered = now; fps.good = 0;
+      fps.scale = Math.max(0.3, fps.scale * 0.85); fps.lowered = now; fps.good = 0;
     } else if (fps.value >= 57 && fps.scale < 1 && now - fps.lowered > 2000 && ++fps.good >= 2) {
       const next = Math.min(1, fps.scale * 1.15);
       if (now >= fps.ceilingUntil || next < fps.ceiling * 0.999) { fps.scale = next; fps.raised = now; }
@@ -1217,8 +1229,78 @@ function lineChart(canvas, xs, ys, color, label) {
     c.fillStyle = css("--ink"); c.textAlign = "left"; c.fillText(txt, bx + 6, T + 13);
   }
 }
+// several series on one axis: 2px lines, a legend above, direct labels at the line ends (in ink),
+// and a crosshair tooltip listing every series
+function multiChart(canvas, xs, series, colors, names) {
+  const dpr = window.devicePixelRatio || 1;
+  const r = canvas.getBoundingClientRect();
+  canvas.width = Math.round(r.width * dpr); canvas.height = Math.round(r.height * dpr);
+  const c = canvas.getContext("2d");
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.fillStyle = css("--surface"); c.fillRect(0, 0, r.width, r.height);
+  if (!xs || xs.length < 2) return;
+  c.font = "11px system-ui, sans-serif";
+  const R = 22 + Math.max(...names.map((n) => c.measureText(n).width));
+  const L = 40, T = 8, B = 20, pw = r.width - L - R, ph = r.height - T - B;
+  const xmax = xs[xs.length - 1], xmin = xs[0];
+  let ymax = Math.max(1, ...series.map((s) => Math.max(...s)));
+  const mag = 10 ** Math.floor(Math.log10(ymax)); ymax = Math.ceil(ymax / mag) * mag;
+  const X = (v) => L + pw * (v - xmin) / Math.max(1, xmax - xmin), Y = (v) => T + ph * (1 - v / ymax);
+  c.font = "11px system-ui, sans-serif"; c.fillStyle = css("--muted"); c.strokeStyle = css("--grid"); c.lineWidth = 1;
+  for (const f of [0, 0.5, 1]) {
+    const v = ymax * f, y = Math.round(Y(v)) + 0.5;
+    c.beginPath(); c.moveTo(L, y); c.lineTo(L + pw, y); c.stroke();
+    c.textAlign = "right"; c.fillText(fmtAxis(Math.round(v)), L - 6, y + 4);
+  }
+  c.textAlign = "left"; c.fillText("day " + (xmin / 4096).toFixed(0), L, r.height - 4);
+  c.textAlign = "right"; c.fillText("day " + (xmax / 4096).toFixed(1), L + pw, r.height - 4);
+  c.lineWidth = 2; c.lineJoin = "round"; c.lineCap = "round";
+  series.forEach((ys, j) => {
+    c.strokeStyle = colors[j]; c.beginPath();
+    for (let i = 0; i < xs.length; i++) { const x = X(xs[i]), y = Y(ys[i]); i ? c.lineTo(x, y) : c.moveTo(x, y); }
+    c.stroke();
+  });
+  // direct labels at the right end, nudged apart, text in ink
+  const ends = series.map((ys, j) => ({ j, y: Y(ys[ys.length - 1]) })).sort((a, b) => a.y - b.y);
+  for (let k = 1; k < ends.length; k++) ends[k].y = Math.max(ends[k].y, ends[k - 1].y + 12);
+  c.font = "11px system-ui, sans-serif"; c.textAlign = "left";
+  for (const e of ends) {
+    c.fillStyle = colors[e.j]; c.fillRect(L + pw + 6, e.y - 1, 8, 2);
+    c.fillStyle = css("--ink2"); c.fillText(names[e.j], L + pw + 17, e.y + 4);
+  }
+  const h = hover[canvas.id];
+  if (h !== undefined) {
+    let i = 0, bd = Infinity;
+    for (let k = 0; k < xs.length; k++) { const d = Math.abs(X(xs[k]) - h); if (d < bd) { bd = d; i = k; } }
+    const x = X(xs[i]);
+    c.strokeStyle = css("--axis"); c.lineWidth = 1; c.beginPath(); c.moveTo(x, T); c.lineTo(x, T + ph); c.stroke();
+    series.forEach((ys, j) => {
+      c.fillStyle = colors[j]; c.beginPath(); c.arc(x, Y(ys[i]), 4, 0, Math.PI * 2); c.fill();
+      c.strokeStyle = css("--surface"); c.lineWidth = 2; c.stroke();
+    });
+    const txt = `day ${(xs[i] / 4096).toFixed(1)} · ` + series.map((ys, j) => `${names[j]} ${ys[i]}`).join(" · ");
+    c.font = "12px system-ui, sans-serif"; const tw = c.measureText(txt).width;
+    const bx = Math.min(Math.max(L, x - tw / 2 - 6), Math.max(L, L + pw - tw - 12));
+    c.fillStyle = css("--page"); c.fillRect(bx, T, tw + 12, 18);
+    c.fillStyle = css("--ink"); c.textAlign = "left"; c.fillText(txt, bx + 6, T + 13);
+  }
+}
+const KIND_SHORT = { founder4: "F4", founder5: "F5", founder6: "F6", founder7: "F7", founder8: "F8 신호", founder9: "F9 기록", founder10: "F10 구조물" };
+function drawKinds() {
+  const f = state && state.founders ? state.founders : [];
+  const on = f.length > 1 && hist && hist.kinds && hist.kinds.length === f.length;
+  $("kinds-box").style.display = on ? "block" : "none";
+  if (!on) return;
+  const colors = f.map((_, k) => css(`--kind-${(k % 6) + 1}`));
+  const names = f.map((n) => KIND_SHORT[n] || n.replace(/^.*\//, ""));
+  const lg = $("kinds-legend");
+  const html = names.map((n, k) => `<span><i style="background:${colors[k]}"></i>${esc(n)}</span>`).join("");
+  if (lg.innerHTML !== html) lg.innerHTML = html;
+  multiChart($("c-kinds"), hist.tick, hist.kinds, colors, names);
+}
 function drawCharts() {
   if (!hist || !hist.tick) return;
+  drawKinds();
   lineChart($("c-pop"), hist.tick, hist.pop, css("--accent"), "개체");
   lineChart($("c-gen"), hist.tick, hist.genomes, css("--accent"), "genome");
   if (hist.air_c) {
@@ -1227,7 +1309,7 @@ function drawCharts() {
   }
   if (hist.dry) lineChart($("c-dry"), hist.tick, hist.dry, css("--accent"), "‰");
 }
-for (const id of ["c-pop", "c-gen", "c-air", "c-dead", "c-dry"]) {
+for (const id of ["c-pop", "c-kinds", "c-gen", "c-air", "c-dead", "c-dry"]) {
   const el = $(id);
   el.addEventListener("pointermove", (e) => { hover[id] = e.clientX - el.getBoundingClientRect().left; drawCharts(); });
   el.addEventListener("pointerleave", () => { delete hover[id]; drawCharts(); });
@@ -1568,7 +1650,7 @@ function parseAgents(buf) {
 const COLOUR_MODES = ["genome", "kind", "lineage", "group", "energy", "generation"], COLOUR_NAMES = { genome: "genome", kind: "조상 종류", lineage: "계통", group: "집단", energy: "에너지", generation: "세대" };
 // founder kinds (E2 mixed worlds): founder i runs program i mod n, so kind = (root - 1) mod n.
 // Fixed order of hues that stand out on green land, blue water and tan ground.
-const KIND_COLOURS = [0xff8a3d, 0xd65ce0, 0xffe04a, 0xf2f2f2, 0xff4f5e, 0x6fe3ff];
+const KIND_COLOURS = [0xff8a3d, 0xa597ff, 0xffd84a, 0x6fb6ff, 0x5fe0b0, 0xff9cc4];
 const KIND_DESC = { founder4: "Founder-4", founder5: "Founder-5", founder6: "Founder-6", founder7: "Founder-7", founder8: "Founder-8 · 신호", founder9: "Founder-9 · 기록 학습", founder10: "Founder-10 · 구조물" };
 function kindOf(root) { const n = state && state.founders ? state.founders.length : 1; return (root - 1) % n; }
 function showLegend() {

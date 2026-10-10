@@ -106,6 +106,9 @@ struct Hist {
     dead_g: Vec<u64>,
     /// Per mille of tiles without loose water.
     dry: Vec<u32>,
+    /// Living agents per founder kind ((root - 1) mod founders), for mixed-founder worlds.
+    kinds: Vec<Vec<u32>>,
+    founders: usize,
 }
 
 impl Hist {
@@ -128,6 +131,13 @@ impl Hist {
         g += sim.st.dropped.values().flatten().map(|m| m.present_pages() as u64).sum::<u64>();
         self.air_c.push(c);
         self.dead_g.push(g);
+        if self.founders > 1 {
+            let mut k = vec![0u32; self.founders];
+            for a in ag {
+                k[((a.root.max(1) - 1) % self.founders as u64) as usize] += 1;
+            }
+            self.kinds.push(k);
+        }
         if self.tick.len() > 4000 {
             // keep every other point: bounded memory, full time range
             fn half<T: Copy>(v: &mut Vec<T>) {
@@ -142,6 +152,9 @@ impl Hist {
             half(&mut self.air_c);
             half(&mut self.dead_g);
             half(&mut self.dry);
+            if !self.kinds.is_empty() {
+                self.kinds = self.kinds.iter().step_by(2).cloned().collect();
+            }
         }
     }
 
@@ -155,6 +168,7 @@ impl Hist {
         self.genomes.truncate(k);
         self.energy.truncate(k);
         self.air_c.truncate(k);
+        self.kinds.truncate(k);
         self.dead_g.truncate(k);
         self.dry.truncate(k);
     }
@@ -164,7 +178,7 @@ impl Hist {
             v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
         }
         format!(
-            "{{\"tick\":[{}],\"pop\":[{}],\"births\":[{}],\"deaths\":[{}],\"genomes\":[{}],\"energy\":[{}],\"air_c\":[{}],\"dead_g\":[{}],\"dry\":[{}]}}",
+            "{{\"tick\":[{}],\"pop\":[{}],\"births\":[{}],\"deaths\":[{}],\"genomes\":[{}],\"energy\":[{}],\"air_c\":[{}],\"dead_g\":[{}],\"dry\":[{}],\"kinds\":[{}]}}",
             arr(&self.tick),
             arr(&self.pop),
             arr(&self.births),
@@ -173,7 +187,11 @@ impl Hist {
             arr(&self.energy),
             arr(&self.air_c),
             arr(&self.dead_g),
-            arr(&self.dry)
+            arr(&self.dry),
+            (0..if self.kinds.is_empty() { 0 } else { self.founders })
+                .map(|j| format!("[{}]", arr(&self.kinds.iter().map(|k| k[j]).collect::<Vec<_>>())))
+                .collect::<Vec<_>>()
+                .join(",")
         )
     }
 }
@@ -240,6 +258,8 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
         air_c: vec![],
         dead_g: vec![],
         dry: vec![],
+        kinds: vec![],
+        founders: founder.split('+').count(),
     };
     let mut cache = HashCache(BTreeMap::new());
     cache.refresh(&sim);

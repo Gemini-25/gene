@@ -3,7 +3,7 @@
 //! B (filter): a repeated behaviour family counts only when its effects mostly succeed and it is
 //! tied to success: its carriers have more children per day of life than all agents with a
 //! classified window (so that short-lived newborns do not flatter every family), or it spread to
-//! another founder type.
+//! another founder type (at least SPREAD_CARRIERS carriers in each of two types).
 //! C (hierarchy): a high-level behaviour is an ordered chain of 2 or 3 families that follow each
 //! other in one agent's consecutive windows, all passing B, used by several agents, in several
 //! situations (time of day, the agent's energy band, a wet or dry tile), and leaving an output
@@ -24,6 +24,8 @@ pub const MIN_SUCCESS: (u64, u64) = (1, 2);
 /// Carriers must reproduce at least 1.1 times the population rate (or spread to another type).
 pub const FITNESS: (u64, u64) = (11, 10);
 pub const CHAIN_AGENTS: usize = 5;
+/// Carriers a founder type needs for a family to count as spread to it.
+pub const SPREAD_CARRIERS: usize = 3;
 /// Distinct situations (time of day × energy band × wet tile) a chain must start in.
 pub const CHAIN_CONTEXTS: u32 = 2;
 /// Agent ids kept per chain (enough to count CHAIN_AGENTS and to show a few on screen).
@@ -242,7 +244,13 @@ impl Judge {
             let (k, t) = days(&mut carriers.iter());
             // (k / t) / (all_k / all_t), ×1000
             let fitness_milli = if t == 0 || all_k == 0 { 0 } else { (k as u128 * all_t as u128 * 1000 / (t as u128 * all_k as u128)) as u64 };
-            let types: BTreeSet<u16> = carriers.iter().filter_map(|u| self.life.get(u).map(|l| l.kind)).collect();
+            let mut per_type: BTreeMap<u16, usize> = BTreeMap::new();
+            for u in carriers {
+                if let Some(l) = self.life.get(u) {
+                    *per_type.entry(l.kind).or_default() += 1;
+                }
+            }
+            let types: BTreeSet<u16> = per_type.iter().filter(|(_, n)| **n >= SPREAD_CARRIERS).map(|(k, _)| *k).collect();
             let success = ok * MIN_SUCCESS.1 >= total * MIN_SUCCESS.0;
             let linked = fitness_milli * FITNESS.1 >= 1000 * FITNESS.0 || types.len() >= 2;
             let grams = action_grams(&f.example);
