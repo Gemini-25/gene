@@ -8,3 +8,4 @@ license.workspace = true
 blake3 = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 postcard = { version = "1", features = ["use-std"] }
+rayon = "1"

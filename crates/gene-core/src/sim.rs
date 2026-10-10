@@ -99,6 +99,9 @@ pub struct Sim {
     pub caps: Caps,
     /// Emissions collected this tick for the next field.
     pub(crate) signal_next: BTreeMap<u64, i64>,
+    /// Host threads for result-preserving parallel stages (not part of the state).
+    pub threads: usize,
+    pub(crate) pool: Option<rayon::ThreadPool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -249,6 +252,8 @@ impl Sim {
             reserved: BTreeSet::new(),
             caps,
             signal_next: BTreeMap::new(),
+            threads: 1,
+            pool: None,
         };
         sim.rebuild_occ();
         sim.recompute_heat_cap();

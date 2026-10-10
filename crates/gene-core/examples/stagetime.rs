@@ -1,8 +1,10 @@
 use gene_core::sim::{Config, Sim};
 use std::time::Instant;
 fn main() {
+    let threads: usize = std::env::args().nth(1).map_or(1, |t| t.parse().unwrap());
     let prog = gene_core::isa::assemble(gene_core::FOUNDER5_ASM).unwrap();
     let mut sim = Sim::with_program(Config { seed: 1, width: 512, height: 512, agents: 1000 }, &prog).unwrap();
+    sim.threads = threads;
     for _ in 0..512 { sim.step(); }
     let mut t = [0f64; 10];
     let n = 1024;

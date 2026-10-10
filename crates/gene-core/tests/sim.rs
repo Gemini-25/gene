@@ -67,3 +67,18 @@ fn corrupted_save_is_rejected() {
     bytes[k] ^= 1;
     assert!(Sim::load(&bytes).is_err());
 }
+
+#[test]
+fn parallel_transport_matches_serial_bit_for_bit() {
+    let prog = gene_core::isa::assemble(gene_core::FOUNDER6_ASM).unwrap();
+    let cfg = Config { seed: 9, width: 128, height: 128, agents: 64 };
+    let mut serial = Sim::with_program(cfg.clone(), &prog).unwrap();
+    let mut par = Sim::with_program(cfg, &prog).unwrap();
+    par.threads = 4;
+    for _ in 0..3000 {
+        serial.step();
+        par.step();
+    }
+    assert_eq!(serial.state_hash(), par.state_hash());
+    assert!(par.audit_ok());
+}

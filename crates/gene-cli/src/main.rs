@@ -18,7 +18,7 @@ const USAGE: &str = "gene — Gene M0 headless runner
 USAGE:
   gene run    [--seed N] [--size S] [--agents A] [--ticks T] [--founder NAME|FILE]
               [--out DIR] [--stats-every K] [--map-every M] [--checkpoint-every C]
-              [--audit-every K] [--keep-going] [--save-final] [--quiet] [--ruleset m0|m1a|m1b]
+              [--audit-every K] [--keep-going] [--save-final] [--quiet] [--ruleset m0|m1a|m1b] [--sim-threads N]
   gene batch  --seeds A-B [--threads N] [same options as run]  (one directory per seed)
   gene resume --from CHECKPOINT [--ticks T] [--out DIR] [...]
   gene serve  [--port 8080] [--load SAVE.bin] [same world options as run]
@@ -46,6 +46,8 @@ struct Opts {
     quiet: bool,
     save_final: bool,
     ruleset: String,
+    /// Threads inside one simulation (results are identical for any value).
+    sim_threads: usize,
 }
 
 impl Default for Opts {
@@ -65,6 +67,7 @@ impl Default for Opts {
             quiet: false,
             save_final: false,
             ruleset: gene_core::sim::RULESET.into(),
+            sim_threads: 0,
         }
     }
 }
@@ -98,6 +101,7 @@ fn parse_opts(args: &[String], o: &mut Opts) -> BTreeMap<String, String> {
             "--keep-going" => o.keep_going = true,
             "--quiet" => o.quiet = true,
             "--save-final" => o.save_final = true,
+            "--sim-threads" => o.sim_threads = num(val()) as usize,
             "--ruleset" => {
                 o.ruleset = match val().as_str() {
                     "m0" | "gene-m0-1" => gene_core::sim::RULESET.into(),
@@ -148,7 +152,8 @@ fn main() {
             let extra = parse_opts(&args[1..], &mut o);
             let from = extra.get("--from").unwrap_or_else(|| die("--from CHECKPOINT required"));
             let bytes = fs::read(from).unwrap_or_else(|e| die(format!("{from}: {e}")));
-            let sim = Sim::load(&bytes).unwrap_or_else(|e| die(format!("{from}: {e:?}")));
+            let mut sim = Sim::load(&bytes).unwrap_or_else(|e| die(format!("{from}: {e:?}")));
+            sim.threads = o.sim_threads.max(1);
             o.seed = sim.st.config.seed;
             run(sim, &o);
         }
@@ -170,13 +175,18 @@ fn main() {
         "serve" => {
             let extra = parse_opts(&args[1..], &mut o);
             let port = extra.get("--port").map_or(8080, |p| p.parse().unwrap_or_else(|_| die("bad --port")));
-            let sim = match extra.get("--load") {
+            if o.sim_threads == 0 {
+                // interactive use: spare one core for the browser
+                o.sim_threads = std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(1).max(1));
+            }
+            let mut sim = match extra.get("--load") {
                 Some(path) => {
                     let bytes = fs::read(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
                     Sim::load(&bytes).unwrap_or_else(|e| die(format!("{path}: {e:?}")))
                 }
                 None => new_sim(&o),
             };
+            sim.threads = o.sim_threads;
             serve::serve(sim, serve::ServeOpts { port, save_dir: o.out.clone(), founder: o.founder.clone() });
         }
         "inspect" => {
@@ -201,7 +211,9 @@ fn main() {
 fn new_sim(o: &Opts) -> Sim {
     let prog = isa::assemble(&founder_source(&o.founder)).unwrap_or_else(|e| die(e.to_string()));
     let cfg = Config { seed: o.seed, width: o.size, height: o.size, agents: o.agents };
-    Sim::with_program_ruleset(cfg, &prog, &o.ruleset).unwrap_or_else(|e| die(format!("{e:?}")))
+    let mut sim = Sim::with_program_ruleset(cfg, &prog, &o.ruleset).unwrap_or_else(|e| die(format!("{e:?}")));
+    sim.threads = o.sim_threads.max(1);
+    sim
 }
 
 fn hex(b: &[u8]) -> String {
