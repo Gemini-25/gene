@@ -111,6 +111,7 @@ fn founder_source(name: &str) -> String {
     match name {
         "founder4" => gene_core::FOUNDER_ASM.to_string(),
         "founder5" => gene_core::FOUNDER5_ASM.to_string(),
+        "founder6" => gene_core::FOUNDER6_ASM.to_string(),
         path => fs::read_to_string(path).unwrap_or_else(|e| die(format!("cannot read founder {path}: {e}"))),
     }
 }
@@ -176,7 +177,7 @@ fn main() {
             print!("{}", genome_report(&sim, &o.founder, 5));
         }
         "founders" => {
-            for name in ["founder4", "founder5"] {
+            for name in ["founder4", "founder5", "founder6"] {
                 let p = isa::assemble(&founder_source(name)).unwrap();
                 let cells = p.to_cells();
                 println!("{name}: {} words, {} cells, {}", p.words.len(), cells.len(), &hex(&hash_cells(&cells))[..16]);

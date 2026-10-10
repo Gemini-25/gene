@@ -27,3 +27,6 @@ pub const FOUNDER_ASM: &str = include_str!("../../../assets/founder4.asm");
 
 /// Founder-5 assembly source: energy-aware revision of Founder-4 (SPEC §16b).
 pub const FOUNDER5_ASM: &str = include_str!("../../../assets/founder5.asm");
+
+/// Founder-6 assembly source: morning-only reproduction (SPEC §16c).
+pub const FOUNDER6_ASM: &str = include_str!("../../../assets/founder6.asm");
