@@ -20,6 +20,27 @@ pub const RESOURCE: u8 = 0;
 pub const RECORD: u8 = 1;
 pub const USE: u8 = 2;
 
+/// Channel of a Use fact: what the agent did to the parcel.
+pub mod act {
+    pub const MATRIX_IN: u8 = 0;
+    pub const MATRIX_OUT: u8 = 1;
+    pub const PORE: u8 = 2;
+    pub const LINK: u8 = 3;
+    pub const UNLINK: u8 = 4;
+    pub const COMPRESS: u8 = 5;
+    /// Abrade or heat a parcel.
+    pub const WORK: u8 = 6;
+    /// Write, resize or copy onto the parcel's record.
+    pub const RECORD: u8 = 7;
+    /// Assembly move through this parcel.
+    pub const MOVE: u8 = 8;
+
+    /// Acts that build a structure (original §58: matrix deposit, compression, bonding).
+    pub fn builds(a: u8) -> bool {
+        matches!(a, MATRIX_IN | COMPRESS | LINK)
+    }
+}
+
 pub const WINDOW: u64 = 4096;
 
 /// Directed edge key (from, to, kind) and one window of integer weights.
@@ -39,7 +60,7 @@ pub struct RelFact {
     pub from: Node,
     pub to: Node,
     pub kind: u8,
-    /// Species 0..9, energy 15, or 255.
+    /// Resource: species 0..9 or energy 15. Use: the act (see `act`). Record: 255.
     pub channel: u8,
     /// Mass (resource), cells (record) or 1 per contact (use).
     pub amount: u64,

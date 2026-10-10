@@ -292,7 +292,35 @@ fn write_groups(out: &mut impl Write, g: &gene_core::relations::Graph, tick: u64
     }
 }
 
-fn relations_json(g: &gene_core::relations::Graph) -> String {
+/// A public record lies on tile t (dropped, or on the parcel there).
+fn has_record(sim: &Sim, t: u32) -> bool {
+    sim.st.dropped.contains_key(&t) || sim.st.world.parcels.get(&t).is_some_and(|p| p.media.is_some())
+}
+
+/// Structure patterns seen at two or more independent places (original §58), oldest first.
+fn artifacts_csv(a: &gene_core::artifacts::Artifacts) -> String {
+    let mut out = String::from("pattern,first_tick,parcels,bonds,trivial,occurrences,independent,contributors,natural,repeated_at\n");
+    let mut rows: Vec<_> = a.patterns.values().filter(|p| p.independent >= 2).collect();
+    rows.sort_by_key(|p| (p.first_tick, p.hash));
+    for p in rows {
+        out += &format!(
+            "{:016x},{},{},{},{},{},{},{},{},{}\n",
+            p.hash,
+            p.first_tick,
+            p.parcels,
+            p.bonds,
+            p.trivial as u8,
+            p.occurrences,
+            p.independent,
+            p.contributors.len(),
+            p.natural as u8,
+            p.repeated_at.map_or(String::new(), |t| t.to_string())
+        );
+    }
+    out
+}
+
+fn relations_json(g: &gene_core::relations::Graph, a: &gene_core::artifacts::Artifacts) -> String {
     use gene_core::relations::GroupEvent;
     let (mut new, mut splits, mut merges, mut civ) = (0, 0, 0, 0);
     for e in &g.events {
@@ -305,7 +333,7 @@ fn relations_json(g: &gene_core::relations::Graph) -> String {
         }
     }
     format!(
-        "{{\"resource_mass\": {}, \"record_cells\": {}, \"use_contacts\": {}, \"groups_now\": {}, \"largest_now\": {}, \"groups_formed\": {}, \"splits\": {}, \"merges\": {}, \"civ_candidates\": {}}}",
+        "{{\"resource_mass\": {}, \"record_cells\": {}, \"use_contacts\": {}, \"groups_now\": {}, \"largest_now\": {}, \"groups_formed\": {}, \"splits\": {}, \"merges\": {}, \"civ_candidates\": {}, \"artifact_patterns\": {}, \"repeated_artifacts\": {}, \"repeated_trivial\": {}}}",
         g.totals[0],
         g.totals[1],
         g.totals[2],
@@ -314,7 +342,10 @@ fn relations_json(g: &gene_core::relations::Graph) -> String {
         new + splits,
         splits,
         merges,
-        civ
+        civ,
+        a.patterns.len(),
+        a.repeated.iter().filter(|h| !a.patterns[h].trivial).count(),
+        a.repeated.iter().filter(|h| a.patterns[h].trivial).count()
     )
 }
 
@@ -427,6 +458,7 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     let mut behavior = gene_core::behavior::Analyzer::default();
     sim.obs.facts = Some(Vec::new());
     let mut graph = gene_core::relations::Graph::default();
+    let mut artifacts = gene_core::artifacts::Artifacts::default();
     let mut groups = open("groups.csv");
     writeln!(groups, "window,tick,id,agents,parcels,media,kinds,weight,windows,border,hub,civ,parent").unwrap();
     sim.obs.rel = Some(Vec::new());
@@ -441,12 +473,15 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
         }
         for f in sim.obs.rel.as_mut().unwrap().drain(..) {
             graph.push(&f);
+            artifacts.push(&f);
         }
         if t % gene_core::relations::WINDOW == 0 {
             let ag = &sim.st.agents;
             if graph.advance(t, &|uid| ag.binary_search_by_key(&uid, |a| a.uid).is_ok()) {
                 write_groups(&mut groups, &graph, t);
             }
+            let w = &sim.st.world;
+            artifacts.scan(w, &|u| has_record(&sim, u), t);
         }
         s.peak_pop = s.peak_pop.max(sim.st.agents.len());
         for b in sim.obs.births.drain(..) {
@@ -530,7 +565,11 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     s.hash = hex(&sim.state_hash());
     behavior.finish();
     s.effects = effects_json(&sim, &behavior);
-    s.relations = relations_json(&graph);
+    if sim.st.tick % gene_core::relations::WINDOW != 0 {
+        artifacts.scan(&sim.st.world, &|u| has_record(&sim, u), sim.st.tick); // the structures left at the end
+    }
+    s.relations = relations_json(&graph, &artifacts);
+    fs::write(o.out.join("artifacts.csv"), artifacts_csv(&artifacts)).unwrap();
     fs::write(o.out.join("behaviors.csv"), behaviors_csv(&behavior)).unwrap();
     fs::write(o.out.join("genomes.txt"), genome_report(&sim, &o.founder, 5)).unwrap();
     fs::write(o.out.join("summary.json"), summary_json(&s, o)).unwrap();

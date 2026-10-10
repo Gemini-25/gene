@@ -4,6 +4,7 @@
 //! Observation never feeds back into the world.
 
 pub mod agent;
+pub mod artifacts;
 pub mod behavior;
 pub mod bonds;
 pub mod contact;

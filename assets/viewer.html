@@ -76,6 +76,9 @@ h2 button { font-size: 11px; padding: 1px 8px; min-height: 22px; margin-left: 6p
 .behav code { display: block; font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink2);
   white-space: normal; overflow-wrap: anywhere; margin-top: 2px; }
 .small { color: var(--muted); font-size: 11px; }
+.arts { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; margin-top: 6px; }
+.art { border: 1px solid var(--border); border-radius: 8px; padding: 6px; text-align: center; font-size: 11px; color: var(--ink2); }
+.art canvas { width: 70px; height: 70px; display: block; margin: 0 auto 4px; }
 .badge { display: inline-block; font-size: 10px; line-height: 15px; padding: 0 5px; border-radius: 8px; margin-left: 4px;
   border: 1px solid var(--border); color: var(--ink2); }
 .badge.civ { border-color: currentColor; color: var(--accent, #2f6fdf); font-weight: 600; }
@@ -147,6 +150,9 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
     <div class="small">실제 자원 이전·기록 복사·구조물 사용으로 묶인 개체 무리(원본 §29). 4096 tick마다 갱신. 색 버튼의 "집단"으로 지도에 표시.</div>
     <ul class="census" id="groups"></ul>
     <div class="small" id="grp-events"></div>
+    <h2>반복되는 구조물 <span class="small" id="art-count"></span></h2>
+    <div class="small">parcel 주변 13칸 모양이 서로 겹치지 않는 3곳 이상에서, 만든 개체 2 이상에 의해 나타난 것(원본 §58). 위치·제작자는 모양에 넣지 않는다.</div>
+    <div class="arts" id="arts"></div>
     <h2>선택한 개체 <button id="follow" title="F">따라가기</button></h2>
     <div id="agent" class="empty">지도에서 개체를 클릭하세요.</div>
   </aside>
@@ -1214,6 +1220,55 @@ async function loadCensus() {
   }
 }
 
+// 13-tile footprint (Manhattan <= 2) in (dy, dx) order, as drawn on a 5x5 grid
+const FOOT = [[0, -2], [-1, -1], [0, -1], [1, -1], [-2, 0], [-1, 0], [0, 0], [1, 0], [2, 0], [-1, 1], [0, 1], [1, 1], [0, 2]];
+function drawFootprint(cv, tiles) {
+  const dpr = window.devicePixelRatio || 1, S = 70, c = S / 5;
+  cv.width = S * dpr; cv.height = S * dpr;
+  const g = cv.getContext("2d");
+  g.scale(dpr, dpr);
+  const cell = (k) => [(FOOT[k][0] + 2) * c, (FOOT[k][1] + 2) * c];
+  tiles.forEach((t, k) => {
+    const [x, y] = cell(k);
+    // [outside, present, solid bin, c >> 4, bond east, bond south, record]
+    g.fillStyle = t[0] ? "#3b3d40" : "#7f9a5a";
+    g.fillRect(x + 0.5, y + 0.5, c - 1, c - 1);
+    if (!t[1]) return;
+    const wall = t[2] >= 5 && t[3] >= 8;
+    const shade = Math.min(1, t[2] / 6);
+    g.fillStyle = wall ? "#8a7a6c" : `rgb(${Math.round(196 - 60 * shade)},${Math.round(186 - 56 * shade)},${Math.round(170 - 46 * shade)})`;
+    const inset = wall ? 1 : c * (0.32 - 0.18 * shade);
+    g.fillRect(x + inset, y + inset, c - 2 * inset, c - 2 * inset);
+    if (wall) { g.strokeStyle = "rgba(40,36,32,.55)"; g.lineWidth = 1; g.beginPath(); g.moveTo(x + 1, y + c / 2); g.lineTo(x + c - 1, y + c / 2); g.stroke(); }
+    g.fillStyle = "#b8662f";
+    if (t[4]) g.fillRect(x + c / 2, y + c / 2 - 1.5, c, 3);
+    if (t[5]) g.fillRect(x + c / 2 - 1.5, y + c / 2, 3, c);
+    if (t[6]) { g.fillStyle = "#efe4c4"; g.fillRect(x + c * 0.3, y + c * 0.32, c * 0.4, c * 0.36); }
+  });
+  const [cx, cy] = cell(6);
+  g.strokeStyle = "#f2d04f"; g.lineWidth = 1.5; g.strokeRect(cx + 0.75, cy + 0.75, c - 1.5, c - 1.5);
+}
+let artsTick = -1;
+async function loadArtifacts() {
+  const a = await getJSON("/api/artifacts");
+  if (!a.top || a.tick === artsTick) return;
+  artsTick = a.tick;
+  $("art-count").textContent = `(모양 ${fmt(a.patterns)} · 반복 ${a.repeated}${a.repeated_trivial ? ` · 돌 하나짜리 ${a.repeated_trivial}` : ""})`;
+  const box = $("arts"); box.innerHTML = "";
+  for (const p of a.top) {
+    const d = document.createElement("div");
+    d.className = "art";
+    const cv = document.createElement("canvas");
+    d.appendChild(cv);
+    const t = document.createElement("div");
+    t.innerHTML = `${p.independent}곳 · 제작 ${p.contributors}${p.bonds ? ` · 결합 ${p.bonds}` : ""}${p.repeated ? ` <span class="badge civ" title="${(p.repeated / 4096).toFixed(1)}일째 확정">반복</span>` : ""}${p.natural ? ' <span class="badge" title="만든 행동이 기록되지 않음">자연</span>' : ""}`;
+    d.title = `${p.hash} · parcel ${p.parcels} · 처음 ${(p.first / 4096).toFixed(1)}일 · 본 횟수 ${p.occurrences}`;
+    d.appendChild(t);
+    box.appendChild(d);
+    drawFootprint(cv, p.tiles);
+  }
+  if (!a.top.length) box.innerHTML = '<div class="small">아직 없음</div>';
+}
 let groupsTick = -1;
 async function loadGroups() {
   const g = await getJSON("/api/groups");
@@ -1236,7 +1291,7 @@ async function loadGroups() {
     li.onclick = () => { if (colourMode !== "group") $("colour").click(); };
     ul.appendChild(li);
   }
-  if (!g.groups.length) ul.innerHTML = '<li class="small" style="cursor:default">아직 없음 (서로 자원을 주거나 기록·구조물을 같이 쓰는 개체가 없음)</li>';
+  if (!g.groups.length) ul.innerHTML = '<li class="small" style="display:block;cursor:default">아직 없음 (서로 자원을 주거나 기록·구조물을 같이 쓰는 개체가 없음)</li>';
   const EV = { new: (e) => `#${e.id} 생김`, split: (e) => `#${e.id}가 #${e.from}에서 갈라짐`, merge: (e) => `#${e.from}가 #${e.id}에 합쳐짐`, ended: (e) => `#${e.id} 흩어짐`, civ: (e) => `#${e.id} 문명 후보 (${e.agents}개체)` };
   $("grp-events").textContent = g.events.slice(0, 4).map((e) => `${e.w + 1}일째: ${EV[e.kind](e)}`).join(" · ");
   if (colourMode === "group" && state && state.agents) { recolour(state.agents); snap.tick = -1; onSnapshot(state); setOverlays(state); }
@@ -1368,7 +1423,7 @@ async function slowPoll() {
   try {
     const h = await getJSON("/api/history");
     const t = h.tick && h.tick.length ? h.tick[h.tick.length - 1] : 0;
-    if (t !== lastHistTick) { lastHistTick = t; hist = h; later(drawCharts, 0); later(loadBehaviors, 400); later(loadGroups, 600); }
+    if (t !== lastHistTick) { lastHistTick = t; hist = h; later(drawCharts, 0); later(loadBehaviors, 400); later(loadGroups, 600); later(loadArtifacts, 800); }
     const field = await getBin("/api/water");
     later(() => setField(field), 800);
     later(loadTimeline, 1200);

@@ -249,7 +249,7 @@ impl Sim {
             self.obs.m1.public_writes += 1;
         }
         if self.is_parcel_media(r) {
-            self.rel_use(i, mt);
+            self.rel_use(i, mt, crate::relations::act::RECORD);
         }
         (Outcome::Ok, 1)
     }
@@ -278,7 +278,7 @@ impl Sim {
                     self.obs.m1.public_resizes += 1;
                 }
                 if let (true, true, MediaRef::Public { tile, .. } | MediaRef::NewParcelMedia { tile }) = (done, on_parcel, target) {
-                    self.rel_use(i, tile);
+                    self.rel_use(i, tile, crate::relations::act::RECORD);
                 }
                 res
             }
@@ -484,7 +484,7 @@ impl Sim {
             if let MediaRef::Public { tile, uid } = dst {
                 self.rel(me, (MEDIA, uid), RECORD, 255, n as u64);
                 if self.is_parcel_media(dst) {
-                    self.rel_use(i, tile); // a write on an artifact's record
+                    self.rel_use(i, tile, crate::relations::act::RECORD); // a write on an artifact's record
                 }
             }
         }

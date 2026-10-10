@@ -237,7 +237,7 @@ impl Sim {
             let n = req.min(room).min(budget / LINK_Q);
             self.pay(i, n * LINK_Q, ta);
             self.obs.m1.links += n as u64;
-            self.rel_use(i, ta);
+            self.rel_use(i, ta, crate::relations::act::LINK);
             (n, cur + n as u8)
         } else {
             if cur == 0 {
@@ -249,7 +249,7 @@ impl Sim {
             let n = req.min(cur as u32);
             self.pay(i, UNLINK_Q, ta);
             self.obs.m1.unlinks += 1;
-            self.rel_use(i, ta);
+            self.rel_use(i, ta, crate::relations::act::UNLINK);
             (n, cur - n as u8)
         };
         let w = &mut self.st.world;
@@ -532,7 +532,7 @@ impl Sim {
         }
         self.obs.m1.assembly_moves += 1;
         self.obs.m1.parcels_moved += n as u64;
-        self.rel_use(i, plan.dst[plan.root]); // the parcel the force went through
+        self.rel_use(i, plan.dst[plan.root], crate::relations::act::MOVE); // the parcel the force went through
         (Outcome::Ok, n as u32)
     }
 }

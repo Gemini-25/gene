@@ -626,7 +626,38 @@ Founder-7(`assets/founder7.asm`)은 Founder-6에서 G가 모자랄 때의 행동
 - `summary.json`의 `relations`: 종류별 총량, 지금 집단 수와 최대 크기, 생긴 집단·split·merge·문명 후보 수.
 - 화면: 색 "집단", 집단 목록과 최근 사건.
 
-**아직 없는 것.** 영토 heatmap, artifact 동일성, 복사 계보(원본 §58 나머지).
+**구조물 사실의 행동 종류.** 구조물(Use) 사실의 channel은 개체가 한 일이다: 0 matrix 넣기, 1 matrix 꺼내기, 2 pore, 3 LINK, 4 UNLINK, 5 압축, 6 깎기·가열, 7 매체 쓰기, 8 조립체 이동. 0, 3, 5가 "만들기"다(§17d).
+
+**아직 없는 것.** 영토 heatmap, 복사 계보(원본 §58 나머지).
+
+### 17d. 구조물(artifact)의 동일성과 반복 (원본 §58)
+
+관찰기 전용이다.
+
+**모양.** parcel 하나를 중심으로 Manhattan 2 이내의 13 tile을 dy 오름차순, 같은 dy에서 dx 오름차순으로 적는다. tile마다 30 byte다.
+
+| byte | 내용 |
+| --- | --- |
+| 0 | 경계 밖 |
+| 1 | parcel 있음 |
+| 2..11 | matrix 종별 양 bin |
+| 12..21 | pore 종별 양 bin |
+| 22 | c >> 4 |
+| 23 | orient |
+| 24..27 | 면 N, E, S, W 결합 강도 bin |
+| 28 | anchor bin |
+| 29 | 공개 기록 있음(버려진 기록 또는 parcel 매체) |
+
+bin = min(16, floor(log2(1 + n)))이다. parcel이 없는 tile의 parcel 필드는 0이다. 좌표, UID, 만든 개체는 넣지 않는다. 회전한 구조물은 다른 모양이다. 모양 hash는 BLAKE3(`artifact-a1.4\0` + 390 byte)의 앞 8 byte다.
+
+**occurrence.** (모양 hash, 그 13 tile 안 parcel UID 집합)이다. 같은 parcel들을 다시 보는 것은 새 제작이 아니다. 4096 tick마다(그리고 실행 끝에) 모든 parcel을 중심으로 본다.
+
+**반복.** 모양마다 처음 본 순서대로, 이미 센 occurrence와 parcel을 하나도 공유하지 않는 occurrence만 독립으로 센다. 독립 occurrence의 parcel을 "만든"(matrix 넣기, 압축, LINK) 개체가 기여자다. 가장 가까이 있던 개체를 제작자로 정하지 않는다. 독립 3곳 이상, 기여자 2 이상이면 반복 구조물이다. 기여자가 하나도 없으면 NaturalOrigin이다. parcel 하나뿐이고 결합·압축·기록이 없는 모양은 trivial로 따로 센다.
+
+**출력.**
+- `artifacts.csv`: 독립 2곳 이상인 모양. pattern, first_tick, parcels, bonds, trivial, occurrences, independent, contributors, natural, repeated_at.
+- `summary.json`의 `relations`: artifact_patterns, repeated_artifacts, repeated_trivial.
+- 화면: "반복되는 구조물" 목록과 13칸 썸네일.
 
 ## 18. 첫 실험 E1: 조상 생존 (§49 축소판)
 

@@ -327,11 +327,13 @@ impl Sim {
                 let (from, to) = if let Store::Actor(_) = dst { (me, other) } else { (other, me) };
                 self.rel(from, to, RESOURCE, s as u8, mass);
             }
+            use crate::relations::act;
             if let (Store::Matrix(_) | Store::Pore(_), Some(p)) = (src, src_parcel) {
-                self.rel(me, (PARCEL, p), USE, s as u8, 1);
+                let a = if let Store::Matrix(_) = src { act::MATRIX_OUT } else { act::PORE };
+                self.rel(me, (PARCEL, p), USE, a, 1);
             }
             if let Store::Matrix(_) | Store::Pore(_) = dst {
-                self.rel_use(i, dst_tile);
+                self.rel_use(i, dst_tile, if let Store::Matrix(_) = dst { act::MATRIX_IN } else { act::PORE });
             }
         }
         let me = self.tile_of(i);

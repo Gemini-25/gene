@@ -160,7 +160,7 @@ impl Sim {
                 return (Outcome::Energy, 0);
             }
             self.pay(i, n, t);
-            self.rel_use(i, t);
+            self.rel_use(i, t, crate::relations::act::WORK);
             return (if n == req { Outcome::Ok } else { Outcome::Partial }, n);
         }
         let compress = it.sub == crate::intent::sub::WORK_COMPRESS;
@@ -194,7 +194,7 @@ impl Sim {
         let p = self.st.world.parcels.get_mut(&t).unwrap();
         p.c = if compress { p.c + n as u8 } else { p.c - n as u8 };
         self.st.world.parcel_changed(t);
-        self.rel_use(i, t);
+        self.rel_use(i, t, if compress { crate::relations::act::COMPRESS } else { crate::relations::act::WORK });
         (if n == req / unit { Outcome::Ok } else { Outcome::Partial }, n * unit)
     }
 

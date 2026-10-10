@@ -454,12 +454,12 @@ impl Sim {
         }
     }
 
-    /// Observer: agent i touched the parcel on tile t (a Use relation).
-    pub(crate) fn rel_use(&mut self, i: usize, t: u32) {
+    /// Observer: agent i acted on the parcel on tile t (a Use relation; `act` from relations::act).
+    pub(crate) fn rel_use(&mut self, i: usize, t: u32, act: u8) {
         if self.obs.rel.is_some() {
             if let Some(p) = self.st.world.parcels.get(&t) {
                 let (a, p) = (self.st.agents[i].uid, p.uid);
-                self.rel((0, a), (1, p), crate::relations::USE, 255, 1);
+                self.rel((0, a), (1, p), crate::relations::USE, act, 1);
             }
         }
     }

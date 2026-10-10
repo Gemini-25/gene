@@ -33,6 +33,7 @@ struct Shared {
     history: Arc<String>,
     behaviors: Arc<String>,
     groups: Arc<String>,
+    artifacts: Arc<String>,
     timeline: Arc<String>,
 }
 
@@ -59,6 +60,7 @@ pub fn serve(sim: Sim, o: ServeOpts) {
         history: Arc::new(String::from("{}")),
         behaviors: Arc::new(String::from("{}")),
         groups: Arc::new(String::from("{}")),
+        artifacts: Arc::new(String::from("{}")),
         timeline: Arc::new(String::from("{}")),
     }));
     let (tx, rx) = mpsc::channel::<Req>();
@@ -225,6 +227,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
     let mut recent: Recent = HashMap::new();
     sim.obs.facts = Some(Vec::new());
     let mut graph = gene_core::relations::Graph::default();
+    let mut arts = gene_core::artifacts::Artifacts::default();
     sim.obs.rel = Some(Vec::new());
     let mut timeline = Timeline { every: 4096, budget: 400_000_000, points: Vec::new() };
     timeline.record(&sim);
@@ -250,6 +253,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                                 hist.truncate(t);
                                 behavior = gene_core::behavior::Analyzer::default();
                                 graph = gene_core::relations::Graph::default();
+                                arts = gene_core::artifacts::Artifacts::default();
                                 recent.clear();
                                 cache.refresh(&sim);
                                 shared.lock().unwrap().control.paused = true;
@@ -300,6 +304,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
             }
             for f in sim.obs.rel.as_mut().unwrap().drain(..) {
                 graph.push(&f);
+                arts.push(&f);
             }
             if sim.st.tick % 4096 == 0 {
                 let alive: HashSet<u64> = sim.st.agents.iter().map(|a| a.uid).collect();
@@ -307,6 +312,10 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                 if graph.advance(sim.st.tick, &|u| alive.contains(&u)) {
                     shared.lock().unwrap().groups = Arc::new(groups_json(&graph, sim.st.tick));
                 }
+                let st = &sim.st;
+                let rec = |t: u32| st.dropped.contains_key(&t) || st.world.parcels.get(&t).is_some_and(|p| p.media.is_some());
+                arts.scan(&st.world, &rec, st.tick);
+                shared.lock().unwrap().artifacts = Arc::new(artifacts_json(&arts, st.tick));
             }
             if sim.st.tick % 256 == 0 {
                 cache.refresh(&sim);
@@ -479,6 +488,49 @@ fn groups_json(g: &gene_core::relations::Graph, tick: u64) -> String {
         g.totals[2],
         groups.join(","),
         events.join(",")
+    )
+}
+
+/// Structure patterns seen at two or more independent places, most independent first, with a
+/// compact footprint per tile: present, solid volume bin, c >> 4, east/south bond, record.
+fn artifacts_json(a: &gene_core::artifacts::Artifacts, tick: u64) -> String {
+    use gene_core::artifacts::TILE_BYTES;
+    let mut rows: Vec<_> = a.patterns.values().filter(|p| p.independent >= 2).collect();
+    rows.sort_by_key(|p| (std::cmp::Reverse(p.repeated_at.is_some() && !p.trivial), std::cmp::Reverse(p.independent), p.first_tick, p.hash));
+    let items: Vec<String> = rows
+        .iter()
+        .take(10)
+        .map(|p| {
+            let tiles: Vec<String> = p
+                .example
+                .chunks(TILE_BYTES)
+                .map(|c| {
+                    let solid = c[2..12].iter().copied().max().unwrap_or(0);
+                    format!("[{},{},{},{},{},{},{}]", c[0], c[1], solid, c[22], (c[25] > 0) as u8, (c[26] > 0) as u8, c[29])
+                })
+                .collect();
+            format!(
+                "{{\"hash\":\"{:016x}\",\"first\":{},\"parcels\":{},\"bonds\":{},\"trivial\":{},\"independent\":{},\"occurrences\":{},\"contributors\":{},\"natural\":{},\"repeated\":{},\"tiles\":[{}]}}",
+                p.hash,
+                p.first_tick,
+                p.parcels,
+                p.bonds,
+                p.trivial,
+                p.independent,
+                p.occurrences,
+                p.contributors.len(),
+                p.natural,
+                p.repeated_at.map_or("null".into(), |t| t.to_string()),
+                tiles.join(",")
+            )
+        })
+        .collect();
+    let repeated = a.repeated.iter().filter(|h| !a.patterns[h].trivial).count();
+    format!(
+        "{{\"tick\":{tick},\"patterns\":{},\"repeated\":{repeated},\"repeated_trivial\":{},\"top\":[{}]}}",
+        a.patterns.len(),
+        a.repeated.len() - repeated,
+        items.join(",")
     )
 }
 
@@ -763,6 +815,10 @@ fn handle(mut stream: TcpStream, shared: &Arc<Mutex<Shared>>, tx: &mpsc::Sender<
         "/api/agent" => {
             let uid = query(q, "uid").and_then(|v| v.parse().ok()).unwrap_or(0);
             let s = ask(tx, |r| Req::Agent(uid, r)).unwrap_or_else(|| "{\"error\":\"timeout\"}".into());
+            respond(&mut stream, "200 OK", json, s.as_bytes())
+        }
+        "/api/artifacts" => {
+            let s = shared.lock().unwrap().artifacts.clone();
             respond(&mut stream, "200 OK", json, s.as_bytes())
         }
         "/api/groups" => {
