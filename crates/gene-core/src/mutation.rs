@@ -58,7 +58,7 @@ pub const OP_NAMES: [&str; 8] =
     ["Replace", "Insert", "Delete", "DuplicateBlock", "MoveBlock", "DuplicateModule", "SplitMerge", "Recombine"];
 
 /// Apply one structural operator. Returns false (Noop) when not applicable.
-fn structural(e: &mut Edit, opn: u8, st: &mut Stream, donor: &Program) -> bool {
+fn structural(e: &mut Edit, opn: u8, st: &mut Stream, donor: &Program, extra: Option<&Program>) -> bool {
     let nm = e.mods.len() as u32;
     match opn {
         0 => {
@@ -156,9 +156,12 @@ fn structural(e: &mut Edit, opn: u8, st: &mut Stream, donor: &Program) -> bool {
             }
         }
         7 => {
-            let src = st.below(donor.modules.len() as u32) as usize;
-            let m = donor.modules[src];
-            let ws = donor.words[m.start as usize..(m.start + m.len) as usize].to_vec();
+            // donors: inherited modules, then learned modules (M1b)
+            let n_extra = extra.map_or(0, |x| x.modules.len());
+            let src = st.below((donor.modules.len() + n_extra) as u32) as usize;
+            let (p, k) = if src < donor.modules.len() { (donor, src) } else { (extra.unwrap(), src - donor.modules.len()) };
+            let m = p.modules[k];
+            let ws = p.words[m.start as usize..(m.start + m.len) as usize].to_vec();
             let tj = st.below(nm) as usize;
             e.mods[tj].1 = ws;
             true
@@ -170,6 +173,16 @@ fn structural(e: &mut Edit, opn: u8, st: &mut Stream, donor: &Program) -> bool {
 /// Draw the mutation plan for a validated prefix.
 /// `parent` supplies the rates (its inherited header) and the Recombine donor modules.
 pub fn mutate(prefix: &[u16], parent: &Program, st: &mut Stream) -> (Vec<u16>, MutationRecord) {
+    mutate_with(prefix, parent, None, st)
+}
+
+/// As `mutate`, with learned modules as additional Recombine donors (M1b).
+pub fn mutate_with(
+    prefix: &[u16],
+    parent: &Program,
+    learned: Option<&Program>,
+    st: &mut Stream,
+) -> (Vec<u16>, MutationRecord) {
     let mut rec = MutationRecord::default();
     let mut cells = prefix.to_vec();
     if let Ok(p) = genome::parse(prefix) {
@@ -187,7 +200,7 @@ pub fn mutate(prefix: &[u16], parent: &Program, st: &mut Stream) -> (Vec<u16>, M
                 }
                 rec.structural_op = Some(opn);
                 let mut e = Edit::from(&p);
-                if structural(&mut e, opn, st, parent) {
+                if structural(&mut e, opn, st, parent, learned) {
                     let np = e.to_program();
                     if np.within_limits() {
                         cells = np.to_cells();
@@ -236,7 +249,7 @@ mod tests {
             for o in 0..40 {
                 let mut st = Stream::new(stream_key(2, Domain::Mutation, opn as u64, o), 1);
                 let mut e = Edit::from(&p);
-                if structural(&mut e, opn, &mut st, &p) {
+                if structural(&mut e, opn, &mut st, &p, None) {
                     let np = e.to_program();
                     assert!(np.within_limits(), "op {opn}");
                     let cells = np.to_cells();

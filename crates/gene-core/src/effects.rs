@@ -299,6 +299,9 @@ impl Sim {
             if matches!(it.sub, sub::WRITE_CELL | sub::WRITE_RESIZE) && matches!(r[0], dom::OWN_DRAFT | dom::PUBLIC_TAPE) {
                 return self.eff_write_record(i, it);
             }
+            if it.sub == 2 {
+                return self.eff_write_record(i, it);
+            }
             if it.sub == 3 {
                 return self.cancel_draft(i);
             }

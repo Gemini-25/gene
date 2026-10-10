@@ -119,13 +119,11 @@ fn read(a: &mut Agent, s: &Sense) -> Result<u16, Fault> {
             }
         }
         dom::OWN_CODE => {
-            if r[6] != 0 {
-                return bad;
-            }
+            let Some(m) = a.bank_media(r[6]) else { return bad };
             match field {
-                0 => a.code.read(index as u32).ok_or(Fault::BadAddress),
-                1 => Ok(a.code.logical_len.min(65535) as u16),
-                2 => Ok(a.code.capacity().min(65535) as u16),
+                0 => m.read(index as u32).ok_or(Fault::BadAddress),
+                1 => Ok(m.logical_len.min(65535) as u16),
+                2 => Ok(m.capacity().min(65535) as u16),
                 _ => bad,
             }
         }
@@ -195,7 +193,7 @@ fn capture_copy(a: &Agent, s: &Sense) -> Option<CopyCapture> {
     let (sd, so) = unpack(r[0])?;
     let mut src_tile = None;
     let media = match (sd, so) {
-        (dom::OWN_CODE, 0) if r[7] == 0 => &a.code,
+        (dom::OWN_CODE, 0) => a.bank_media(r[7])?,
         (dom::EMBRYO, 0) => &a.embryo.as_ref()?.raw,
         (dom::OWN_DRAFT, 0) if s.m1 => a.draft.as_ref()?,
         (dom::PUBLIC_TAPE, off) if s.m1 => {
@@ -247,11 +245,17 @@ pub fn think(a: &mut Agent, s: &Sense, ctrl_key: [u32; 2]) {
         a.vm.regs[15] = act;
         a.last_actual = act;
     }
-    let prog = a.prog.clone().expect("program");
-    let entry = prog.entry_index() as u8;
+    let entry = a.entry();
+    // code of the current slot, refreshed whenever the slot changes
+    let (mut prog, mut mi) = a.slot_code(a.vm.module);
+    let mut cur_slot = a.vm.module;
     let mut fuel = FUEL;
     while fuel > 0 {
-        let m = prog.modules[a.vm.module as usize];
+        if a.vm.module != cur_slot {
+            (prog, mi) = a.slot_code(a.vm.module);
+            cur_slot = a.vm.module;
+        }
+        let m = prog.modules[mi];
         if a.vm.pc > m.len {
             a.vm.module = entry;
             a.vm.pc = 0;
@@ -274,7 +278,7 @@ pub fn think(a: &mut Agent, s: &Sense, ctrl_key: [u32; 2]) {
             a.vm.pc = 0;
             break;
         }
-        let word = prog.word(a.vm.module as usize, a.vm.pc);
+        let word = prog.word(mi, a.vm.pc);
         let (opc, ra, rb, imm) = decode(word);
         let mut next = a.vm.pc + 1;
         match opc {
@@ -310,12 +314,12 @@ pub fn think(a: &mut Agent, s: &Sense, ctrl_key: [u32; 2]) {
                     }
                 }
             }
-            op::CALL => match prog.module_index(imm) {
+            op::CALL => match a.bind(imm) {
                 None => a.vm.fault = Fault::MissingTag as u8,
                 Some(_) if a.vm.stack.len() >= MAX_FRAMES => a.vm.fault = Fault::StackFull as u8,
-                Some(mi) => {
+                Some(slot) => {
                     a.vm.stack.push((a.vm.module, a.vm.pc + 1));
-                    a.vm.module = mi as u8;
+                    a.vm.module = slot;
                     a.vm.pc = 0;
                     continue;
                 }

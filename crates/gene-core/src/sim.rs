@@ -15,18 +15,22 @@ use std::sync::Arc;
 pub const RULESET: &str = "gene-m0-1";
 /// M1a: signals, public tape, drafts (SPEC §20b).
 pub const RULESET_M1: &str = "gene-m1-1";
+/// M1b: M1a + DraftCommit / learned binding (SPEC §20c).
+pub const RULESET_M1B: &str = "gene-m1-2";
 
 /// Capabilities switched on by the ruleset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Caps {
     pub m1: bool,
+    pub commit: bool,
 }
 
 impl Caps {
     pub fn of(ruleset: &str) -> Option<Caps> {
         match ruleset {
-            RULESET => Some(Caps { m1: false }),
-            RULESET_M1 => Some(Caps { m1: true }),
+            RULESET => Some(Caps { m1: false, commit: false }),
+            RULESET_M1 => Some(Caps { m1: true, commit: false }),
+            RULESET_M1B => Some(Caps { m1: true, commit: true }),
             _ => None,
         }
     }
@@ -177,6 +181,12 @@ impl Sim {
                 embryo_ordinal: 0,
                 children: 0,
                 draft: None,
+                learned: None,
+                retained: vec![],
+                slots: vec![],
+                binding: vec![],
+                entry_slot: 0,
+                bank_progs: vec![],
                 prog: Some(parsed.clone()),
                 keys: Keys::derive(config.seed, uid),
                 s: Scratch::default(),
@@ -219,6 +229,7 @@ impl Sim {
                 a.prog = Some(Arc::new(p));
             }
             a.keys = Keys::derive(st.config.seed, a.uid);
+            a.rebuild_bank_progs();
         }
         let seed = st.config.seed;
         let mut keys = FluxKeys::default();
@@ -608,6 +619,10 @@ impl Sim {
         let code = std::mem::replace(&mut a.code, Media::empty(0));
         let embryo = a.embryo.take();
         let draft = a.draft.take();
+        let banks: Vec<Media> = a.learned.take().into_iter().chain(a.retained.drain(..)).map(|b| b.media).collect();
+        a.slots.clear();
+        a.binding.clear();
+        a.bank_progs.clear();
         self.obs.record_death(a, self.st.tick, cause);
         if let Some(e) = embryo {
             w.force_loose(t, G, e.body_g as u64 + 1);
@@ -624,6 +639,9 @@ impl Sim {
         self.drop_media(t, code);
         if let Some(d) = draft {
             self.drop_media(t, d);
+        }
+        for m in banks {
+            self.drop_media(t, m);
         }
         let a = &mut self.st.agents[i];
         a.energy = 0;
@@ -712,6 +730,12 @@ impl Sim {
             embryo_ordinal: 0,
             children: 0,
             draft: None,
+            learned: None,
+            retained: vec![],
+            slots: vec![],
+            binding: vec![],
+            entry_slot: 0,
+            bank_progs: vec![],
             prog: Some(prog),
             keys: Keys::derive(seed, child_uid),
             s: Scratch::default(),
@@ -723,6 +747,15 @@ impl Sim {
 
     fn stage_commit(&mut self) {
         let tick = self.st.tick;
+        if self.caps.commit {
+            for i in 0..self.st.agents.len() {
+                if let Some(len) = self.st.agents[i].s.pending_adopt.take() {
+                    self.adopt(i, len);
+                } else if !self.st.agents[i].retained.is_empty() {
+                    self.gc_retained(i);
+                }
+            }
+        }
         for a in &mut self.st.agents {
             if a.birth_tick != tick || a.generation == 0 {
                 a.age += 1;

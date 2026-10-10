@@ -119,7 +119,12 @@ impl Sim {
         let a = &self.st.agents[i];
         let ordinal = a.embryo.as_ref().unwrap().ordinal;
         let mut st = Stream::new(stream_key(seed, Domain::Mutation, a.uid, ordinal), tick);
-        let (result, rec) = crate::mutation::mutate(&prefix, a.program(), &mut st);
+        let learned = if self.caps.commit {
+            a.learned.as_ref().and_then(|b| a.bank_progs.iter().find(|p| p.0 == b.media.uid)).map(|p| p.1.clone())
+        } else {
+            None
+        };
+        let (result, rec) = crate::mutation::mutate_with(&prefix, a.program(), learned.as_deref(), &mut st);
         if let Some(op) = rec.structural_op {
             if rec.structural_applied {
                 self.obs.mutation.structural[op as usize] += 1;

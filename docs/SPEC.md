@@ -635,6 +635,34 @@ M1a는 원본 v0..v1에 있던 정보 경로 일부를 켠다(원본 §21, §22,
 
 **관찰.** EMIT 수, Signal READ 수, 공개 기록 READ와 COPY 수, 공개 기록 쓰기 수, 초안 → 배아 COPY 수를 세고, 비혈연 코드가 섞인 출생을 기록한다.
 
+## 20c. M1b: 학습 채택 (ruleset `gene-m1-2`)
+
+M1b는 M1a에 DraftCommit과 learned binding을 더한다(원본 §21). 살아 있는 동안 초안의 코드를 자기 실행 코드로 받아들이는 경로다. M1a와 같은 seed라도, Commit을 쓰는 프로그램이 나타나는 순간부터 결과가 달라질 수 있다.
+
+**DraftCommit(WRITE 2, r5 = 사용 prefix 길이 L).**
+- 요구: 초안이 있고, L ≤ logical_len이며, prefix에 hole이 없어야 한다.
+- 비용: 시도비 64q에 2q/cell을 원자적으로 더 낸다. 형식이 깨져도 비용은 낸다.
+- 형식 실패는 Format이고, 상태는 바뀌지 않는다.
+- 한도 초과는 Limits다: 활성 binding 64개, 실행 code 4096 word(binding된 module 합), slot 128개(retained 포함).
+- 성공하면 PendingAdopt가 되고, stage11에 그 개체가 살아 있으면 채택된다.
+
+**채택.**
+- 초안 매체가 learned로 옮겨지고 OwnDraft는 None이 된다.
+- binding은 learned의 tag 전부, 그리고 learned에 없는 inherited tag로 이루어진다. 같은 tag라면 learned가 우선한다.
+- entry는 learned header의 entry_tag다.
+- 기존 learned는 교체된다. 현재 pc나 call frame이 그것을 가리키면 retained로 남고, 아니면 그 tile에 버려진 매체로 남는다.
+- retained는 참조가 사라진 stage11에 같은 방식으로 내려놓는다.
+
+**실행.**
+- 현재 module과 frame은 원래 slot을 계속 쓴다. 다음 CALL부터 새 binding을 조회한다.
+- 빈 stack에서 RET(명시적이든 암묵적이든)하면 새 entry로 간다.
+
+**감각과 복사.** OwnCode READ의 bank(r6)와 COPY 원천 bank(r7)는 0 inherited, 1 learned, 2 이상 retained다. 없는 bank는 BadAddress다.
+
+**물질.** learned와 retained 페이지도 G와 유지비 1q/tick을 낸다. 죽으면 모두 그 tile에 버려진 매체로 남는다.
+
+**생식.** 자식은 배아 raw에 실제로 쓴 bytes만 상속한다. learned는 자동으로 복사되지 않는다. 구조 변이 Recombine의 donor에는 inherited와 learned module이 포함된다.
+
 ## 21. 확장 규칙과 로드맵
 
 ### 증거 규칙 (원본 §62를 강제 규칙으로 승격)

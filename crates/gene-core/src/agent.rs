@@ -77,6 +77,13 @@ impl Embryo {
     }
 }
 
+/// A code bank: a record plus its executable prefix length.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bank {
+    pub media: Media,
+    pub used_len: u32,
+}
+
 /// Per-tick scratch, never persisted (checkpoints happen between ticks).
 #[derive(Clone, Debug, Default)]
 pub struct Scratch {
@@ -90,6 +97,8 @@ pub struct Scratch {
     pub birth_tile: Option<u32>,
     pub signal_reads: u8,
     pub public_reads: u8,
+    /// DraftCommit accepted this tick: used prefix length to adopt at stage 11.
+    pub pending_adopt: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -121,6 +130,17 @@ pub struct Agent {
     pub children: u32,
     /// Private draft record (M1a).
     pub draft: Option<Media>,
+    /// Adopted code (M1b) and replaced code still referenced by the running frames.
+    pub learned: Option<Bank>,
+    pub retained: Vec<Bank>,
+    /// Slot table (media uid, module index); empty = identity over the inherited modules.
+    pub slots: Vec<(u64, u16)>,
+    /// Tag -> slot; empty = the inherited program's own tags.
+    pub binding: Vec<(u16, u8)>,
+    pub entry_slot: u8,
+    /// Parsed programs of learned and retained banks (derived).
+    #[serde(skip)]
+    pub bank_progs: Vec<(u64, Arc<Program>)>,
     #[serde(skip)]
     pub prog: Option<Arc<Program>>,
     #[serde(skip)]
@@ -160,6 +180,7 @@ impl Agent {
         }
         m[G] += self.body_g as u64 + 1 + self.code.present_pages() as u64;
         m[G] += self.draft.as_ref().map_or(0, |d| d.present_pages() as u64);
+        m[G] += self.learned.iter().chain(&self.retained).map(|b| b.media.present_pages() as u64).sum::<u64>();
         m[S] += self.shell_s as u64;
         if let Some(e) = &self.embryo {
             let em = e.matter();
@@ -183,11 +204,64 @@ impl Agent {
             + 1
             + self.code.present_pages()
             + self.draft.as_ref().map_or(0, |d| d.present_pages())
+            + self.learned.iter().chain(&self.retained).map(|b| b.media.present_pages()).sum::<u32>()
             + self.embryo.as_ref().map_or(0, |e| e.pages())
     }
 
     pub fn inv_volume(&self) -> u32 {
         volume(&self.inv)
+    }
+
+    /// Code of a slot: (program, module index).
+    pub fn slot_code(&self, slot: u8) -> (Arc<Program>, usize) {
+        if self.slots.is_empty() {
+            return (self.prog.clone().expect("program"), slot as usize);
+        }
+        let (uid, m) = self.slots[slot as usize];
+        if uid == self.code.uid {
+            return (self.prog.clone().expect("program"), m as usize);
+        }
+        let p = self.bank_progs.iter().find(|b| b.0 == uid).expect("bank program").1.clone();
+        (p, m as usize)
+    }
+
+    /// CALL target: binding lookup.
+    pub fn bind(&self, tag: u16) -> Option<u8> {
+        if self.binding.is_empty() {
+            self.program().module_index(tag).map(|m| m as u8)
+        } else {
+            self.binding.iter().find(|b| b.0 == tag).map(|b| b.1)
+        }
+    }
+
+    pub fn entry(&self) -> u8 {
+        if self.slots.is_empty() {
+            self.program().entry_index() as u8
+        } else {
+            self.entry_slot
+        }
+    }
+
+    /// OwnCode bank: 0 inherited, 1 learned, 2.. retained.
+    pub fn bank_media(&self, bank: u16) -> Option<&Media> {
+        match bank {
+            0 => Some(&self.code),
+            1 => self.learned.as_ref().map(|b| &b.media),
+            k => self.retained.get(k as usize - 2).map(|b| &b.media),
+        }
+    }
+
+    /// Re-parse learned/retained programs (after load).
+    pub fn rebuild_bank_progs(&mut self) {
+        self.bank_progs = self
+            .learned
+            .iter()
+            .chain(&self.retained)
+            .map(|b| {
+                let p = crate::genome::parse(b.media.prefix(b.used_len).expect("bank prefix")).expect("bank is valid");
+                (b.media.uid, Arc::new(p))
+            })
+            .collect();
     }
 
     pub fn embryo_state_code(&self) -> u16 {

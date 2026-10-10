@@ -1,7 +1,10 @@
 //! M1a records: drafts, public tapes, signals (SPEC §20b), plus the shared paid-page
 //! lifecycle used by embryo, draft and public media (original §55).
 
+use crate::agent::Bank;
 use crate::effects::Res;
+use crate::genome::{self, Program};
+use std::sync::Arc;
 use crate::genome::{MAX_PAGES, PAGE_CELLS};
 use crate::intent::{dom, unpack, Intent, Outcome};
 use crate::media::Media;
@@ -191,6 +194,9 @@ impl Sim {
     /// WRITE sub-ops 0 Cell, 1 Resize, 3 CancelDraft on draft (7) and public (5) targets.
     pub(crate) fn eff_write_record(&mut self, i: usize, it: &Intent) -> Res {
         let r = it.r;
+        if it.sub == 2 {
+            return if self.caps.commit { self.draft_commit(i, r[5] as u32) } else { (Outcome::InvalidTarget, 0) };
+        }
         let target = match r[0] {
             dom::OWN_DRAFT => MediaRef::Draft,
             dom::PUBLIC_TAPE => match self.public_by_vec(i, &r) {
@@ -209,6 +215,71 @@ impl Sim {
                 res
             }
             _ => (Outcome::InvalidTarget, 0),
+        }
+    }
+
+    /// DraftCommit (WRITE 2): validate the draft prefix; adoption happens at stage 11 (SPEC §20c).
+    pub(crate) fn draft_commit(&mut self, i: usize, len: u32) -> Res {
+        let Some(d) = self.st.agents[i].draft.as_ref() else { return (Outcome::InvalidTarget, 0) };
+        if len == 0 || len > d.logical_len {
+            return (Outcome::InvalidTarget, 0);
+        }
+        if self.st.agents[i].s.budget < 2 * len {
+            return (Outcome::Energy, 0);
+        }
+        let me = self.tile_of(i);
+        self.pay(i, 2 * len, me);
+        let a = &self.st.agents[i];
+        let Some(p) = a.draft.as_ref().unwrap().prefix(len).and_then(|c| genome::parse(c).ok()) else {
+            return (Outcome::Format, 0);
+        };
+        let (bound, words) = binding_size(a.program(), &p);
+        if bound > genome::MAX_MODULES || words > genome::MAX_WORDS {
+            return (Outcome::Limits, 0);
+        }
+        self.st.agents[i].s.pending_adopt = Some(len);
+        self.obs.m1.commits += 1;
+        (Outcome::Ok, 1)
+    }
+
+    /// Adopt the committed draft: learned binding, retained old code, slot remap.
+    pub(crate) fn adopt(&mut self, i: usize, len: u32) {
+        let me = self.tile_of(i);
+        let a = &mut self.st.agents[i];
+        let Some(draft) = a.draft.take() else { return };
+        let p = Arc::new(genome::parse(draft.prefix(len).expect("validated")).expect("validated"));
+        let new_uid = draft.uid;
+        if let Some(old) = a.learned.take() {
+            a.retained.push(old);
+        }
+        a.learned = Some(Bank { media: draft, used_len: len });
+        a.bank_progs.push((new_uid, p.clone()));
+        // binding: learned tags first, then inherited tags the learned code does not define
+        let inh = a.prog.clone().expect("program");
+        let mut targets: Vec<(u16, (u64, u16))> =
+            p.modules.iter().enumerate().map(|(k, m)| (m.tag, (new_uid, k as u16))).collect();
+        for (k, m) in inh.modules.iter().enumerate() {
+            if !p.modules.iter().any(|x| x.tag == m.tag) {
+                targets.push((m.tag, (a.code.uid, k as u16)));
+            }
+        }
+        let entry_tag = p.entry_tag;
+        let dropped = remap_slots(a, targets, entry_tag);
+        self.obs.m1.adoptions += 1;
+        for m in dropped {
+            self.drop_media(me, m);
+        }
+    }
+
+    /// Drop retained banks that no running frame references any more.
+    pub(crate) fn gc_retained(&mut self, i: usize) {
+        let me = self.tile_of(i);
+        let a = &mut self.st.agents[i];
+        let targets: Vec<(u16, (u64, u16))> = a.binding.iter().map(|(t, s)| (*t, a.slots[*s as usize])).collect();
+        let entry_tag = a.binding.iter().find(|(_, s)| *s == a.entry_slot).map(|(t, _)| *t).unwrap_or(0);
+        let dropped = remap_slots(a, targets, entry_tag);
+        for m in dropped {
+            self.drop_media(me, m);
         }
     }
 
@@ -261,7 +332,7 @@ impl Sim {
         };
         let m1 = self.caps.m1;
         let src_ok = match (sd, so) {
-            (dom::OWN_CODE, 0) => r[7] == 0,
+            (dom::OWN_CODE, 0) => self.st.agents[i].bank_media(r[7]).is_some(),
             (dom::EMBRYO, 0) => true,
             (dom::OWN_DRAFT, 0) => m1,
             (dom::PUBLIC_TAPE, _) => m1,
@@ -292,7 +363,7 @@ impl Sim {
         // Source still the same record and revision?
         let a = &self.st.agents[i];
         let cur = match sd {
-            dom::OWN_CODE => Some((a.code.uid, a.code.revision)),
+            dom::OWN_CODE => a.bank_media(r[7]).map(|m| (m.uid, m.revision)),
             dom::EMBRYO => a.embryo.as_ref().map(|e| (e.raw.uid, e.raw.revision)),
             dom::OWN_DRAFT => a.draft.as_ref().map(|d| (d.uid, d.revision)),
             _ => cap
@@ -342,4 +413,68 @@ impl Sim {
         }
         (if n == count { Outcome::Ok } else { Outcome::Partial }, n)
     }
+}
+
+/// Number of bound modules and words if `learned` were adopted over `inherited`.
+fn binding_size(inherited: &Program, learned: &Program) -> (usize, usize) {
+    let mut bound = learned.modules.len();
+    let mut words = learned.words.len();
+    for m in &inherited.modules {
+        if !learned.modules.iter().any(|x| x.tag == m.tag) {
+            bound += 1;
+            words += m.len as usize;
+        }
+    }
+    (bound, words)
+}
+
+/// Rebuild the slot table from binding targets, keeping slots the VM still references,
+/// remap the VM, and return banks that are no longer referenced (to be dropped).
+fn remap_slots(a: &mut crate::agent::Agent, targets: Vec<(u16, (u64, u16))>, entry_tag: u16) -> Vec<Media> {
+    let old_slot = |a: &crate::agent::Agent, s: u8| -> (u64, u16) {
+        if a.slots.is_empty() {
+            (a.code.uid, s as u16)
+        } else {
+            a.slots[s as usize]
+        }
+    };
+    let mut table: Vec<(u64, u16)> = Vec::new();
+    let mut binding = Vec::new();
+    for (tag, tgt) in targets {
+        binding.push((tag, table.len() as u8));
+        table.push(tgt);
+    }
+    let map = |a: &crate::agent::Agent, s: u8, table: &mut Vec<(u64, u16)>| -> u8 {
+        let tgt = old_slot(a, s);
+        match table.iter().position(|x| *x == tgt) {
+            Some(k) => k as u8,
+            None => {
+                table.push(tgt);
+                (table.len() - 1) as u8
+            }
+        }
+    };
+    let module = map(a, a.vm.module, &mut table);
+    let stack: Vec<(u8, u16)> = a.vm.stack.clone().into_iter().map(|(s, pc)| (map(a, s, &mut table), pc)).collect();
+    a.vm.module = module;
+    a.vm.stack = stack;
+    a.entry_slot = binding.iter().find(|(t, _)| *t == entry_tag).map(|(_, s)| *s).unwrap_or(0);
+    a.slots = table;
+    a.binding = binding;
+    // banks still referenced by some slot stay; others leave
+    let learned_uid = a.learned.as_ref().map(|b| b.media.uid);
+    let used: Vec<u64> = a.slots.iter().map(|s| s.0).collect();
+    let mut dropped = Vec::new();
+    let mut keep = Vec::new();
+    for b in std::mem::take(&mut a.retained) {
+        if used.contains(&b.media.uid) && Some(b.media.uid) != learned_uid {
+            keep.push(b);
+        } else {
+            dropped.push(b.media);
+        }
+    }
+    a.retained = keep;
+    let live: Vec<u64> = a.learned.iter().chain(&a.retained).map(|b| b.media.uid).collect();
+    a.bank_progs.retain(|(uid, _)| live.contains(uid));
+    dropped
 }

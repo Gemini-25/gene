@@ -236,3 +236,114 @@ fn founder6_runs_identically_under_both_rulesets_until_mutation_matters() {
     let pos = |s: &Sim| s.st.agents.iter().map(|x| (x.uid, x.x, x.y, x.energy)).collect::<Vec<_>>();
     assert_eq!(pos(&a), pos(&b));
 }
+
+// ---------------------------------------------------------------- M1b: learned binding
+
+/// Learner: copies public record #(phase+1) into a draft, commits it, then RETs into the new entry.
+const LEARNER: &str = "
+.module 0
+    CONST r12, 1
+    CONST r8, 0
+    LOAD r10, r8
+    MOV r7, r10
+    ADD r7, r12
+    CONST r0, 5
+    CONST r1, 0
+    CONST r2, 0
+    CONST r3, 1
+    MOV r6, r7
+    READ r11
+    MOV r5, r11
+    CONST r9, 127
+    ADD r5, r9
+    CONST r9, 7
+    SHR r5, r9
+grow:
+    CONST r0, 7
+    CONST r3, 2
+    READ r9
+    LTU r9, r11
+    BRNZ r9, do_grow
+    JUMP copy_init
+do_grow:
+    CONST r0, 7
+    WRITE 1
+    JUMP grow
+copy_init:
+    CONST r9, 0
+copy_loop:
+    MOV r8, r9
+    LTU r8, r11
+    BRNZ r8, copy_go
+    JUMP commit
+copy_go:
+    CONST r0, 5
+    CONST r1, 7
+    MOV r4, r9
+    MOV r5, r9
+    CONST r6, 4
+    COPY 0
+    ADD r9, r15
+    JUMP copy_loop
+commit:
+    CONST r8, 0
+    LOAD r10, r8
+    ADD r10, r12
+    STORE r10, r8
+    MOV r5, r11
+    WRITE 2
+    RET
+";
+
+const LESSON: &str = ".module 0\n CONST r9, 42\nspin: YIELD\n JUMP spin\n";
+
+fn learner_world(ruleset: &str) -> Sim {
+    let mut s = sim(LEARNER, 1, ruleset);
+    s.st.agents[0].inv[3] = 40;
+    let t = s.tile_of(0);
+    let own = assemble(LEARNER).unwrap().to_cells();
+    let lesson = assemble(LESSON).unwrap().to_cells();
+    s.st.dropped.insert(t, vec![Media::from_cells(900, &own), Media::from_cells(901, &lesson)]);
+    s.fixture_rebase();
+    s
+}
+
+#[test]
+fn learned_code_is_adopted_retained_while_running_then_dropped() {
+    let mut s = learner_world(gene_core::sim::RULESET_M1B);
+    let t = s.tile_of(0);
+    let mut saw_retained = false;
+    for _ in 0..600 {
+        step_audited(&mut s, 1);
+        saw_retained |= !s.st.agents[0].retained.is_empty();
+        if s.st.agents[0].vm.regs[9] == 42 {
+            break;
+        }
+    }
+    let a = &s.st.agents[0];
+    assert_eq!(a.vm.regs[9], 42, "the second lesson runs");
+    assert_eq!(s.obs.m1.adoptions, 2);
+    assert!(saw_retained, "the first learned code stayed while it was still running");
+    step_audited(&mut s, 2);
+    let a = &s.st.agents[0];
+    assert!(a.retained.is_empty(), "unreferenced retained code is dropped");
+    assert!(a.draft.is_none());
+    let lesson = assemble(LESSON).unwrap().to_cells();
+    let learned = a.learned.as_ref().unwrap();
+    assert_eq!(learned.media.prefix(learned.used_len).unwrap(), &lesson[..]);
+    // records on the tile: the two lessons plus the dropped first learned code
+    assert_eq!(s.st.dropped[&t].len(), 3);
+    // save/resume keeps learned code executable
+    let resumed = Sim::load(&s.save()).unwrap();
+    assert_eq!(resumed.state_hash(), s.state_hash());
+}
+
+#[test]
+fn commit_is_off_in_m1a() {
+    let mut s = learner_world(RULESET_M1);
+    for _ in 0..300 {
+        s.step();
+    }
+    assert_eq!(s.obs.m1.adoptions, 0);
+    assert!(s.st.agents[0].learned.is_none());
+}
