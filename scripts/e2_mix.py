@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""E2 mixed-founder runs: living agents per founder type by day, and the use of the M1 habits.
+"""E2 mixed-founder runs: living agents per founder type by day, the use of the M1 habits, and
+births whose genome is exactly another type's founder genome (a learned founder module put into
+a child by Recombine: the founders are one module each and share their header).
 
 Founder i (uid i + 1) runs program i mod n, so an agent's type is (root - 1) mod n.
 
-usage: e2_mix.py RUN_DIR N_FOUNDERS [NAMES...]
+usage: e2_mix.py RUN_DIR N_FOUNDERS [NAMES...] [AGENTS]
+NAMES are built-in founder names (founder8 ...) so their genome hashes can be looked up.
 """
 import csv, sys
 from pathlib import Path
@@ -13,15 +16,16 @@ DAY = 4096
 
 def main(run, n, names):
     run = Path(run)
-    births = list(csv.DictReader(open(run / "births.csv")))
-    deaths = {int(r["uid"]): int(r["tick"]) for r in csv.DictReader(open(run / "deaths.csv")) if r.get("tick")}
-    stats = list(csv.DictReader(open(run / "stats.csv")))
+    complete = lambda r: None not in r.values() and all(v != "" for k, v in r.items() if k in ("tick", "uid", "root"))
+    births = [r for r in csv.DictReader(open(run / "births.csv")) if complete(r)]
+    deaths = {int(r["uid"]): int(r["tick"]) for r in csv.DictReader(open(run / "deaths.csv")) if r.get("tick") and r.get("uid")}
+    stats = [r for r in csv.DictReader(open(run / "stats.csv")) if None not in r.values()]
     end = int(stats[-1]["tick"])
     life = {}  # uid -> (type, born, died)
     founders = int(stats[0]["pop"]) if stats else 0
     # founders: uids 1..agents (all alive at tick 0); agents from summary
     import json
-    agents = json.load(open(run / "summary.json"))["agents"] if (run / "summary.json").exists() else founders
+    agents = json.load(open(run / "summary.json"))["agents"] if (run / "summary.json").exists() else int(sys.argv[4 + n]) if len(sys.argv) > 4 + n else founders
     for u in range(1, agents + 1):
         life[u] = ((u - 1) % n, 0, deaths.get(u))
     for b in births:
@@ -38,6 +42,25 @@ def main(run, n, names):
             if b <= t and (x is None or x > t):
                 alive[k] += 1
         print(f"{d // DAY:3d} | " + " | ".join(f"{a:5d}" for a in alive))
+    hashes = {}
+    try:
+        import subprocess
+        out = subprocess.run(["./target/release/gene", "founders"], capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            name, rest = line.split(":", 1)
+            hashes[name.strip()] = rest.split(",")[-1].strip()
+    except Exception:
+        pass
+    kind_of_hash = {hashes[nm]: k for k, nm in enumerate(names) if nm in hashes}
+    cross = {}
+    for b in births:
+        k = kind_of_hash.get(b["genome"])
+        root_k = (int(b["root"]) - 1) % n
+        if k is not None and k != root_k:
+            key = (names[root_k], names[k])
+            cross.setdefault(key, []).append(int(b["tick"]))
+    for (a, b), ts in sorted(cross.items()):
+        print(f"{a} parent line, {b} founder genome: {len(ts)} births, first at day {min(ts) / DAY:.1f}")
     cols = ["emits", "signal_reads", "public_reads", "copies_from_public", "drafts_created", "commits", "adoptions", "parcels", "parcels_created"]
     last = stats[-1]
     print("end:", ", ".join(f"{c} {last[c]}" for c in cols if c in last))

@@ -114,7 +114,9 @@ fn parse_opts(args: &[String], o: &mut Opts) -> BTreeMap<String, String> {
                     "m1f" | "gene-m1-6" => gene_core::sim::RULESET_M1F.into(),
                     "m0b" | "gene-m0-2" => gene_core::sim::RULESET_M0B.into(),
                     "m2" | "gene-m2-1" => gene_core::sim::RULESET_M2.into(),
-                    other => die(format!("unknown ruleset {other} (m0, m0b, m1a..m1f, m2)")),
+                    "m0c" | "gene-m0-3" => gene_core::sim::RULESET_M0C.into(),
+                    "m2b" | "gene-m2-2" => gene_core::sim::RULESET_M2B.into(),
+                    other => die(format!("unknown ruleset {other} (m0, m0b, m0c, m1a..m1f, m2, m2b)")),
                 }
             }
             "--seeds" | "--threads" | "--from" | "--port" | "--load" => {
@@ -632,8 +634,11 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
             .unwrap();
         }
         let extinct = sim.st.agents.is_empty();
+        // with --keep-going an empty world runs on: record the extinction once, then the usual
+        // cadence (rows every tick would make an abiotic run crawl)
+        let newly_extinct = extinct && s.extinct_at.is_none();
         let audit_now = o.audit_every > 0 && t % o.audit_every == 0;
-        if audit_now || extinct || t == t_end {
+        if audit_now || newly_extinct || t == t_end {
             let a = sim.audit();
             if !a.ok(&sim.st.atoms0) {
                 s.audit_ok = false;
@@ -641,10 +646,10 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
                 break;
             }
         }
-        if t % o.stats_every == 0 || extinct || t == t_end {
+        if t % o.stats_every == 0 || newly_extinct || t == t_end {
             write_stats(&mut stats, &mut sim);
         }
-        if o.map_every > 0 && (t % o.map_every == 0 || extinct || t == t_end) {
+        if o.map_every > 0 && (t % o.map_every == 0 || newly_extinct || t == t_end) {
             write_map(&sim, &o.out.join(format!("map_{t:07}.png")));
         }
         if o.checkpoint_every > 0 && t % o.checkpoint_every == 0 {
@@ -662,7 +667,7 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
             );
         }
         if extinct {
-            s.extinct_at = Some(t);
+            s.extinct_at.get_or_insert(t);
             if !o.keep_going {
                 break;
             }

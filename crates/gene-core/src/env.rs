@@ -6,6 +6,8 @@ use crate::sim::Sim;
 use crate::species::*;
 
 const GASES: [usize; 4] = [C, O, H, V];
+/// Water a tile keeps against running downhill when the ruleset has `retain` (SPEC §20i).
+pub const SOIL_RETAIN: u64 = 8;
 
 impl Sim {
     pub(crate) fn stage_transport(&mut self) {
@@ -17,6 +19,7 @@ impl Sim {
             self.pore_exchange();
         }
         let keys = self.keys.edge;
+        let retain = if self.caps.retain { SOIL_RETAIN } else { 0 };
         let threads = self.threads.max(1);
         if threads > 1 && self.pool.is_none() {
             self.pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().ok();
@@ -27,7 +30,7 @@ impl Sim {
             // Edges of one colour never share an endpoint (SPEC §5.2), so any order — and any
             // split into row bands that keeps each edge inside one band — gives the same result.
             if let (true, Some(pool)) = (threads > 1 && w.residue.is_empty() && w.h as usize >= 8 * threads, &self.pool) {
-                transport_parallel(pool, w, slot, color, threads, &keys, tick);
+                transport_parallel(pool, w, slot, color, threads, &keys, retain, tick);
             } else {
                 let list = std::mem::take(&mut w.edges[slot]);
                 let plain = w.residue.is_empty();
@@ -40,7 +43,7 @@ impl Sim {
                     plain,
                 };
                 for &(a, b) in &list {
-                    edge_flux(&mut band, &w.elev, &w.perm, &w.metal, &keys, a, b, tick);
+                    edge_flux(&mut band, &w.elev, &w.perm, &w.metal, &keys, retain, a, b, tick);
                 }
                 w.edges[slot] = list;
             }
@@ -483,6 +486,7 @@ fn edge_flux(
     perm: &[u16],
     metal: &[u8],
     keys: &[[u32; 2]; NSPEC],
+    retain: u64,
     a: u32,
     b: u32,
     tick: u64,
@@ -501,9 +505,11 @@ fn edge_flux(
     let (ea, eb) = (elev[a as usize], elev[b as usize]);
     if ea != eb {
         let (src, dst) = if ea > eb { (a, b) } else { (b, a) };
-        // a dry upper tile moves nothing; the draw is counter-based, so skipping it changes nothing
-        if band.total(src, W) > 0 {
-            let cand = sr(32 * min_p, 256, keys[W], object, tick).min(32);
+        // a dry upper tile (or one holding only what the soil keeps) moves nothing; the draw is
+        // counter-based, so skipping it changes nothing
+        let have = band.total(src, W);
+        if have > retain {
+            let cand = sr(32 * min_p, 256, keys[W], object, tick).min(32).min(have - retain);
             flow(band, elev, src, dst, W, cand);
         }
     } else {
@@ -590,6 +596,7 @@ fn transport_parallel(
     color: usize,
     threads: usize,
     keys: &[[u32; 2]; NSPEC],
+    retain: u64,
     tick: u64,
 ) {
     let width = w.w;
@@ -624,7 +631,7 @@ fn transport_parallel(
         for (mut band, edges) in bands.into_iter().zip(parts) {
             sc.spawn(move |_| {
                 for &(a, b) in edges {
-                    edge_flux(&mut band, elev, perm, metal, keys, a, b, tick);
+                    edge_flux(&mut band, elev, perm, metal, keys, retain, a, b, tick);
                 }
             });
         }

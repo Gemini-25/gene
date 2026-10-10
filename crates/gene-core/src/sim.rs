@@ -30,6 +30,10 @@ pub const RULESET_M1F: &str = "gene-m1-6";
 pub const RULESET_M0B: &str = "gene-m0-2";
 /// Everything: M1f + passive signal conduction + LocalTrace, on the gene-m0-2 physics (SPEC §20h).
 pub const RULESET_M2: &str = "gene-m2-1";
+/// gene-m0-2 + soil keeps up to SOIL_RETAIN units of water from running downhill (SPEC §20i).
+pub const RULESET_M0C: &str = "gene-m0-3";
+/// gene-m2-1 on the gene-m0-3 physics (SPEC §20i).
+pub const RULESET_M2B: &str = "gene-m2-2";
 
 /// Capabilities switched on by the ruleset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -48,6 +52,8 @@ pub struct Caps {
     pub decomp: bool,
     /// Environment due and transport buckets by 64-tile runs (SPEC §20h).
     pub locality: bool,
+    /// Soil keeps water from running downhill (SPEC §20i).
+    pub retain: bool,
 }
 
 impl Caps {
@@ -63,6 +69,8 @@ impl Caps {
                 Some(Caps { m1: true, commit: true, parcels: true, bonds: true, contact: true, parcel_media: true, ..Caps::default() })
             }
             RULESET_M0B => Some(Caps { decomp: true, locality: true, ..Caps::default() }),
+            RULESET_M0C => Some(Caps { decomp: true, locality: true, retain: true, ..Caps::default() }),
+            RULESET_M2B => Some(Caps { retain: true, ..Caps::of(RULESET_M2)? }),
             RULESET_M2 => Some(Caps {
                 m1: true,
                 commit: true,
@@ -74,6 +82,7 @@ impl Caps {
                 trace: true,
                 decomp: true,
                 locality: true,
+                retain: false,
             }),
             _ => None,
         }
