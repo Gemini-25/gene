@@ -33,3 +33,4 @@ pub const FOUNDER5_ASM: &str = include_str!("../../../assets/founder5.asm");
 
 /// Founder-6 assembly source: morning-only reproduction (SPEC §16c).
 pub const FOUNDER6_ASM: &str = include_str!("../../../assets/founder6.asm");
+pub const FOUNDER7_ASM: &str = include_str!("../../../assets/founder7.asm");

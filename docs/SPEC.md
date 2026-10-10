@@ -530,6 +530,20 @@ Founder-6(`assets/founder6.asm`)은 번식 시작 조건 하나만 바꾼다.
 
 오후에는 번식을 시작하지 않고 밤 비축을 남긴다. 나머지는 Founder-5와 같다. 248 word, 520 cell, 5 페이지.
 
+### 16d. 공개 조상 Founder-7 (E1-c 중간 관찰 이후 개정판)
+
+E1-c와 소규모 예비 실험(P1)에서 탄소가 한쪽에 쌓였다. 죽은 몸의 G는 그 tile의 loose G로 돌아간다. 생존 온도(270..329 K)에서 Rx2의 속도는 1이라 분해가 거의 없다. 그래서 loose G와 버려진 코드 기록이 쌓이고 공기의 C는 줄었다. E1-c seed 17에서는 27일 동안 loose G가 39만에서 163만으로 늘고, C는 418만에서 246만으로 줄었다. 같은 기간 개체당 광합성은 약 15% 줄었다.
+
+Founder-7(`assets/founder7.asm`)은 Founder-6에서 G가 모자랄 때의 행동 하나만 바꾼다.
+
+| 항목 | Founder-6 | Founder-7 |
+| --- | --- | --- |
+| inventory G < 30일 때 | 32 tick 대기 | 자기·앞·오른쪽·뒤·왼쪽 tile의 loose G를 차례로 READ하고, 처음 찾은 곳에서 최대 8을 TRANSFER한다. 없을 때만 32 tick 대기 |
+
+가져온 G는 호흡(Rx1)으로 energy가 되고 탄소는 C로 공기에 돌아간다. 새 규칙이나 숨은 보조는 없다. 기존 READ와 TRANSFER만 쓴다. 291 word, 606 cell, 5 페이지.
+
+소규모 점검(128², 개체 64, 100,000 tick, seed 1..4, `docs/results/E1.md`): 마지막 개체 수가 Founder-6은 58..213, Founder-7은 187..425였다. 21일째 loose G 중앙값은 Founder-6이 7.7만, Founder-7이 3.0만이었다.
+
 ## 17. 관찰과 출력
 
 관찰은 세계를 바꾸지 않는다. 헤드리스 실행이 내는 파일:

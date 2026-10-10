@@ -14,4 +14,5 @@ fn founders_assemble_to_documented_sizes() {
     check(gene_core::FOUNDER_ASM, 369, 762);
     check(gene_core::FOUNDER5_ASM, 250, 524);
     check(gene_core::FOUNDER6_ASM, 248, 520);
+    check(gene_core::FOUNDER7_ASM, 291, 606);
 }
