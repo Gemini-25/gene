@@ -26,6 +26,8 @@ pub const FITNESS: (u64, u64) = (11, 10);
 pub const CHAIN_AGENTS: usize = 5;
 /// Carriers a founder type needs for a family to count as spread to it.
 pub const SPREAD_CARRIERS: usize = 3;
+/// Carriers a family needs before its reproduction rate means anything.
+pub const FITNESS_CARRIERS: usize = 5;
 /// Distinct situations (time of day × energy band × wet tile) a chain must start in.
 pub const CHAIN_CONTEXTS: u32 = 2;
 /// Agent ids kept per chain (enough to count CHAIN_AGENTS and to show a few on screen).
@@ -252,7 +254,8 @@ impl Judge {
             }
             let types: BTreeSet<u16> = per_type.iter().filter(|(_, n)| **n >= SPREAD_CARRIERS).map(|(k, _)| *k).collect();
             let success = ok * MIN_SUCCESS.1 >= total * MIN_SUCCESS.0;
-            let linked = fitness_milli * FITNESS.1 >= 1000 * FITNESS.0 || types.len() >= 2;
+            let fit = carriers.len() >= FITNESS_CARRIERS && fitness_milli * FITNESS.1 >= 1000 * FITNESS.0;
+            let linked = fit || types.len() >= 2;
             let grams = action_grams(&f.example);
             let known_actions = !self.founder_grams.is_empty() && grams.iter().all(|g| self.founder_grams.contains(g));
             let is_founder = founders_own(st.founder_windows, st.windows) || known_actions;
