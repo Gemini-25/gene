@@ -15,15 +15,38 @@ use crate::species::*;
 pub(crate) enum MediaRef {
     Embryo,
     Draft,
+    /// A dropped record or a parcel's medium on that tile, by UID.
     Public { tile: u32, uid: u64 },
+    /// The parcel on that tile, which has no medium yet (only Resize creates one, M1f).
+    NewParcelMedia { tile: u32 },
 }
 
+/// Pages a parcel's medium may hold (original §55 ParcelPublic).
+pub const PARCEL_MEDIA_PAGES: usize = 8;
+
 impl Sim {
+    /// A public record by tile and UID: dropped there, or attached to the parcel there.
+    pub(crate) fn public_media(&self, tile: u32, uid: u64) -> Option<&Media> {
+        let dropped = self.st.dropped.get(&tile).and_then(|l| l.iter().find(|m| m.uid == uid));
+        dropped.or_else(|| self.st.world.parcels.get(&tile)?.media.as_ref().filter(|m| m.uid == uid))
+    }
+
+    fn is_parcel_media(&self, r: MediaRef) -> bool {
+        match r {
+            MediaRef::Public { tile, uid } => {
+                self.st.world.parcels.get(&tile).and_then(|p| p.media.as_ref()).is_some_and(|m| m.uid == uid)
+            }
+            MediaRef::NewParcelMedia { .. } => true,
+            _ => false,
+        }
+    }
+
     pub(crate) fn media_ref(&self, i: usize, r: MediaRef) -> Option<&Media> {
         match r {
             MediaRef::Embryo => self.st.agents[i].embryo.as_ref().map(|e| &e.raw),
             MediaRef::Draft => self.st.agents[i].draft.as_ref(),
-            MediaRef::Public { tile, uid } => self.st.dropped.get(&tile)?.iter().find(|m| m.uid == uid),
+            MediaRef::Public { tile, uid } => self.public_media(tile, uid),
+            MediaRef::NewParcelMedia { .. } => None,
         }
     }
 
@@ -31,14 +54,35 @@ impl Sim {
         match r {
             MediaRef::Embryo => self.st.agents[i].embryo.as_mut().map(|e| &mut e.raw),
             MediaRef::Draft => self.st.agents[i].draft.as_mut(),
-            MediaRef::Public { tile, uid } => self.st.dropped.get_mut(&tile)?.iter_mut().find(|m| m.uid == uid),
+            MediaRef::Public { tile, uid } => {
+                if self.st.dropped.get(&tile).is_some_and(|l| l.iter().any(|m| m.uid == uid)) {
+                    self.st.dropped.get_mut(&tile)?.iter_mut().find(|m| m.uid == uid)
+                } else {
+                    self.st.world.parcels.get_mut(&tile)?.media.as_mut().filter(|m| m.uid == uid)
+                }
+            }
+            MediaRef::NewParcelMedia { .. } => None,
         }
     }
 
     fn media_tile(&self, i: usize, r: MediaRef) -> u32 {
         match r {
-            MediaRef::Public { tile, .. } => tile,
+            MediaRef::Public { tile, .. } | MediaRef::NewParcelMedia { tile } => tile,
             _ => self.tile_of(i),
+        }
+    }
+
+    /// Selector 0: the medium of the parcel on t (M1f). A parcel without one can only be given
+    /// one by Resize (`create`).
+    fn parcel_media_at(&self, t: u32, create: bool) -> Result<MediaRef, Outcome> {
+        if !self.caps.parcel_media {
+            return Err(Outcome::InvalidTarget);
+        }
+        let p = self.st.world.parcels.get(&t).ok_or(Outcome::InvalidTarget)?;
+        match &p.media {
+            Some(m) => Ok(MediaRef::Public { tile: t, uid: m.uid }),
+            None if create => Ok(MediaRef::NewParcelMedia { tile: t }),
+            None => Err(Outcome::InvalidTarget),
         }
     }
 
@@ -46,7 +90,7 @@ impl Sim {
     pub(crate) fn public_at(&self, i: usize, off: u8, selector: u16) -> Result<MediaRef, Outcome> {
         let t = self.rel_tile(i, off).ok_or(Outcome::Boundary)?;
         if selector == 0 {
-            return Err(Outcome::InvalidTarget); // parcel media: none in M1a
+            return self.parcel_media_at(t, false);
         }
         let m = self
             .st
@@ -58,10 +102,10 @@ impl Sim {
     }
 
     /// Public record addressed by a WRITE (r1/r2 relative position within contact, r6 selector).
-    fn public_by_vec(&self, i: usize, r: &[u16; 8]) -> Result<MediaRef, Outcome> {
+    fn public_by_vec(&self, i: usize, r: &[u16; 8], resize: bool) -> Result<MediaRef, Outcome> {
         let t = self.rel_vec_tile(i, r[1] as i16, r[2] as i16, 1)?;
         if r[6] == 0 {
-            return Err(Outcome::InvalidTarget);
+            return self.parcel_media_at(t, resize);
         }
         let m = self.st.dropped.get(&t).and_then(|l| l.get(r[6] as usize - 1)).ok_or(Outcome::InvalidTarget)?;
         Ok(MediaRef::Public { tile: t, uid: m.uid })
@@ -70,6 +114,12 @@ impl Sim {
     /// Remove a public record that has no slots left.
     fn prune_public(&mut self, r: MediaRef) {
         if let MediaRef::Public { tile, uid } = r {
+            if let Some(p) = self.st.world.parcels.get_mut(&tile) {
+                if p.media.as_ref().is_some_and(|m| m.uid == uid && m.slots() == 0) {
+                    p.media = None;
+                    return;
+                }
+            }
             if let Some(list) = self.st.dropped.get_mut(&tile) {
                 list.retain(|m| m.uid != uid || m.slots() > 0);
                 if list.is_empty() {
@@ -81,14 +131,15 @@ impl Sim {
 
     /// Paid page lifecycle: add / restore / cancel cursor / drop absent slot / recycle 4 cells.
     pub(crate) fn media_resize(&mut self, i: usize, r: MediaRef, target: u32) -> Res {
-        if target as usize > MAX_PAGES {
+        let limit = if self.is_parcel_media(r) { PARCEL_MEDIA_PAGES } else { MAX_PAGES };
+        if target as usize > limit {
             return (Outcome::Limits, 0);
         }
         let me = self.tile_of(i);
         let mt = self.media_tile(i, r);
         let (n, has_hole, last_present, recycle) = match self.media_ref(i, r) {
             Some(m) => (m.slots() as u32, m.has_hole(), m.present.last().copied(), m.recycle),
-            None if r == MediaRef::Draft => (0, false, None, None),
+            None if matches!(r, MediaRef::Draft | MediaRef::NewParcelMedia { .. }) => (0, false, None, None),
             None => return (Outcome::InvalidTarget, 0),
         };
         if target > n || (target == n && has_hole) {
@@ -105,6 +156,15 @@ impl Sim {
                 self.st.agents[i].draft = Some(Media::empty(uid));
                 self.obs.m1.drafts_created += 1;
             }
+            let r = match r {
+                MediaRef::NewParcelMedia { tile } => {
+                    let uid = self.alloc_media_uid();
+                    self.st.world.parcels.get_mut(&tile).expect("parcel").media = Some(Media::empty(uid));
+                    self.obs.m1.parcel_media_created += 1;
+                    MediaRef::Public { tile, uid }
+                }
+                r => r,
+            };
             self.st.agents[i].inv[G] -= 1;
             self.move_heat(me, mt, CAP[G]);
             if dug > 0 {
@@ -166,7 +226,7 @@ impl Sim {
                 }
             }
             MediaRef::Public { .. } => self.prune_public(r),
-            MediaRef::Embryo => {}
+            MediaRef::Embryo | MediaRef::NewParcelMedia { .. } => {}
         }
     }
 
@@ -199,7 +259,7 @@ impl Sim {
         }
         let target = match r[0] {
             dom::OWN_DRAFT => MediaRef::Draft,
-            dom::PUBLIC_TAPE => match self.public_by_vec(i, &r) {
+            dom::PUBLIC_TAPE => match self.public_by_vec(i, &r, it.sub == 1) {
                 Ok(t) => t,
                 Err(e) => return (e, 0),
             },
@@ -366,11 +426,7 @@ impl Sim {
             dom::OWN_CODE => a.bank_media(r[7]).map(|m| (m.uid, m.revision)),
             dom::EMBRYO => a.embryo.as_ref().map(|e| (e.raw.uid, e.raw.revision)),
             dom::OWN_DRAFT => a.draft.as_ref().map(|d| (d.uid, d.revision)),
-            _ => cap
-                .src_tile
-                .and_then(|t| self.st.dropped.get(&t))
-                .and_then(|l| l.iter().find(|m| m.uid == cap.src_uid))
-                .map(|m| (m.uid, m.revision)),
+            _ => cap.src_tile.and_then(|t| self.public_media(t, cap.src_uid)).map(|m| (m.uid, m.revision)),
         };
         if cur != Some((cap.src_uid, cap.src_rev)) {
             return (Outcome::Stale, 0);

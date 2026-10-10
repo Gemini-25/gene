@@ -26,6 +26,8 @@ pub struct Parcel {
     /// M1d: grip strength and the gripping agent's uid (0 = none).
     pub grip: u8,
     pub grip_uid: u64,
+    /// M1f: record medium attached to the parcel (public selector 0, at most 8 pages).
+    pub media: Option<crate::media::Media>,
 }
 
 /// Species allowed in a matrix (solids).
@@ -49,6 +51,7 @@ impl Parcel {
             orient: 0,
             grip: 0,
             grip_uid: 0,
+            media: None,
         }
     }
 
@@ -89,6 +92,8 @@ impl Parcel {
         for i in 0..NSPEC {
             m[i] = self.matrix[i] as u64 + self.pore[i] as u64;
         }
+        // an attached medium is part of the parcel's mass and heat capacity (original §64)
+        m[G] += self.media.as_ref().map_or(0, |t| t.present_pages() as u64);
         m
     }
 }

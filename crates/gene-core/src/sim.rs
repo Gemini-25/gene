@@ -23,6 +23,8 @@ pub const RULESET_M1C: &str = "gene-m1-3";
 pub const RULESET_M1D: &str = "gene-m1-4";
 /// M1e: M1d + contact between agents: theft from a bare inventory, abrasion, PushActor (SPEC §20f).
 pub const RULESET_M1E: &str = "gene-m1-5";
+/// M1f: M1e + record media attached to parcels (SPEC §20g). The whole of M1.
+pub const RULESET_M1F: &str = "gene-m1-6";
 
 /// Capabilities switched on by the ruleset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -32,6 +34,7 @@ pub struct Caps {
     pub parcels: bool,
     pub bonds: bool,
     pub contact: bool,
+    pub parcel_media: bool,
 }
 
 impl Caps {
@@ -41,8 +44,9 @@ impl Caps {
             RULESET_M1 => Some(Caps { m1: true, ..Caps::default() }),
             RULESET_M1B => Some(Caps { m1: true, commit: true, ..Caps::default() }),
             RULESET_M1C => Some(Caps { m1: true, commit: true, parcels: true, ..Caps::default() }),
-            RULESET_M1D => Some(Caps { m1: true, commit: true, parcels: true, bonds: true, contact: false }),
-            RULESET_M1E => Some(Caps { m1: true, commit: true, parcels: true, bonds: true, contact: true }),
+            RULESET_M1D => Some(Caps { m1: true, commit: true, parcels: true, bonds: true, ..Caps::default() }),
+            RULESET_M1E => Some(Caps { m1: true, commit: true, parcels: true, bonds: true, contact: true, parcel_media: false }),
+            RULESET_M1F => Some(Caps { m1: true, commit: true, parcels: true, bonds: true, contact: true, parcel_media: true }),
             _ => None,
         }
     }

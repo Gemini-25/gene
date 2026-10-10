@@ -114,6 +114,10 @@ pub struct M1Stats {
     pub shell_removed: u64,
     pub body_removed: u64,
     pub actor_pushes: u64,
+    /// M1f: media created on parcels, and parcel media left as dropped records when their
+    /// parcel vanished.
+    pub parcel_media_created: u64,
+    pub parcel_media_dropped: u64,
 }
 
 /// One resolved effect, as the behaviour analysis sees it (original §58). Observer only.

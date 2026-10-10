@@ -41,10 +41,11 @@ pub struct Sense<'a> {
 }
 
 impl Sense<'_> {
-    /// Public record on tile t by selector (1-based, UID order). Selector 0 (parcel media) is absent in M1a.
+    /// Public record on tile t by selector: 0 the medium attached to the parcel there (M1f),
+    /// 1.. the dropped records in UID order.
     pub fn public(&self, t: u32, selector: u16) -> Option<&Media> {
         if selector == 0 {
-            return None;
+            return self.world.parcels.get(&t)?.media.as_ref();
         }
         self.dropped.get(&t)?.get(selector as usize - 1)
     }

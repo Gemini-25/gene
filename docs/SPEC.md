@@ -785,7 +785,7 @@ M1c는 M1b에 parcel을 더한다(원본 §10, §11, §12, §16, §17, §18, §6
 
 ## 20e. M1d: 결합·고정·grip·조립체 이동 (ruleset `gene-m1-4`)
 
-M1d는 M1c에 결합과 조립체 이동을 더한다(원본 §11, §64). parcel 매체(parcel에 붙은 tape)는 아직 없다. 개체끼리의 접촉(PushActor 포함)은 §20f(M1e)다.
+M1d는 M1c에 결합과 조립체 이동을 더한다(원본 §11, §64). 개체끼리의 접촉(PushActor 포함)은 §20f(M1e), parcel 매체는 §20g(M1f)다.
 
 **상태.** parcel마다 다음을 더한다.
 - bond[4]: 절대 방위 면(N, E, S, W)별 결합 강도(0..255). 결합은 대칭이다. A의 면 f와 그 이웃 B의 면 f+2가 항상 같은 값이다.
@@ -915,6 +915,27 @@ M1e는 M1d에 원본 v1의 접촉 규칙 셋을 더한다(원본 §10, §13). �
 
 **저장 호환.** 개체 구조가 바뀌어 이전 버전의 저장 파일은 읽을 수 없다. M0..M1d의 결과는 그대로다(같은 seed의 stats·births·deaths CSV가 이전 binary와 byte 단위로 같음을 확인).
 
+## 20g. M1f: parcel에 붙는 기록 매체 (ruleset `gene-m1-6`)
+
+M1f는 M1e에 원본 §11의 "선택 매체"를 더한다. 이것으로 원본 v0..v1의 M1 범위가 모두 들어온다. `--ruleset m1f`가 M1 전체다.
+
+**상태.** parcel마다 media(선택, 최대 8페이지)를 더한다. 공개 기록과 같은 Media 구조다.
+
+**주소.** PublicTape(5)의 selector 0이 그 tile parcel의 매체다. selector 1..n은 여전히 버려진 매체다. READ(r6), WRITE(r6), COPY 원천(r7)·목적지(r3) 모두 같다.
+
+**생성.** WRITE Resize(r0 = 5, r6 = 0)로 매체가 없는 parcel에 첫 페이지를 만든다(원본 §55). 비용은 다른 공개 매체 증설과 같다(행동한 개체의 G1, 128q, 시도비). parcel이 없으면 InvalidTarget이다. Cell 쓰기와 COPY 목적지는 이미 있는 매체에만 쓴다. 9페이지 이상은 Limits다.
+
+**물리.**
+- 매체의 Present 페이지는 parcel 질량과 열용량에 G로 들어간다. 그래서 조립체 하중과 마찰, 장부가 모두 매체를 포함한다(원본 §64 "붙어 있는 tape를 포함한다").
+- 매체는 matrix 부피(s)와 응집력에는 들어가지 않는다.
+- parcel이 움직이면(조립체 이동, 밀기) 매체도 같이 간다.
+- 매체는 노출되어 있다. 같은 tile의 버려진 매체 다음 순서로 Rx2 산화와 bit 마모를 받는다(§20b). 페이지가 모두 없어지면 매체도 없어진다.
+- parcel이 사라지면(matrix가 0) 매체는 같은 UID와 bytes로 그 tile의 버려진 매체가 된다(revision + 1). 물질과 정보를 두 번 만들지 않는다.
+
+**관찰.** `stats.csv`에 parcel_media(매체가 있는 parcel 수), parcel_media_created, parcel_media_dropped 열을 더한다. 화면은 매체가 있는 parcel에 글이 새겨진 판을 그린다.
+
+**결과 호환.** M0..M1e의 결과는 그대로다(같은 seed의 CSV가 이전 binary와 같음을 확인). Parcel 구조가 바뀌어 parcel이 있는 이전 저장 파일은 읽을 수 없다.
+
 ## 21. 확장 규칙과 로드맵
 
 ### 증거 규칙 (원본 §62를 강제 규칙으로 승격)
@@ -932,6 +953,6 @@ M1e는 M1d에 원본 v1의 접촉 규칙 셋을 더한다(원본 §10, §13). �
 | --- | --- | --- |
 | M0 | 이 명세 | — |
 | E1 | 조상 생존 실험 | M0 시험 통과 |
-| M1 | parcel, LINK, EMIT, 공개 tape, draft·learned, 개체 접촉(원본 v0..v1의 나머지). M1a..M1e로 구현함(§20b..§20f) | E1에서 지속 개체군 확인 |
+| M1 | parcel, LINK, EMIT, 공개 tape, draft·learned, 개체 접촉, parcel 매체(원본 v0..v1의 나머지). M1a..M1f로 구현함(§20b..§20g) | E1에서 지속 개체군 확인 |
 | M2 | 병렬 Think, Bevy viewer, S2 성능 gate | M1 |
 | 연구 부록 | 원본 Matter-1, R7..R10(형상 역학, 일반 화학, 발생, 자기·광학, 파동장, 핵, 양자, LawField, 분산) | 위 증거 규칙을 항목별로 통과 |

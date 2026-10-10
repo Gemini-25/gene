@@ -579,6 +579,12 @@ impl Sim {
             for s in 0..NSPEC {
                 w.force_loose(t, s, p.pore[s] as u64);
             }
+            // its medium stays on the tile as a dropped record (same matter, same tile)
+            if let Some(mut m) = p.media {
+                m.revision += 1;
+                self.obs.m1.parcel_media_dropped += 1;
+                self.drop_media(t, m);
+            }
         }
         self.clamp_bonds(t);
         self.st.world.parcel_changed(t);

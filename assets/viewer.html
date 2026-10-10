@@ -432,6 +432,18 @@ void main() {
     if ((bf & 2) != 0 && f.y > 0.5) bar = max(bar, smoothstep(0.08, 0.05, abs(f.x - 0.5)));
     if ((north & 2) != 0 && f.y < 0.5) bar = max(bar, smoothstep(0.08, 0.05, abs(f.x - 0.5)));
     col = mix(col, vec3(0.62, 0.36, 0.20), bar * 0.9);
+    if ((pf & 4) != 0 && u_ppt > 5.0) {
+      // an attached record: a pale tablet with three carved rows of glyphs
+      vec2 q = f - 0.5;
+      float plate = max(abs(q.x) - 0.19, abs(q.y) - 0.15);
+      float ab = 1.2 / u_ppt;
+      col = mix(col * 0.75, col, smoothstep(0.0, 0.05, plate - 0.01));
+      col = mix(col, vec3(0.88, 0.82, 0.66) * (1.04 - 0.4 * (q.x + q.y)), smoothstep(ab, -ab, plate));
+      float gy = (q.y + 0.15) / 0.30 * 3.0, gx = (q.x + 0.19) / 0.38 * 6.0;
+      float on = step(0.32, hash(vec2(ti) * 3.7 + vec2(floor(gx), floor(gy))));
+      float stroke = smoothstep(0.30, 0.16, abs(fract(gy) - 0.5)) * smoothstep(0.5, 0.36, abs(fract(gx) - 0.5));
+      col = mix(col, vec3(0.32, 0.25, 0.18), stroke * on * step(plate, -0.025) * smoothstep(5.0, 12.0, u_ppt) * 0.9);
+    }
     float r0 = length(f - 0.5);
     if ((pf & 1) != 0) col = mix(col, vec3(0.15, 0.14, 0.14), smoothstep(0.12, 0.09, r0));
     if ((pf & 2) != 0) col = mix(col, vec3(0.95, 0.85, 0.35), smoothstep(0.03, 0.0, abs(r0 - 0.42)));

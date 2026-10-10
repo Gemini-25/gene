@@ -313,76 +313,71 @@ impl Sim {
         }
     }
 
-    /// Exposure bit wear of records lying on tile t (SPEC §20b).
+    /// Exposure bit wear of records lying on tile t (SPEC §20b), then of the medium attached to
+    /// the parcel there (M1f: it is just as exposed).
     fn media_wear(&mut self, t: u32, x: u64) {
         let seed = self.st.config.seed;
         let tick = self.st.tick;
-        let Some(list) = self.st.dropped.get_mut(&t) else { return };
-        for m in list.iter_mut() {
-            let clock = m.exposure_clock as u32 + if x >= 64 { 4 } else { 1 };
-            if clock < 16384 {
-                m.exposure_clock = clock as u16;
-                continue;
+        let mut flips = 0;
+        if let Some(list) = self.st.dropped.get_mut(&t) {
+            for m in list.iter_mut() {
+                flips += wear_one(m, x, seed, tick) as u64;
             }
-            m.exposure_clock = (clock - 16384) as u16;
-            let present: Vec<usize> = (0..m.slots()).filter(|p| m.present[*p]).collect();
-            if present.is_empty() {
-                continue;
+        }
+        if let Some(m) = self.st.world.parcels.get_mut(&t).and_then(|p| p.media.as_mut()) {
+            flips += wear_one(m, x, seed, tick) as u64;
+        }
+        self.obs.m1.bit_flips += flips;
+    }
+
+    /// Rx2 oxidation of exposed records on tile t: dropped ones in UID order, then the parcel's.
+    /// A record without present pages is gone (its G already left as C and W).
+    fn media_chemistry(&mut self, t: u32, x: u64, tick: u64) {
+        if let Some(mut list) = self.st.dropped.remove(&t) {
+            for m in &mut list {
+                self.oxidize_one(t, m, x, tick);
             }
-            let key = crate::rng::stream_key(seed, Domain::Environment, m.uid, (2u64 << 56) | m.wear_events);
-            let mut st = Stream::new(key, tick);
-            let page = present[st.below(present.len() as u32) as usize];
-            let cell = st.below(128) as usize;
-            let bit = st.below(16);
-            m.cells[page * 128 + cell] ^= 1 << bit;
-            m.wear_events += 1;
-            m.revision += 1;
-            if m.recycle.is_some_and(|(p, _)| p as usize == page) {
-                m.recycle = Some((page as u16, 0));
+            list.retain(|m| m.present_pages() > 0);
+            if !list.is_empty() {
+                self.st.dropped.insert(t, list);
             }
-            self.obs.m1.bit_flips += 1;
+        }
+        let Some(mut m) = self.st.world.parcels.get_mut(&t).and_then(|p| p.media.take()) else { return };
+        self.oxidize_one(t, &mut m, x, tick);
+        if m.present_pages() > 0 {
+            self.st.world.parcels.get_mut(&t).unwrap().media = Some(m);
         }
     }
 
-    fn media_chemistry(&mut self, t: u32, x: u64, tick: u64) {
-        if self.st.dropped.is_empty() {
+    fn oxidize_one(&mut self, t: u32, m: &mut crate::media::Media, x: u64, tick: u64) {
+        let ti = t as usize;
+        let w = &self.st.world;
+        let rate = RX2.rates[temp_bin(w.theta(t))] as u64;
+        let possible = |w: &crate::world::World, m: &crate::media::Media| {
+            (m.present_pages() as u64)
+                .min(w.loose_total(t, O))
+                .min(w.loose_space(t, C))
+                .min(w.loose_space(t, W))
+        };
+        let p = possible(w, m);
+        if rate == 0 || p == 0 {
             return;
         }
-        let Some(mut list) = self.st.dropped.remove(&t) else { return };
-        let ti = t as usize;
-        for m in &mut list {
-            let w = &self.st.world;
-            let rate = RX2.rates[temp_bin(w.theta(t))] as u64;
-            let possible = |w: &crate::world::World, m: &crate::media::Media| {
-                (m.present_pages() as u64)
-                    .min(w.loose_total(t, O))
-                    .min(w.loose_space(t, C))
-                    .min(w.loose_space(t, W))
-            };
-            let p = possible(w, m);
-            if rate == 0 || p == 0 {
-                continue;
-            }
-            let inc = sr(rate * x * p.min(16), 256, self.keys.media_rx2, m.uid, tick);
-            let mut credit = m.credit as u64 + inc;
-            let mut ext = 0;
-            while credit >= 65536 && ext < 4 && possible(&self.st.world, m) > 0 {
-                m.oxidize_top_page();
-                let w = &mut self.st.world;
-                w.take_loose(t, O, 1);
-                w.put_loose(t, C, 1);
-                w.put_loose(t, W, 1);
-                w.heat_u[ti] += 5000;
-                credit -= 65536;
-                ext += 1;
-                self.obs.tick.media_oxidized += 1;
-            }
-            m.credit = credit.min(65535) as u16;
+        let inc = sr(rate * x * p.min(16), 256, self.keys.media_rx2, m.uid, tick);
+        let mut credit = m.credit as u64 + inc;
+        let mut ext = 0;
+        while credit >= 65536 && ext < 4 && possible(&self.st.world, m) > 0 {
+            m.oxidize_top_page();
+            let w = &mut self.st.world;
+            w.take_loose(t, O, 1);
+            w.put_loose(t, C, 1);
+            w.put_loose(t, W, 1);
+            w.heat_u[ti] += 5000;
+            credit -= 65536;
+            ext += 1;
+            self.obs.tick.media_oxidized += 1;
         }
-        list.retain(|m| m.present_pages() > 0);
-        if !list.is_empty() {
-            self.st.dropped.insert(t, list);
-        }
+        m.credit = credit.min(65535) as u16;
     }
 }
 
@@ -766,4 +761,31 @@ fn band_rx_possible(b: &mut EnvBand, t: u32, rx: &Reaction) -> u64 {
         p = p.min(*b.u(t) / (-rx.heat) as u64);
     }
     p
+}
+
+/// One exposure due of a record: the clock advances (4 on exposed ground, else 1) and every
+/// 16384 flips one uniformly drawn bit of a present page. Returns whether a bit flipped.
+fn wear_one(m: &mut crate::media::Media, x: u64, seed: u64, tick: u64) -> bool {
+    let clock = m.exposure_clock as u32 + if x >= 64 { 4 } else { 1 };
+    if clock < 16384 {
+        m.exposure_clock = clock as u16;
+        return false;
+    }
+    m.exposure_clock = (clock - 16384) as u16;
+    let present: Vec<usize> = (0..m.slots()).filter(|p| m.present[*p]).collect();
+    if present.is_empty() {
+        return false;
+    }
+    let key = crate::rng::stream_key(seed, Domain::Environment, m.uid, (2u64 << 56) | m.wear_events);
+    let mut st = Stream::new(key, tick);
+    let page = present[st.below(present.len() as u32) as usize];
+    let cell = st.below(128) as usize;
+    let bit = st.below(16);
+    m.cells[page * 128 + cell] ^= 1 << bit;
+    m.wear_events += 1;
+    m.revision += 1;
+    if m.recycle.is_some_and(|(p, _)| p as usize == page) {
+        m.recycle = Some((page as u16, 0));
+    }
+    true
 }
