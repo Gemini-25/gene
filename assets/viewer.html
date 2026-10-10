@@ -443,6 +443,11 @@ void main() {
     float edge = min(min(f.x, f.y), min(1.0 - f.x, 1.0 - f.y)) * u_ppt;
     col *= 1.0 - 0.07 * smoothstep(1.2, 0.2, edge);
   }
+  // drifting cloud shadows by day
+  if (u_mini < 0.5) {
+    float cl = texture(u_noise, p * 0.012 + vec2(u_time * 0.0035, u_time * 0.0012)).g;
+    col *= 1.0 - 0.22 * smoothstep(0.55, 0.75, cl) * smoothstep(0.1, 0.4, u_light);
+  }
   vec3 night = vec3(0.56, 0.62, 0.84);
   float dl = smoothstep(0.0, 0.3, u_light);
   vec3 tint = mix(night, vec3(1.0), dl) * mix(vec3(1.0), vec3(1.06, 0.97, 0.88), (1.0 - dl) * dl * 2.0);
@@ -1125,6 +1130,22 @@ for (const id of ["c-pop", "c-gen", "c-air", "c-dead"]) {
 // ---------------- panels
 function esc(s) { return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
 const EMB = ["없음", "기록 중", "변이 기록", "형식 오류", "준비됨"];
+// effect kind = (opcode - 0x20) << 3 | sub-op
+const ACT = { 8: "기록 쓰기", 9: "기록 크기", 10: "초안 확정", 11: "초안 취소", 12: "방향 쓰기", 13: "포트 쓰기",
+  16: "이동", 17: "회전", 18: "밀기", 24: "결합", 32: "결합 풀기", 40: "옮기기", 48: "압축", 49: "깎기", 50: "가열",
+  56: "신호", 64: "배아 만들기", 65: "배아 크기", 66: "배아 완성", 67: "변이 적용", 68: "배아 다시 열기", 69: "출산", 70: "배아 취소", 72: "복사" };
+const OUTK = ["성공", "일부", "변화 없음", "경계", "막힘", "에너지 부족", "재료 부족", "공간 부족", "대상 없음", "바뀜", "한도", "형식", "가려짐", "질의 한도", "사용 중"];
+const SYM = ["W", "C", "O", "G", "H", "X", "M", "S", "V", "I"];
+const DIRK = ["앞", "오른쪽", "뒤", "왼쪽"];
+function describeAct(f) {
+  let s = ACT[f.kind] || `효과 ${f.kind}`;
+  if (f.kind === 40) s += f.ch === 15 ? " energy" : f.ch < 10 ? " " + SYM[f.ch] : "";
+  if (f.dir < 4 && f.kind !== 17) s += " · " + DIRK[f.dir];
+  const ok = f.out <= 1;
+  s += ` · <span style="color:${ok ? "var(--ink)" : "var(--muted)"}">${OUTK[f.out] || f.out}</span>`;
+  if (ok && f.n > 1) s += ` (${f.n})`;
+  return s;
+}
 async function loadAgent() {
   const el = $("agent");
   if (!selected) { el.className = "empty"; el.textContent = "지도에서 개체를 클릭하세요."; return; }
@@ -1147,6 +1168,8 @@ async function loadAgent() {
     <tr><td>genome</td><td>${a.genome} · ${a.cells} cell · ${a.pages} 페이지</td></tr>
     <tr><td>VM</td><td>module ${a.pc[0]} pc ${a.pc[1]} · fault ${a.fault}</td></tr>
   </table>
+  <div class="small" style="margin-top:6px">최근 행동 (새것부터)</div>
+  <table class="kv">${(a.recent || []).map((f) => `<tr><td>tick ${f.tick.toLocaleString()}</td><td>${describeAct(f)}</td></tr>`).join("") || "<tr><td colspan=2 class=empty>아직 없음</td></tr>"}</table>
   <div class="small" style="margin-top:6px">레지스터 r0..r15</div><pre>${a.regs.join(" ")}</pre>
   <div class="small">작업 기억 [0..31]</div><pre>${a.mem.join(" ")}</pre>
   <div class="small">조상과의 명령어 차이 (상속 코드)</div><pre>${esc(a.diff)}</pre>

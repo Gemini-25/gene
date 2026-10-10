@@ -7,7 +7,7 @@ use gene_core::genome::hash_cells;
 use gene_core::isa;
 use gene_core::sim::Sim;
 use gene_core::species::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -220,6 +220,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
     cache.refresh(&sim);
     hist.push(&sim, cache.distinct());
     let mut behavior = gene_core::behavior::Analyzer::default();
+    let mut recent: Recent = HashMap::new();
     sim.obs.facts = Some(Vec::new());
     let mut timeline = Timeline { every: 4096, budget: 400_000_000, points: Vec::new() };
     timeline.record(&sim);
@@ -243,6 +244,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                                 timeline.points.truncate(k + 1);
                                 hist.truncate(t);
                                 behavior = gene_core::behavior::Analyzer::default();
+                                recent.clear();
                                 cache.refresh(&sim);
                                 shared.lock().unwrap().control.paused = true;
                                 dirty = true;
@@ -252,7 +254,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                     };
                     let _ = tx.send(msg);
                 }
-                other => answer(other, &sim, &cache, founder_prog.as_ref(), &save_dir),
+                other => answer(other, &sim, &cache, founder_prog.as_ref(), &save_dir, &recent),
             }
         }
         let ctl = shared.lock().unwrap().control;
@@ -284,6 +286,15 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
             epoch_ticks += 1;
             for f in sim.obs.facts.as_mut().unwrap().drain(..) {
                 behavior.push(&f);
+                let q = recent.entry(f.uid).or_default();
+                if q.len() == 8 {
+                    q.pop_front();
+                }
+                q.push_back(f);
+            }
+            if sim.st.tick % 4096 == 0 {
+                let alive: HashSet<u64> = sim.st.agents.iter().map(|a| a.uid).collect();
+                recent.retain(|u, _| alive.contains(u));
             }
             if sim.st.tick % 256 == 0 {
                 cache.refresh(&sim);
@@ -439,7 +450,10 @@ fn behaviors_json(an: &gene_core::behavior::Analyzer) -> String {
     )
 }
 
-fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::genome::Program>, save_dir: &PathBuf) {
+/// The last few resolved effects of each agent, for the agent panel.
+type Recent = HashMap<u64, VecDeque<gene_core::observer::EffectFact>>;
+
+fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::genome::Program>, save_dir: &PathBuf, recent: &Recent) {
     match req {
         Req::Agent(uid, tx) => {
             let Some(a) = sim.st.agents.iter().find(|a| a.uid == uid) else {
@@ -461,13 +475,19 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::ge
                     e.mutation_applied
                 )
             });
+            let acts: Vec<String> = recent.get(&a.uid).into_iter().flatten().rev().map(|f| {
+                format!(
+                    "{{\"tick\":{},\"kind\":{},\"out\":{},\"dir\":{},\"ch\":{},\"n\":{}}}",
+                    f.tick, f.kind, f.outcome, f.dir, f.channel, f.actual
+                )
+            }).collect();
             let regs = a.vm.regs.iter().map(|r| r.to_string()).collect::<Vec<_>>().join(",");
             let mem = a.mem[..32].iter().map(|r| r.to_string()).collect::<Vec<_>>().join(",");
             let s = format!(
                 "{{\"uid\":{},\"parent\":{},\"root\":{},\"generation\":{},\"age\":{},\"x\":{},\"y\":{},\"orient\":{},\
 \"energy\":{},\"photo_credit\":{},\"body_g\":{},\"shell_s\":{},\"inv\":{{{}}},\"children\":{},\"genome\":\"{}\",\
 \"cells\":{},\"pages\":{},\"upkeep\":{},\"theta\":{},\"tile_light_peak\":{},\"tile_elev\":{},\"tile_water\":{},\
-\"pc\":[{},{}],\"fault\":{},\"regs\":[{}],\"mem\":[{}],\"embryo\":{},\"draft\":{},\"learned\":{},\"retained\":{},\"diff\":{}}}",
+\"recent\":[{}],\"pc\":[{},{}],\"fault\":{},\"regs\":[{}],\"mem\":[{}],\"embryo\":{},\"draft\":{},\"learned\":{},\"retained\":{},\"diff\":{}}}",
                 a.uid,
                 a.parent,
                 a.root,
@@ -490,6 +510,7 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::ge
                 w.lpeak[t as usize],
                 w.elev[t as usize],
                 w.loose_total(t, W),
+                acts.join(","),
                 a.vm.module,
                 a.vm.pc,
                 a.vm.fault,
