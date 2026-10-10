@@ -154,6 +154,35 @@ pub struct WindowRecord {
     pub total: u16,
     /// A successful effect changed the world outside the agent (see `is_output`).
     pub output: bool,
+    /// The agent's situation when the window closed (`situation`), or UNKNOWN_SITUATION; filled
+    /// in by the caller, which can see the world.
+    pub ctx: u8,
+    /// Up to 8 distinct action 3-grams of the window (`action_grams`), 0 for unused slots.
+    pub grams: [u32; 8],
+}
+
+/// Ordered triples of successful actions, ignoring direction, amount and timing: each gram is
+/// kind0 << 16 | kind1 << 8 | kind2 (kind = (opcode - 0x20) << 3 | sub-op), plus 1 so 0 means
+/// none. The judge uses them to tell a new combination of actions from a founder routine run
+/// with other timings or directions (SPEC §17f).
+pub fn action_grams(tokens: &[Token]) -> Vec<u32> {
+    let mut g: Vec<u32> = tokens
+        .windows(3)
+        .filter(|w| w.iter().all(|t| t[1] <= 1 && t[0] != 255))
+        .map(|w| ((w[0][0] as u32) << 16 | (w[1][0] as u32) << 8 | w[2][0] as u32) + 1)
+        .collect();
+    g.sort_unstable();
+    g.dedup();
+    g
+}
+
+pub const UNKNOWN_SITUATION: u8 = 0x80;
+
+/// Situation bits for the judge (SPEC §17f): energy band (0 below 20000, 1 below 50000, 2 at
+/// least 50000) and whether the agent's tile holds water or ice (bit 2).
+pub fn situation(energy: u32, wet: bool) -> u8 {
+    let band = if energy < 20000 { 0 } else if energy < 50000 { 1 } else { 2 };
+    band | (wet as u8) << 2
 }
 
 /// A successful token that changed the world outside the agent: matter moved, external work, a
@@ -235,7 +264,20 @@ impl Analyzer {
             };
             let ok = o.tokens.iter().filter(|t| t[1] <= 1).count().min(65535) as u16;
             let output = o.tokens.iter().any(is_output);
-            log.push(WindowRecord { uid, window: o.window, family, ok, total: o.tokens.len().min(65535) as u16, output });
+            let mut grams = [0u32; 8];
+            for (k, g) in action_grams(&o.tokens).into_iter().take(8).enumerate() {
+                grams[k] = g;
+            }
+            log.push(WindowRecord {
+                uid,
+                window: o.window,
+                family,
+                ok,
+                total: o.tokens.len().min(65535) as u16,
+                output,
+                ctx: UNKNOWN_SITUATION,
+                grams,
+            });
         }
     }
 

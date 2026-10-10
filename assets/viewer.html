@@ -57,6 +57,10 @@ main { display: flex; height: calc(100% - 46px); min-height: 0; }
 #tip { position: absolute; display: none; pointer-events: none; background: rgba(10,12,20,0.82); color: #f4f4f0;
   border-radius: 6px; padding: 4px 8px; font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 #tip .sw { display: inline-block; vertical-align: -1px; margin-right: 5px; }
+#legend { position: absolute; left: 12px; top: 40px; font-size: 12px; color: var(--ink2); display: none;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
+#legend span.k { display: inline-flex; align-items: center; gap: 5px; margin-right: 10px; }
+#legend i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
 #maphint { position: absolute; left: 12px; top: 10px; color: var(--muted); font-size: 12px;
   background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; }
 aside { width: 380px; overflow-y: auto; border-left: 1px solid var(--border); background: var(--surface); padding: 12px 16px; }
@@ -132,6 +136,7 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
 <main>
   <div id="mapwrap">
     <canvas id="map"></canvas>
+    <div id="legend"></div>
     <div id="maphint">휠·Q/E: 확대 · 끌기·WASD: 이동 · 클릭: 개체 선택 · F: 따라가기 · 0: 전체 보기</div>
     <div id="fps">– fps</div>
     <div id="mini" title="미니맵: 클릭하면 그곳으로 이동"></div>
@@ -163,7 +168,7 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
     <div class="small">같은 효과 순서가 서로 다른 개체 2 이상, 창 3개 이상에서 나타난 것(원본 §58 A1.4). 최근 확정 순.</div>
     <ul class="behav" id="behav"></ul>
     <h2>고수준 행동 후보 <span class="small" id="hl-count"></span></h2>
-    <div class="small">연속된 창에서 서로 다른 반복 행동이 차례로 이어진 것(SPEC §17f). 효과가 성공하고 번식 성과와 이어진 행동만, 개체 5 이상·하루의 두 때 이상·결과물이 있어야 통과. 조상 genome 그대로인 개체가 하는 것은 "조상"으로 표시. 마지막 판단은 사람이 한다: 예시 개체를 따라가 보고 ✓/✗.</div>
+    <div class="small">연속된 창에서 서로 다른 반복 행동이 차례로 이어진 것(SPEC §17f). 효과가 성공하고 번식 성과와 이어진 행동만, 개체 5 이상·두 상황 이상(하루 중 때·에너지·발밑의 물)·결과물이 있어야 통과. 조상 genome 그대로인 개체가 하는 것은 "조상"으로 표시. 마지막 판단은 사람이 한다: 예시 개체를 따라가 보고 ✓/✗.</div>
     <ul class="behav" id="hl"></ul>
     <div id="hl-fams"></div>
     <h2>집단 <span class="small" id="grp-count"></span></h2>
@@ -207,7 +212,8 @@ let terrainTex = null, fieldTex = null, parcelTex = null, sigTex = null, groundT
 let parcelBuf = null, sigBuf = null, agentTex = null, agentBuf = null, lastAgentTiles = [];
 let terrTex = null, terrBuf = null, terrCells = [1, 1], terrLayer = -1, terrData = null; // -1 off, 0 visits, 1 matter, 2 structures
 const DOT_LOD = 6;   // device px per tile below which agents are drawn by the terrain pass
-const fps = { frames: 0, since: performance.now(), value: 0, scale: 1, lowered: 0, good: 0, start: performance.now() };
+const fps = { frames: 0, since: performance.now(), value: 0, scale: 1, lowered: 0, raised: 0, good: 0, start: performance.now(),
+  ceiling: 2, ceilingUntil: 0, backoff: 10000 };
 window.__fps = () => fps.value;
 // ?debug=noterrain,noagents,fixed (measurement aid: skip a pass, or keep full resolution)
 const DEBUG = (new URLSearchParams(location.search).get("debug") || "").split(",");
@@ -927,9 +933,18 @@ function drawFrame(now) {
   fps.frames++;
   if (now - fps.since >= 500) {
     fps.value = fps.frames * 1000 / (now - fps.since); fps.frames = 0; fps.since = now;
-    // adaptive resolution: keep the frame rate, give back sharpness when there is headroom
-    if (DEBUG.includes("fixed") || now - fps.start < 3000) {} else if (fps.value < 50 && fps.scale > 0.4) { fps.scale = Math.max(0.4, fps.scale * 0.85); fps.lowered = now; fps.good = 0; }
-    else if (fps.value >= 57 && fps.scale < 1 && now - fps.lowered > 2000 && ++fps.good >= 2) { fps.scale = Math.min(1, fps.scale * 1.15); fps.good = 0; }
+    // adaptive resolution: keep the frame rate, give back sharpness when there is headroom.
+    // A raise that the frame rate could not hold sets a ceiling for a while (doubling up to two
+    // minutes), so the scale does not probe up and down every few seconds.
+    if (DEBUG.includes("fixed") || now - fps.start < 3000) {} else if (fps.value < 50 && fps.scale > 0.4) {
+      if (now - fps.raised < 2500) { fps.ceiling = fps.scale; fps.ceilingUntil = now + fps.backoff; fps.backoff = Math.min(120000, fps.backoff * 2); }
+      fps.scale = Math.max(0.4, fps.scale * 0.85); fps.lowered = now; fps.good = 0;
+    } else if (fps.value >= 57 && fps.scale < 1 && now - fps.lowered > 2000 && ++fps.good >= 2) {
+      const next = Math.min(1, fps.scale * 1.15);
+      if (now >= fps.ceilingUntil || next < fps.ceiling * 0.999) { fps.scale = next; fps.raised = now; }
+      fps.good = 0;
+    }
+    if (now - fps.lowered > 60000) fps.backoff = 10000; // a long steady spell forgets old failures
     $("fps").textContent = `${Math.round(fps.value)} fps` + (fps.scale < 1 ? ` · 해상도 ${Math.round(fps.scale * 100)}%` : "");
   }
   if (!gl || !terrainTex || !W) return;
@@ -1374,7 +1389,7 @@ async function loadGroups() {
   if (colourMode === "group" && state && state.agents) { recolour(state.agents); snap.tick = -1; onSnapshot(state); setOverlays(state); }
 }
 
-const HL_REASON = { "family not repeated": "반복 안 된 단계", "family filtered": "실패·성과 없음", "few agents": "개체 부족", "one time of day": "한 때에만", "no output": "결과물 없음" };
+const HL_REASON = { "family not repeated": "반복 안 된 단계", "family filtered": "실패·성과 없음", "few agents": "개체 부족", "one situation": "한 상황에서만", "no output": "결과물 없음" };
 let hlTick = -1, hlReviews = {};
 // a family's example tokens in words; runs of the same action fold into "×n"
 function stepWords(st) {
@@ -1416,7 +1431,7 @@ async function loadHighlevel() {
     const verdict = pass ? '<span class="badge civ">통과</span>' : `<span class="badge" title="처음 걸린 규칙">${HL_REASON[c.verdict] || c.verdict}</span>`;
     const origin = c.new ? '<span class="badge civ" title="조상 genome 그대로인 개체에서는 거의 안 나옴">새것</span>' : `<span class="badge" title="조상 code 발생 ${c.founder_occ}/${c.occ}">조상</span>`;
     li.innerHTML = `<span>${c.families.map((f) => "#" + f).join(" → ")} ${verdict}${origin}
-      <span class="small">· 개체 ${c.agents} · ${c.occ}번 · 때 ${c.phases} · 결과물 ${c.outputs} · 처음 ${(c.first / 4096).toFixed(1)}일</span></span>
+      <span class="small">· 개체 ${c.agents} · ${c.occ}번 · 상황 ${c.situations} · 결과물 ${c.outputs} · 처음 ${(c.first / 4096).toFixed(1)}일</span></span>
       <div class="steps">${c.steps.map((x) => `<code title="${esc(x.raw)}">${esc(stepWords(x))}</code>`).join("")}</div>`;
     const row = document.createElement("div");
     row.className = "hl-row";
@@ -1507,6 +1522,7 @@ $("step100").onclick = () => control("step=100");
 $("colour").onclick = () => {
   colourMode = COLOUR_MODES[(COLOUR_MODES.indexOf(colourMode) + 1) % COLOUR_MODES.length];
   $("colour").textContent = "색: " + COLOUR_NAMES[colourMode];
+  showLegend();
   if (state && state.agents) { recolour(state.agents); snap.tick = -1; onSnapshot(state); setOverlays(state); }
 };
 $("save").onclick = async () => { const r = await getJSON("/api/save"); alert(r.saved ? "저장: " + r.saved : "실패: " + r.error); };
@@ -1549,7 +1565,19 @@ function parseAgents(buf) {
   return { uid, c, root, x, y, e, g, o, emb, gc: c };
 }
 // --- agent colour: genome (default), founder lineage, energy, generation
-const COLOUR_MODES = ["genome", "lineage", "group", "energy", "generation"], COLOUR_NAMES = { genome: "genome", lineage: "계통", group: "집단", energy: "에너지", generation: "세대" };
+const COLOUR_MODES = ["genome", "kind", "lineage", "group", "energy", "generation"], COLOUR_NAMES = { genome: "genome", kind: "조상 종류", lineage: "계통", group: "집단", energy: "에너지", generation: "세대" };
+// founder kinds (E2 mixed worlds): founder i runs program i mod n, so kind = (root - 1) mod n.
+// Fixed order of hues that stand out on green land, blue water and tan ground.
+const KIND_COLOURS = [0xff8a3d, 0xd65ce0, 0xffe04a, 0xf2f2f2, 0xff4f5e, 0x6fe3ff];
+const KIND_DESC = { founder4: "Founder-4", founder5: "Founder-5", founder6: "Founder-6", founder7: "Founder-7", founder8: "Founder-8 · 신호", founder9: "Founder-9 · 기록 학습", founder10: "Founder-10 · 구조물" };
+function kindOf(root) { const n = state && state.founders ? state.founders.length : 1; return (root - 1) % n; }
+function showLegend() {
+  const el = $("legend");
+  const f = state && state.founders ? state.founders : [];
+  if (colourMode !== "kind" || f.length < 1) { el.style.display = "none"; return; }
+  el.innerHTML = f.map((name, k) => `<span class="k"><i style="background:${hexColor(KIND_COLOURS[k % KIND_COLOURS.length])}"></i>${esc(KIND_DESC[name] || name.replace(/^.*\//, ""))}</span>`).join("");
+  el.style.display = "block";
+}
 let groupOf = new Map(); // agent uid -> group id (last closed relation window)
 const NO_GROUP = 0x5a5f66;
 let colourMode = "genome";
@@ -1572,7 +1600,8 @@ function recolour(a) {
   let gmax = 1;
   if (colourMode === "generation") for (let i = 0; i < a.g.length; i++) gmax = Math.max(gmax, a.g[i]);
   for (let i = 0; i < c.length; i++) {
-    c[i] = colourMode === "lineage" ? lineageColour(a.root[i])
+    c[i] = colourMode === "kind" ? KIND_COLOURS[kindOf(a.root[i]) % KIND_COLOURS.length]
+      : colourMode === "lineage" ? lineageColour(a.root[i])
       : colourMode === "group" ? (groupOf.has(a.uid[i]) ? lineageColour(groupOf.get(a.uid[i]) * 7919) : NO_GROUP)
       : colourMode === "energy" ? ramp(a.e[i] / 32767) : ramp(a.g[i] / gmax);
   }

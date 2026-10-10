@@ -2,7 +2,7 @@
 //! read published snapshots or ask the simulation thread through a channel, so viewing never
 //! changes the world (original I07, SPEC §15).
 
-use crate::{die, founder_kind, founder_programs, genome_color, hex, nearest, program_diff};
+use crate::{die, founder_kind, founder_programs, genome_color, hex, nearest, program_diff, situated};
 use gene_core::genome::hash_cells;
 use gene_core::sim::Sim;
 use gene_core::species::*;
@@ -392,7 +392,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                 cache.refresh(&sim);
                 hist.push(&sim, cache.distinct());
                 behavior.flush(sim.st.tick);
-                for r in behavior.log.as_mut().unwrap().drain(..) {
+                for r in situated(&sim, behavior.log.as_mut().unwrap()) {
                     judge.window(&r);
                 }
             }
@@ -418,7 +418,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
             let (t0, k0) = tps_window[0];
             let dt = now.duration_since(t0).as_secs_f64();
             let tps = if dt > 0.0 { (sim.st.tick - k0) as f64 / dt } else { 0.0 };
-            let snap = snapshot(&sim, &cache, &ctl, tps);
+            let snap = snapshot(&sim, &cache, &ctl, tps, &founder);
             let mut sh = shared.lock().unwrap();
             sh.snapshot = Arc::new(snap);
             sh.agents = Arc::new(agents_bin(&sim, &cache));
@@ -466,7 +466,7 @@ fn agents_bin(sim: &Sim, cache: &HashCache) -> Vec<u8> {
     out
 }
 
-fn snapshot(sim: &Sim, cache: &HashCache, ctl: &Control, tps: f64) -> String {
+fn snapshot(sim: &Sim, cache: &HashCache, ctl: &Control, tps: f64, founders: &str) -> String {
     let ag = &sim.st.agents;
     let w = &sim.st.world;
     let tick = sim.st.tick;
@@ -475,7 +475,7 @@ fn snapshot(sim: &Sim, cache: &HashCache, ctl: &Control, tps: f64) -> String {
     format!(
         "{{\"tick\":{tick},\"day\":{},\"phase\":{p},\"light\":{light:.3},\"pop\":{},\"births\":{},\"deaths\":{},\
 \"genomes\":{},\"tps\":{tps:.1},\"paused\":{},\"until\":{},\"speed\":{},\"w\":{},\"h\":{},\"seed\":{},\"ruleset\":\"{}\",\
-\"signal\":[{}],\"parcels\":[{}]}}",
+\"founders\":[{}],\"signal\":[{}],\"parcels\":[{}]}}",
         tick / 4096,
         ag.len(),
         sim.obs.total_births,
@@ -488,6 +488,7 @@ fn snapshot(sim: &Sim, cache: &HashCache, ctl: &Control, tps: f64) -> String {
         w.h,
         sim.st.config.seed,
         sim.st.ruleset,
+        founders.split('+').map(json_str).collect::<Vec<_>>().join(","),
         sim.st.signal.iter().take(20000).map(|(k, v)| format!("{},{},{}", k >> 2, k & 3, v)).collect::<Vec<_>>().join(","),
         w.parcels
             .iter()
@@ -712,7 +713,7 @@ fn highlevel_json(j: &gene_core::judge::Judge, an: &gene_core::behavior::Analyze
             let ch = &c.chain;
             let live: Vec<String> = ch.agents.iter().filter(|u| alive.contains(u)).take(6).map(|u| u.to_string()).collect();
             format!(
-                "{{\"key\":\"{}\",\"families\":[{}],\"verdict\":\"{}\",\"new\":{},\"first\":{},\"occ\":{},\"founder_occ\":{},\"agents\":{},\"phases\":{},\"outputs\":{},\"alive\":[{}],\"steps\":[{}]}}",
+                "{{\"key\":\"{}\",\"families\":[{}],\"verdict\":\"{}\",\"new\":{},\"first\":{},\"occ\":{},\"founder_occ\":{},\"agents\":{},\"phases\":{},\"situations\":{},\"outputs\":{},\"alive\":[{}],\"steps\":[{}]}}",
                 ch.families.iter().map(|f| f.to_string()).collect::<Vec<_>>().join("-"),
                 ch.families.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(","),
                 c.reject.unwrap_or("pass"),
@@ -722,6 +723,7 @@ fn highlevel_json(j: &gene_core::judge::Judge, an: &gene_core::behavior::Analyze
                 ch.founder_occurrences,
                 ch.agent_count,
                 ch.phases.count_ones(),
+                ch.contexts.count_ones(),
                 ch.outputs,
                 live.join(","),
                 ch.families.iter().map(|f| step(*f)).collect::<Vec<_>>().join(",")

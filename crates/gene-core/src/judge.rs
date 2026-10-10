@@ -5,14 +5,17 @@
 //! classified window (so that short-lived newborns do not flatter every family), or it spread to
 //! another founder type.
 //! C (hierarchy): a high-level behaviour is an ordered chain of 2 or 3 families that follow each
-//! other in one agent's consecutive windows, all passing B, used by several agents, at several
-//! times of day, and leaving an output (matter moved, a structure or a record touched).
+//! other in one agent's consecutive windows, all passing B, used by several agents, in several
+//! situations (time of day, the agent's energy band, a wet or dry tile), and leaving an output
+//! (matter moved, a structure or a record touched).
 //! New: a family or chain is the founders' own repertoire when at least a tenth of its windows
 //! come from agents whose genome is still exactly a founder genome; what founder code does in
-//! any situation is not counted as new (user decision 2). D (a person checking on screen)
-//! happens in the viewer.
+//! any situation is not counted as new (user decision 2). A family is also the founders' own
+//! when every ordered triple of successful actions in its example (ignoring direction, amount
+//! and timing) was seen in some window of founder code: a founder routine with other timings
+//! is not a new behaviour. D (a person checking on screen) happens in the viewer.
 
-use crate::behavior::{Family, WindowRecord, WINDOW};
+use crate::behavior::{action_grams, Family, WindowRecord, UNKNOWN_SITUATION, WINDOW};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// Share of windows from unchanged founder genomes at which a behaviour is the founders' own.
@@ -21,7 +24,8 @@ pub const MIN_SUCCESS: (u64, u64) = (1, 2);
 /// Carriers must reproduce at least 1.1 times the population rate (or spread to another type).
 pub const FITNESS: (u64, u64) = (11, 10);
 pub const CHAIN_AGENTS: usize = 5;
-pub const CHAIN_PHASES: u32 = 2;
+/// Distinct situations (time of day × energy band × wet tile) a chain must start in.
+pub const CHAIN_CONTEXTS: u32 = 2;
 /// Agent ids kept per chain (enough to count CHAIN_AGENTS and to show a few on screen).
 const KEEP_AGENTS: usize = 32;
 
@@ -34,6 +38,8 @@ pub struct Chain {
     pub agent_count: usize,
     /// Bit k: seen in day quarter k (dawn-morning, afternoon, evening, night).
     pub phases: u8,
+    /// Bit 8·phase + situation: the situations the chain started in (known ones only).
+    pub contexts: u32,
     /// Occurrences with an output in one of their windows.
     pub outputs: u64,
     /// Occurrences by agents with an unchanged founder genome.
@@ -95,13 +101,15 @@ struct FamilyStats {
 #[derive(Default)]
 pub struct Judge {
     stats: BTreeMap<u32, FamilyStats>,
-    /// Per agent: the last two classified windows (window, family, output).
-    last: BTreeMap<u64, [(u64, u32, bool); 2]>,
+    /// Per agent: the last two classified windows (window, family, output, situation).
+    last: BTreeMap<u64, [(u64, u32, bool, u8); 2]>,
     chains: BTreeMap<Vec<u32>, Chain>,
     outputs: HashSet<(u64, u64)>,
     newest_window: u64,
     life: BTreeMap<u64, Life>,
     founder_genomes: BTreeSet<[u8; 32]>,
+    /// Action 3-grams seen in windows of founder code.
+    founder_grams: HashSet<u32>,
 }
 
 fn phase(window: u64) -> u8 {
@@ -166,6 +174,9 @@ impl Judge {
             }
             None => false,
         };
+        if founder_code {
+            self.founder_grams.extend(r.grams.iter().copied().filter(|&g| g != 0));
+        }
         let s = self.stats.entry(fam).or_default();
         s.ok += r.ok as u64;
         s.total += r.total as u64;
@@ -174,21 +185,24 @@ impl Judge {
         s.carriers.insert(r.uid);
         let prev = self.last.get(&r.uid).copied();
         let here = r.output || self.outputs.contains(&(r.uid, r.window));
-        let cur = (r.window, fam, here);
-        let out = |w: (u64, u32, bool)| w.2 || self.outputs.contains(&(r.uid, w.0));
-        let mut found: Vec<(Vec<u32>, u64, bool)> = Vec::new();
+        let cur = (r.window, fam, here, r.ctx);
+        let out = |w: (u64, u32, bool, u8)| w.2 || self.outputs.contains(&(r.uid, w.0));
+        let mut found: Vec<(Vec<u32>, u64, bool, u8)> = Vec::new();
         if let Some([a, b]) = prev {
             if b.0 != u64::MAX && b.0 + 1 == r.window && b.1 != fam {
-                found.push((vec![b.1, fam], b.0, out(b) || here));
+                found.push((vec![b.1, fam], b.0, out(b) || here, b.3));
                 if a.0 != u64::MAX && a.0 + 1 == b.0 && a.1 != b.1 {
-                    found.push((vec![a.1, b.1, fam], a.0, out(a) || out(b) || here));
+                    found.push((vec![a.1, b.1, fam], a.0, out(a) || out(b) || here, a.3));
                 }
             }
         }
-        for (key, first, output) in found {
+        for (key, first, output, ctx) in found {
             let c = self.chains.entry(key.clone()).or_insert_with(|| Chain { families: key, first_window: first, ..Chain::default() });
             c.occurrences += 1;
             c.phases |= 1 << phase(first);
+            if ctx != UNKNOWN_SITUATION {
+                c.contexts |= 1 << (8 * phase(first) as u32 + (ctx & 7) as u32);
+            }
             c.outputs += output as u64;
             c.founder_occurrences += founder_code as u64;
             if !c.agents.contains(&r.uid) {
@@ -198,7 +212,7 @@ impl Judge {
                 }
             }
         }
-        let slots = self.last.entry(r.uid).or_insert([(u64::MAX, 0, false); 2]);
+        let slots = self.last.entry(r.uid).or_insert([(u64::MAX, 0, false, UNKNOWN_SITUATION); 2]);
         *slots = [slots[1], cur];
     }
 
@@ -231,7 +245,9 @@ impl Judge {
             let types: BTreeSet<u16> = carriers.iter().filter_map(|u| self.life.get(u).map(|l| l.kind)).collect();
             let success = ok * MIN_SUCCESS.1 >= total * MIN_SUCCESS.0;
             let linked = fitness_milli * FITNESS.1 >= 1000 * FITNESS.0 || types.len() >= 2;
-            let is_founder = founders_own(st.founder_windows, st.windows);
+            let grams = action_grams(&f.example);
+            let known_actions = !self.founder_grams.is_empty() && grams.iter().all(|g| self.founder_grams.contains(g));
+            let is_founder = founders_own(st.founder_windows, st.windows) || known_actions;
             pass.insert(f.id, success && linked);
             founder.insert(f.id, is_founder);
             out.push(FamilyJudgement {
@@ -255,8 +271,8 @@ impl Judge {
                 Some("family filtered")
             } else if c.agent_count < CHAIN_AGENTS {
                 Some("few agents")
-            } else if c.phases.count_ones() < CHAIN_PHASES {
-                Some("one time of day")
+            } else if c.contexts.count_ones() < CHAIN_CONTEXTS {
+                Some("one situation")
             } else if c.outputs * 2 < c.occurrences {
                 Some("no output")
             } else {
@@ -275,7 +291,7 @@ mod tests {
     use super::*;
 
     fn rec(uid: u64, window: u64, family: u32, ok: u16) -> WindowRecord {
-        WindowRecord { uid, window, family: Some(family), ok, total: 10, output: false }
+        WindowRecord { uid, window, family: Some(family), ok, total: 10, output: false, ctx: 2, grams: [0; 8] }
     }
 
     fn fam(id: u32, first_tick: u64) -> Family {
@@ -338,6 +354,23 @@ mod tests {
         let j = world(4, 40, true);
         let fams = [fam(7, 40 * WINDOW), fam(8, 41 * WINDOW), fam(9, 42 * WINDOW)];
         assert!(j.finish(&fams, 100 * WINDOW).1.iter().all(|c| c.reject == Some("few agents") || c.reject == Some("family filtered")));
+    }
+
+    #[test]
+    fn a_founder_routine_with_other_timings_is_not_a_new_family() {
+        let mut j = world(6, 40, true);
+        // founder code (agent 101) once ran TRANSFER, TRANSFER, TRANSFER in a row
+        let take: crate::behavior::Token = [40, 0, 255, 3, 2, 0, 0, 0];
+        let gram = action_grams(&[take, take, take])[0];
+        j.window(&WindowRecord { uid: 101, window: 5, family: Some(99), ok: 3, total: 3, output: true, ctx: 2, grams: [gram, 0, 0, 0, 0, 0, 0, 0] });
+        let mut f7 = fam(7, 40 * WINDOW);
+        f7.example = vec![take, [40, 0, 1, 3, 2, 3, 0, 0], [40, 1, 2, 3, 1, 5, 0, 0]]; // other directions and timings
+        let mut f8 = fam(8, 41 * WINDOW);
+        f8.example = vec![[32, 0, 255, 255, 1, 0, 0, 0]; 3]; // LINK x3: never done by founder code
+        let (judged, _) = j.finish(&[f7, f8, fam(9, 42 * WINDOW)], 100 * WINDOW);
+        let by = |id| judged.iter().find(|f| f.id == id).unwrap();
+        assert!(by(7).founder, "same actions in the same order as founder code");
+        assert!(!by(8).founder, "a new order of successful actions");
     }
 
     #[test]

@@ -327,6 +327,27 @@ fn write_groups(out: &mut impl Write, g: &gene_core::relations::Graph, tick: u64
     }
 }
 
+/// Drain closed windows, each with its agent's situation now (energy band, wet tile); agents
+/// that died meanwhile keep an unknown situation (SPEC §17f).
+pub(crate) fn situated(sim: &Sim, log: &mut Vec<gene_core::behavior::WindowRecord>) -> Vec<gene_core::behavior::WindowRecord> {
+    if log.is_empty() {
+        return Vec::new();
+    }
+    let at: std::collections::HashMap<u64, usize> = sim.st.agents.iter().enumerate().map(|(i, a)| (a.uid, i)).collect();
+    let w = &sim.st.world;
+    log.drain(..)
+        .map(|mut r| {
+            if let Some(&i) = at.get(&r.uid) {
+                let a = &sim.st.agents[i];
+                let t = w.idx(a.x as u32, a.y as u32);
+                let wet = w.loose_total(t, gene_core::species::W) + w.loose_total(t, gene_core::species::I) > 0;
+                r.ctx = gene_core::behavior::situation(a.energy, wet);
+            }
+            r
+        })
+        .collect()
+}
+
 /// Repeated families with the judge's filter (SPEC §17f B).
 fn judge_csv(j: &[gene_core::judge::FamilyJudgement]) -> String {
     let mut out = String::from("family,ok_tokens,tokens,carriers,fitness_x1000,founder_types,windows,founder_code_windows,founder_repertoire,pass\n");
@@ -342,7 +363,7 @@ fn judge_csv(j: &[gene_core::judge::FamilyJudgement]) -> String {
 /// Chains of families used by two or more agents (SPEC §17f C), passing ones first, with what
 /// each step does.
 fn highlevel_csv(c: &[gene_core::judge::Candidate], an: &gene_core::behavior::Analyzer) -> String {
-    let mut out = String::from("chain,verdict,new,first_tick,occurrences,founder_code_occurrences,agents,phases,outputs,example_agents,steps\n");
+    let mut out = String::from("chain,verdict,new,first_tick,occurrences,founder_code_occurrences,agents,phases,situations,outputs,example_agents,steps\n");
     for k in c {
         let ch = &k.chain;
         let steps: Vec<String> = ch
@@ -351,7 +372,7 @@ fn highlevel_csv(c: &[gene_core::judge::Candidate], an: &gene_core::behavior::An
             .map(|f| an.families[*f as usize].example.iter().take(4).map(gene_core::behavior::describe).collect::<Vec<_>>().join(" · "))
             .collect();
         out += &format!(
-            "{},{},{},{},{},{},{},{},{},{},\"{}\"\n",
+            "{},{},{},{},{},{},{},{},{},{},{},\"{}\"\n",
             ch.families.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(">"),
             k.reject.unwrap_or("pass"),
             k.new as u8,
@@ -360,6 +381,7 @@ fn highlevel_csv(c: &[gene_core::judge::Candidate], an: &gene_core::behavior::An
             ch.founder_occurrences,
             ch.agent_count,
             ch.phases.count_ones(),
+            ch.contexts.count_ones(),
             ch.outputs,
             ch.agents.iter().take(5).map(|a| a.to_string()).collect::<Vec<_>>().join(" "),
             steps.join(" => ")
@@ -576,7 +598,7 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
         }
         if t % gene_core::behavior::WINDOW == 0 {
             behavior.flush(t);
-            for r in behavior.log.as_mut().unwrap().drain(..) {
+            for r in situated(&sim, behavior.log.as_mut().unwrap()) {
                 judge.window(&r);
             }
         }
@@ -684,7 +706,7 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     s.distinct_genomes = distinct_genomes(&sim);
     s.hash = hex(&sim.state_hash());
     behavior.finish();
-    for r in behavior.log.as_mut().unwrap().drain(..) {
+    for r in situated(&sim, behavior.log.as_mut().unwrap()) {
         judge.window(&r);
     }
     let (judged, candidates) = judge.finish(&behavior.families, sim.st.tick);
