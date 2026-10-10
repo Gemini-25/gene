@@ -42,7 +42,21 @@ main { display: flex; height: calc(100% - 46px); min-height: 0; }
 #map { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
 #fps { position: absolute; right: 12px; top: 10px; color: #f4f4f0; font: 12px/1.2 ui-monospace, Menlo, monospace;
   background: rgba(10,12,20,0.55); border-radius: 6px; padding: 3px 8px; pointer-events: none; font-variant-numeric: tabular-nums; }
-#maphint { position: absolute; left: 12px; bottom: 10px; color: var(--muted); font-size: 12px;
+#mini { position: absolute; right: 12px; bottom: 12px; width: 168px; height: 168px; border-radius: 8px;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.35), 0 2px 10px rgba(0,0,0,0.35); cursor: pointer; }
+#timeline { position: absolute; left: 12px; right: 192px; bottom: 12px; height: 30px; display: flex; align-items: center; gap: 10px;
+  background: rgba(10,12,20,0.55); border-radius: 8px; padding: 0 10px; color: #f4f4f0; font-size: 12px; }
+#tl-label { white-space: nowrap; font-variant-numeric: tabular-nums; }
+#tl-track { position: relative; flex: 1; height: 100%; }
+#tl-track::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2px; background: rgba(255,255,255,0.3); }
+#tl-track button { position: absolute; top: 50%; width: 12px; height: 12px; min-height: 0; padding: 0; margin: -6px 0 0 -6px;
+  border-radius: 50%; border: 2px solid #f4f4f0; background: #2a78d6; }
+#tl-track button:hover { transform: scale(1.35); }
+#tl-now { position: absolute; top: 4px; bottom: 4px; width: 2px; margin-left: -1px; background: #eda100; }
+#tip { position: absolute; display: none; pointer-events: none; background: rgba(10,12,20,0.82); color: #f4f4f0;
+  border-radius: 6px; padding: 4px 8px; font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+#tip .sw { display: inline-block; vertical-align: -1px; margin-right: 5px; }
+#maphint { position: absolute; left: 12px; top: 10px; color: var(--muted); font-size: 12px;
   background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; }
 aside { width: 380px; overflow-y: auto; border-left: 1px solid var(--border); background: var(--surface); padding: 12px 16px; }
 h2 { font-size: 13px; font-weight: 600; margin: 16px 0 6px; }
@@ -56,6 +70,7 @@ canvas.chart { width: 100%; height: 120px; display: block; }
   padding: 4px 6px; border-radius: 6px; cursor: pointer; }
 .census li:hover, .census li.sel { background: var(--btn); }
 .sw { width: 12px; height: 12px; border-radius: 3px; }
+h2 button { font-size: 11px; padding: 1px 8px; min-height: 22px; margin-left: 6px; font-weight: 400; vertical-align: 1px; }
 .behav { list-style: none; padding: 0; margin: 6px 0 0; }
 .behav li { padding: 5px 6px; border-bottom: 1px solid var(--border); }
 .behav code { display: block; font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink2);
@@ -96,8 +111,11 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
 <main>
   <div id="mapwrap">
     <canvas id="map"></canvas>
-    <div id="maphint">휠: 확대 · 끌기: 이동 · 클릭: 개체 선택 · 두 번 클릭: 전체 보기</div>
+    <div id="maphint">휠·Q/E: 확대 · 끌기·WASD: 이동 · 클릭: 개체 선택 · F: 따라가기 · 0: 전체 보기</div>
     <div id="fps">– fps</div>
+    <div id="mini" title="미니맵: 클릭하면 그곳으로 이동"></div>
+    <div id="timeline"><span id="tl-label">되감기</span><div id="tl-track"></div></div>
+    <div id="tip"></div>
   </div>
   <aside>
     <div class="tiles">
@@ -121,7 +139,7 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
     <h2>새로 반복되는 행동 <span class="small" id="b-count"></span></h2>
     <div class="small">같은 효과 순서가 서로 다른 개체 2 이상, 창 3개 이상에서 나타난 것(원본 §58 A1.4). 최근 확정 순.</div>
     <ul class="behav" id="behav"></ul>
-    <h2>선택한 개체</h2>
+    <h2>선택한 개체 <button id="follow" title="F">따라가기</button></h2>
     <div id="agent" class="empty">지도에서 개체를 클릭하세요.</div>
   </aside>
 </main>
@@ -337,7 +355,8 @@ precision highp float;
 in vec2 v_p;
 uniform sampler2D u_albedo, u_weights, u_detail, u_field, u_parc, u_sig, u_noise, u_agents;
 uniform vec2 u_world;
-uniform float u_time, u_light, u_ppt, u_showSig, u_bakeR, u_flat, u_agentDots;
+uniform float u_time, u_light, u_ppt, u_showSig, u_bakeR, u_flat, u_agentDots, u_mini;
+uniform vec4 u_rect;
 out vec4 o;
 float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
 void main() {
@@ -439,6 +458,14 @@ void main() {
       col = mix(col, ac * 0.4, smoothstep(0.55 + aa, 0.55 - aa, r));
       col = mix(col, ac, smoothstep(0.42 + aa, 0.42 - aa, r));
     }
+  }
+  if (u_mini > 0.5) {
+    // minimap: outline of the main view
+    float lw = 1.6 / u_ppt;
+    vec2 lo = u_rect.xy, hi = u_rect.zw;
+    bool inside = all(greaterThanEqual(p, lo - lw)) && all(lessThanEqual(p, hi + lw));
+    float edge = min(min(abs(p.x - lo.x), abs(p.x - hi.x)), min(abs(p.y - lo.y), abs(p.y - hi.y)));
+    if (inside && edge < lw) col = vec3(1.0);
   }
   o = vec4(col, 1.0);
 }`;
@@ -844,6 +871,7 @@ function drawFrame(now) {
     view.scale = ns;
     if (Math.abs(ns / zoomTo.scale - 1) < 0.002) zoomTo = null;
   }
+  moveCamera(now, r);
   if (bake.pending) bakeStrip(Math.ceil(bake.h / bake.strips));
   gl.viewport(0, 0, cw, ch);
   const bg = dark() ? [0.05, 0.05, 0.05] : [0.976, 0.976, 0.969];
@@ -862,6 +890,7 @@ function drawFrame(now) {
   dotsOn = dots;
   if (dots && agentTexStale) setAgentTexture();
   gl.uniform1f(u.u_agentDots, dots && !DEBUG.includes("noagents") ? 1 : 0);
+  gl.uniform1f(u.u_mini, 0);
   const units = [[u.u_albedo, bake.front.albedo], [u.u_weights, bake.front.weights], [u.u_detail, detailTex], [u.u_field, fieldTex],
     [u.u_parc, parcelTex], [u.u_sig, sigTex], [u.u_noise, noiseTex], [u.u_agents, agentTex]];
   units.forEach(([loc, tx], i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tx); gl.uniform1i(loc, i); });
@@ -880,13 +909,132 @@ function drawFrame(now) {
     gl.uniform1f(progA.u.u_maxPoint, maxPoint);
     gl.bindVertexArray(agentVao); gl.drawArrays(gl.POINTS, 0, n);
   }
+  drawMinimap(cw, ch, dpr, r, light, t);
   gl.bindVertexArray(null);
+}
+// --- minimap: the terrain pass again, fitted into a corner viewport, with the main view outlined
+const MINI = 168, MINI_PAD = 12;
+let miniAgentsAt = 0;
+function miniGeom(dpr) {
+  const size = Math.round(MINI * dpr), k = size / Math.max(W, H);
+  return { size, k, ox: (size - W * k) / 2, oy: (size - H * k) / 2 };
+}
+function drawMinimap(cw, ch, dpr, r, light, t) {
+  if (r.width < 520) return;
+  const g = miniGeom(dpr), x = cw - Math.round((MINI + MINI_PAD) * dpr), y = Math.round(MINI_PAD * dpr);
+  gl.enable(gl.SCISSOR_TEST); gl.scissor(x, y, g.size, g.size);
+  gl.clearColor(0.08, 0.09, 0.12, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.viewport(x, y, g.size, g.size);
+  gl.useProgram(progT.p);
+  const u = progT.u;
+  gl.uniform3f(u.u_view, g.k, g.ox, g.oy); gl.uniform2f(u.u_vp, g.size, g.size);
+  gl.uniform1f(u.u_ppt, g.k); gl.uniform1f(u.u_agentDots, 1); gl.uniform1f(u.u_mini, 1); gl.uniform1f(u.u_showSig, 0);
+  const s = view.scale;
+  gl.uniform4f(u.u_rect, -view.ox / s, -view.oy / s, (r.width - view.ox) / s, (r.height - view.oy) / s);
+  // zoomed in, the agent texture is only kept for the minimap: refresh it at most once a second
+  if (agentTexStale && performance.now() - miniAgentsAt > 1000) { miniAgentsAt = performance.now(); const was = dotsOn; dotsOn = true; setAgentTexture(); dotsOn = was; }
+  gl.disable(gl.BLEND);
+  gl.bindVertexArray(quadVao); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  gl.disable(gl.SCISSOR_TEST);
+  gl.viewport(0, 0, cw, ch);
+}
+$("mini").addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  const b = $("mini").getBoundingClientRect(), g = miniGeom(1);
+  const wx = (e.clientX - b.left - g.ox) / g.k, wy = (e.clientY - b.top - g.oy) / g.k;
+  const r = map.getBoundingClientRect();
+  follow = false; $("follow").classList.remove("on"); zoomTo = null;
+  view.ox = r.width / 2 - wx * view.scale; view.oy = r.height / 2 - wy * view.scale;
+});
+
+// --- camera: keys held (WASD pan, Q/E zoom) and following the selected agent
+const keys = new Set();
+let follow = false, lastCam = 0;
+function moveCamera(now, r) {
+  const dt = Math.min(0.05, (now - (lastCam || now)) / 1000);
+  lastCam = now;
+  const pan = 700 * dt;
+  if (keys.has("KeyA")) view.ox += pan;
+  if (keys.has("KeyD")) view.ox -= pan;
+  if (keys.has("KeyW")) view.oy += pan;
+  if (keys.has("KeyS")) view.oy -= pan;
+  const z = keys.has("KeyE") ? Math.exp(2.2 * dt) : keys.has("KeyQ") ? Math.exp(-2.2 * dt) : 1;
+  if (z !== 1) {
+    const ns = Math.min(96, Math.max(0.2, view.scale * z)), cx = r.width / 2, cy = r.height / 2;
+    view.ox = cx - (cx - view.ox) * (ns / view.scale); view.oy = cy - (cy - view.oy) * (ns / view.scale); view.scale = ns;
+  }
+  if (follow && selected && snap.cur) {
+    const i = snap.cur.uid.indexOf(selected);
+    if (i < 0) { follow = false; $("follow").classList.remove("on"); return; }
+    const tx = r.width / 2 - (snap.cur.ix[i] + 0.5) * view.scale, ty = r.height / 2 - (snap.cur.iy[i] + 0.5) * view.scale;
+    const k = 1 - Math.exp(-dt * 6);
+    view.ox += (tx - view.ox) * k; view.oy += (ty - view.oy) * k;
+  }
+}
+function toggleFollow() {
+  if (!selected) return;
+  follow = !follow;
+  $("follow").classList.toggle("on", follow);
+  if (follow && view.scale < 12) zoomTo = { scale: 18, mx: map.getBoundingClientRect().width / 2, my: map.getBoundingClientRect().height / 2, t: performance.now() };
+}
+$("follow").onclick = toggleFollow;
+
+// --- hover: the agent under the pointer
+let hoverAt = null, hoverShown = 0;
+map.addEventListener("pointerleave", () => { hoverAt = null; $("tip").style.display = "none"; });
+map.addEventListener("pointermove", (e) => {
+  if (drag) { $("tip").style.display = "none"; return; }
+  const r = map.getBoundingClientRect();
+  hoverAt = { x: e.clientX - r.left, y: e.clientY - r.top };
+  const now = performance.now();
+  if (now - hoverShown < 60 || !snap.cur || !state) return;
+  hoverShown = now;
+  const wx = (hoverAt.x - view.ox) / view.scale, wy = (hoverAt.y - view.oy) / view.scale;
+  const c = snap.cur, a = state.agents;
+  let best = -1, bd = Math.max(0.6, 7 / view.scale) ** 2;
+  for (let i = 0; i < c.uid.length; i++) {
+    const d2 = (c.ix[i] + 0.5 - wx) ** 2 + (c.iy[i] + 0.5 - wy) ** 2;
+    if (d2 < bd) { bd = d2; best = i; }
+  }
+  const tip = $("tip");
+  if (best < 0 || !a || a.uid[best] !== c.uid[best]) { tip.style.display = "none"; return; }
+  const EMBS = ["", " · 배아 기록 중", " · 배아 변이 중", " · 배아 오류", " · 배아 준비됨"];
+  tip.innerHTML = `<span class="sw" style="background:${hexColor(c.c[best])}"></span>#${c.uid[best]} · ${a.g[best]}세대 · 에너지 ${(a.e[best] * 2).toLocaleString()}${EMBS[a.emb[best]] || ""}`;
+  tip.style.display = "block";
+  tip.style.left = Math.min(r.width - tip.offsetWidth - 8, hoverAt.x + 14) + "px";
+  tip.style.top = Math.max(8, hoverAt.y - 30) + "px";
+});
+
+// --- timeline: saved days to rewind to
+async function loadTimeline() {
+  let tl;
+  try { tl = await getJSON("/api/timeline"); } catch { return; }
+  if (!tl.ticks || !state) return;
+  const end = Math.max(state.tick, tl.ticks[tl.ticks.length - 1] || 1), start = tl.ticks[0] || 0;
+  const span = Math.max(1, end - start);
+  const track = $("tl-track"); track.innerHTML = "";
+  for (const t of tl.ticks) {
+    const b = document.createElement("button");
+    b.style.left = (100 * (t - start) / span) + "%";
+    b.title = `${(t / 4096).toFixed(1)}일째로 되감기 (그 뒤 저장점은 지워지고, 같은 규칙으로 다시 진행돼요)`;
+    b.onclick = async () => {
+      const res = await getJSON("/api/rewind?tick=" + t);
+      if (res.error) { alert("되감기 실패: " + res.error); return; }
+      snap.cur = null; snap.tick = -1; lastHistTick = -1;
+      await poll(); await slowPoll(); loadTimeline();
+    };
+    track.appendChild(b);
+  }
+  const now = document.createElement("div"); now.id = "tl-now"; now.style.left = (100 * (state.tick - start) / span) + "%";
+  track.appendChild(now);
+  $("tl-label").textContent = `되감기 · 저장점 ${tl.ticks.length}개 · ${tl.mb} MB`;
 }
 const dark = () => document.documentElement.dataset.theme === "dark"
   || (document.documentElement.dataset.theme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
 
 let drag = null;
 map.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy, moved: false }; zoomTo = null; map.setPointerCapture(e.pointerId); });
+map.addEventListener("pointermove", (e) => { if (drag && drag.moved && follow) { follow = false; $("follow").classList.remove("on"); } });
 map.addEventListener("pointermove", (e) => {
   if (!drag) return;
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
@@ -1058,10 +1206,15 @@ $("theme").onclick = () => {
   applyTheme(theme);
 };
 window.addEventListener("keydown", (e) => {
-  if (e.target.tagName === "INPUT") return;
+  if (e.target.tagName === "INPUT" || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.code === "Space") { e.preventDefault(); $("play").click(); }
   if (e.code === "ArrowRight") $("step").click();
+  if (["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE"].includes(e.code)) { keys.add(e.code); zoomTo = null; if (follow && e.code !== "KeyQ" && e.code !== "KeyE") { follow = false; $("follow").classList.remove("on"); } }
+  if (e.code === "KeyF") toggleFollow();
+  if (e.code === "Digit0" || e.code === "Home") view.fitted = false;
 });
+window.addEventListener("keyup", (e) => keys.delete(e.code));
+window.addEventListener("blur", () => keys.clear());
 
 // ---------------- polling
 // u32 n; u32 uid[n]; u32 colour[n]; u16 x, y, energy/2, generation [n]; u8 orientation, embryo [n]
@@ -1109,6 +1262,7 @@ async function slowPoll() {
     if (t !== lastHistTick) { lastHistTick = t; hist = h; later(drawCharts, 0); later(loadBehaviors, 400); }
     const field = await getBin("/api/water");
     later(() => setField(field), 800);
+    later(loadTimeline, 1200);
   } catch {}
 }
 async function start() {

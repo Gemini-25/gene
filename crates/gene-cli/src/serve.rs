@@ -32,9 +32,11 @@ struct Shared {
     agents: Arc<Vec<u8>>,
     history: Arc<String>,
     behaviors: Arc<String>,
+    timeline: Arc<String>,
 }
 
 enum Req {
+    Rewind(u64, mpsc::Sender<String>),
     Agent(u64, mpsc::Sender<String>),
     Genomes(mpsc::Sender<String>),
     Water(mpsc::Sender<Vec<u8>>),
@@ -55,6 +57,7 @@ pub fn serve(sim: Sim, o: ServeOpts) {
         agents: Arc::new(vec![0; 4]),
         history: Arc::new(String::from("{}")),
         behaviors: Arc::new(String::from("{}")),
+        timeline: Arc::new(String::from("{}")),
     }));
     let (tx, rx) = mpsc::channel::<Req>();
     let listener = TcpListener::bind(("127.0.0.1", o.port)).unwrap_or_else(|e| die(format!("port {}: {e}", o.port)));
@@ -120,6 +123,19 @@ impl Hist {
         }
     }
 
+    /// Forget the points after tick t (after a rewind).
+    fn truncate(&mut self, t: u64) {
+        let k = self.tick.partition_point(|x| *x <= t);
+        self.tick.truncate(k);
+        self.pop.truncate(k);
+        self.births.truncate(k);
+        self.deaths.truncate(k);
+        self.genomes.truncate(k);
+        self.energy.truncate(k);
+        self.air_c.truncate(k);
+        self.dead_g.truncate(k);
+    }
+
     fn json(&self) -> String {
         fn arr<T: ToString>(v: &[T]) -> String {
             v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
@@ -155,6 +171,39 @@ impl HashCache {
     }
 }
 
+/// Saved states for rewinding (original §40): one per simulated day, within a memory budget.
+/// When over budget every other older point is dropped, so the timeline still spans the run.
+/// The simulation is deterministic, so running on from a rewound point repeats the same history.
+struct Timeline {
+    every: u64,
+    budget: usize,
+    points: Vec<(u64, Vec<u8>)>,
+}
+
+impl Timeline {
+    fn record(&mut self, sim: &Sim) {
+        if self.points.last().is_some_and(|p| p.0 >= sim.st.tick) {
+            return;
+        }
+        self.points.push((sim.st.tick, sim.save()));
+        while self.points.iter().map(|p| p.1.len()).sum::<usize>() > self.budget && self.points.len() > 2 {
+            let n = self.points.len();
+            let mut k = 0;
+            self.points.retain(|_| {
+                let keep = k == 0 || k == n - 1 || k % 2 == 0;
+                k += 1;
+                keep
+            });
+        }
+    }
+
+    fn json(&self) -> String {
+        let ticks: Vec<String> = self.points.iter().map(|p| p.0.to_string()).collect();
+        let mb = self.points.iter().map(|p| p.1.len()).sum::<usize>() as f64 / 1e6;
+        format!("{{\"ticks\":[{}],\"mb\":{:.0}}}", ticks.join(","), mb)
+    }
+}
+
 fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>, save_dir: PathBuf, founder: String) {
     let founder_prog = isa::assemble(&founder_source(&founder)).ok();
     let mut hist = Hist {
@@ -172,6 +221,8 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
     hist.push(&sim, cache.distinct());
     let mut behavior = gene_core::behavior::Analyzer::default();
     sim.obs.facts = Some(Vec::new());
+    let mut timeline = Timeline { every: 4096, budget: 400_000_000, points: Vec::new() };
+    timeline.record(&sim);
     let mut epoch = Instant::now();
     let mut epoch_ticks = 0u64;
     let mut last_ctl = (true, 10u32);
@@ -179,7 +230,30 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
     let mut dirty = true;
     loop {
         while let Ok(req) = rx.try_recv() {
-            answer(req, &sim, &cache, founder_prog.as_ref(), &save_dir);
+            match req {
+                Req::Rewind(t, tx) => {
+                    let msg = match timeline.points.iter().position(|p| p.0 == t) {
+                        None => "{\"error\":\"no saved state at that tick\"}".to_string(),
+                        Some(k) => match Sim::load(&timeline.points[k].1) {
+                            Err(e) => format!("{{\"error\":{}}}", json_str(&format!("{e:?}"))),
+                            Ok(mut s) => {
+                                s.threads = sim.threads;
+                                sim = s;
+                                sim.obs.facts = Some(Vec::new());
+                                timeline.points.truncate(k + 1);
+                                hist.truncate(t);
+                                behavior = gene_core::behavior::Analyzer::default();
+                                cache.refresh(&sim);
+                                shared.lock().unwrap().control.paused = true;
+                                dirty = true;
+                                format!("{{\"tick\":{t}}}")
+                            }
+                        },
+                    };
+                    let _ = tx.send(msg);
+                }
+                other => answer(other, &sim, &cache, founder_prog.as_ref(), &save_dir),
+            }
         }
         let ctl = shared.lock().unwrap().control;
         if (ctl.paused, ctl.tps) != last_ctl {
@@ -216,6 +290,9 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                 hist.push(&sim, cache.distinct());
                 behavior.flush(sim.st.tick);
             }
+            if sim.st.tick % timeline.every == 0 {
+                timeline.record(&sim);
+            }
             if slice.elapsed() > Duration::from_millis(40) {
                 break;
             }
@@ -241,6 +318,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
             sh.agents = Arc::new(agents_bin(&sim, &cache));
             sh.history = Arc::new(hist.json());
             sh.behaviors = Arc::new(behaviors_json(&behavior));
+            sh.timeline = Arc::new(timeline.json());
             dirty = ran > 0;
         }
         if ran == 0 {
@@ -495,6 +573,9 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::ge
             }
             let _ = tx.send(out);
         }
+        Req::Rewind(_, tx) => {
+            let _ = tx.send("{\"error\":\"handled by the simulation loop\"}".into());
+        }
         Req::Save(tx) => {
             let _ = std::fs::create_dir_all(save_dir);
             let path = save_dir.join(format!("serve_seed{}_t{:07}.bin", sim.st.config.seed, sim.st.tick));
@@ -558,6 +639,15 @@ fn handle(mut stream: TcpStream, shared: &Arc<Mutex<Shared>>, tx: &mpsc::Sender<
         "/" | "/index.html" => respond(&mut stream, "200 OK", "text/html; charset=utf-8", PAGE.as_bytes()),
         "/api/state" => {
             let s = shared.lock().unwrap().snapshot.clone();
+            respond(&mut stream, "200 OK", json, s.as_bytes())
+        }
+        "/api/timeline" => {
+            let s = shared.lock().unwrap().timeline.clone();
+            respond(&mut stream, "200 OK", json, s.as_bytes())
+        }
+        "/api/rewind" => {
+            let t = query(q, "tick").and_then(|v| v.parse().ok()).unwrap_or(u64::MAX);
+            let s = ask(tx, |r| Req::Rewind(t, r)).unwrap_or_else(|| "{\"error\":\"timeout\"}".into());
             respond(&mut stream, "200 OK", json, s.as_bytes())
         }
         "/api/agents" => {
