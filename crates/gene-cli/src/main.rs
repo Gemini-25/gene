@@ -18,7 +18,7 @@ const USAGE: &str = "gene — Gene M0 headless runner
 USAGE:
   gene run    [--seed N] [--size S] [--agents A] [--ticks T] [--founder NAME|FILE]
               [--out DIR] [--stats-every K] [--map-every M] [--checkpoint-every C]
-              [--audit-every K] [--keep-going] [--save-final] [--quiet]
+              [--audit-every K] [--keep-going] [--save-final] [--quiet] [--ruleset m0|m1]
   gene batch  --seeds A-B [--threads N] [same options as run]  (one directory per seed)
   gene resume --from CHECKPOINT [--ticks T] [--out DIR] [...]
   gene serve  [--port 8080] [--load SAVE.bin] [same world options as run]
@@ -45,6 +45,7 @@ struct Opts {
     keep_going: bool,
     quiet: bool,
     save_final: bool,
+    ruleset: String,
 }
 
 impl Default for Opts {
@@ -63,6 +64,7 @@ impl Default for Opts {
             keep_going: false,
             quiet: false,
             save_final: false,
+            ruleset: gene_core::sim::RULESET.into(),
         }
     }
 }
@@ -96,6 +98,13 @@ fn parse_opts(args: &[String], o: &mut Opts) -> BTreeMap<String, String> {
             "--keep-going" => o.keep_going = true,
             "--quiet" => o.quiet = true,
             "--save-final" => o.save_final = true,
+            "--ruleset" => {
+                o.ruleset = match val().as_str() {
+                    "m0" | "gene-m0-1" => gene_core::sim::RULESET.into(),
+                    "m1" | "gene-m1-1" => gene_core::sim::RULESET_M1.into(),
+                    other => die(format!("unknown ruleset {other} (m0, m1)")),
+                }
+            }
             "--seeds" | "--threads" | "--from" | "--port" | "--load" => {
                 let v = val();
                 extra.insert(k.to_string(), v);
@@ -191,7 +200,7 @@ fn main() {
 fn new_sim(o: &Opts) -> Sim {
     let prog = isa::assemble(&founder_source(&o.founder)).unwrap_or_else(|e| die(e.to_string()));
     let cfg = Config { seed: o.seed, width: o.size, height: o.size, agents: o.agents };
-    Sim::with_program(cfg, &prog).unwrap_or_else(|e| die(format!("{e:?}")))
+    Sim::with_program_ruleset(cfg, &prog, &o.ruleset).unwrap_or_else(|e| die(format!("{e:?}")))
 }
 
 fn hex(b: &[u8]) -> String {
@@ -218,7 +227,7 @@ struct Summary {
 fn summary_json(s: &Summary, o: &Opts) -> String {
     format!(
         "{{\n  \"ruleset\": \"{}\",\n  \"founder\": \"{}\",\n  \"seed\": {},\n  \"size\": {},\n  \"agents\": {},\n  \"ticks_requested\": {},\n  \"ticks_run\": {},\n  \"extinct_at\": {},\n  \"final_pop\": {},\n  \"peak_pop\": {},\n  \"births\": {},\n  \"deaths_energy\": {},\n  \"deaths_body\": {},\n  \"max_generation\": {},\n  \"distinct_genomes\": {},\n  \"tps\": {:.1},\n  \"audit_ok\": {},\n  \"core_hash\": \"{}\"\n}}\n",
-        gene_core::sim::RULESET,
+        o.ruleset,
         o.founder,
         s.seed,
         o.size,
@@ -248,10 +257,11 @@ fn run(mut sim: Sim, o: &Opts) -> Summary {
     writeln!(
         stats,
         "tick,pop,births,deaths_energy,deaths_body,mean_energy,mean_inv_g,embryos,max_gen,mean_gen,distinct_genomes,mean_genome_len,\
-upkeep_q,vm_q,attempt_q,effect_q,photosynthesis,respiration,moves,inert,loose_G,loose_C,loose_O,loose_W,dropped_pages,mean_theta,ledger_residual"
+upkeep_q,vm_q,attempt_q,effect_q,photosynthesis,respiration,moves,inert,loose_G,loose_C,loose_O,loose_W,dropped_pages,mean_theta,ledger_residual,\
+emits,signal_reads,public_reads,copies_from_public,copies_to_public,draft_to_embryo,public_writes,drafts_created,bit_flips,foreign_births"
     )
     .unwrap();
-    writeln!(births, "tick,uid,parent,root,generation,genome,len,structural_op,structural_applied,point_flips,x,y").unwrap();
+    writeln!(births, "tick,uid,parent,root,generation,genome,len,structural_op,structural_applied,point_flips,foreign,x,y").unwrap();
     writeln!(deaths, "tick,uid,cause,age,children,generation,inv_g,embryo_state").unwrap();
     let start = Instant::now();
     let mut s = Summary { seed: sim.st.config.seed, audit_ok: true, ..Default::default() };
@@ -267,7 +277,7 @@ upkeep_q,vm_q,attempt_q,effect_q,photosynthesis,respiration,moves,inert,loose_G,
         for b in sim.obs.births.drain(..) {
             writeln!(
                 births,
-                "{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 b.tick,
                 b.uid,
                 b.parent,
@@ -278,6 +288,7 @@ upkeep_q,vm_q,attempt_q,effect_q,photosynthesis,respiration,moves,inert,loose_G,
                 b.mutation.structural_op.map_or("".into(), |x| gene_core::mutation::OP_NAMES[x as usize].to_string()),
                 b.mutation.structural_applied as u8,
                 b.mutation.point_flips,
+                b.foreign as u8,
                 b.x,
                 b.y
             )
@@ -380,7 +391,7 @@ fn write_stats(out: &mut impl Write, sim: &mut Sim) {
     let a = sim.audit();
     writeln!(
         out,
-        "{},{},{},{},{},{:.0},{:.2},{},{},{:.2},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{}",
+        "{},{},{},{},{},{:.0},{:.2},{},{},{:.2},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{},{},{},{},{},{},{},{},{},{},{}",
         sim.st.tick,
         ag.len(),
         sim.obs.total_births,
@@ -407,7 +418,17 @@ fn write_stats(out: &mut impl Write, sim: &mut Sim) {
         loose[W],
         dropped,
         theta,
-        a.energy - a.expected
+        a.energy - a.expected,
+        sim.obs.m1.emits,
+        sim.obs.m1.signal_reads,
+        sim.obs.m1.public_reads,
+        sim.obs.m1.copies_from_public,
+        sim.obs.m1.copies_to_public,
+        sim.obs.m1.draft_to_embryo,
+        sim.obs.m1.public_writes,
+        sim.obs.m1.drafts_created,
+        sim.obs.m1.bit_flips,
+        sim.obs.m1.foreign_births
     )
     .unwrap();
 }

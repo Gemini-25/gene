@@ -186,6 +186,9 @@ impl Sim {
         self.loose_chemistry(t, x, tick);
         self.phase_changes(t);
         self.media_chemistry(t, x, tick);
+        if self.caps.m1 {
+            self.media_wear(t, x);
+        }
         // 5. heat damage
         if let Some(i) = occupant {
             if self.st.world.theta(t) > 340 && self.st.agents[i].body_g > 0 {
@@ -284,6 +287,37 @@ impl Sim {
             } else {
                 break;
             }
+        }
+    }
+
+    /// Exposure bit wear of records lying on tile t (SPEC §20b).
+    fn media_wear(&mut self, t: u32, x: u64) {
+        let seed = self.st.config.seed;
+        let tick = self.st.tick;
+        let Some(list) = self.st.dropped.get_mut(&t) else { return };
+        for m in list.iter_mut() {
+            let clock = m.exposure_clock as u32 + if x >= 64 { 4 } else { 1 };
+            if clock < 16384 {
+                m.exposure_clock = clock as u16;
+                continue;
+            }
+            m.exposure_clock = (clock - 16384) as u16;
+            let present: Vec<usize> = (0..m.slots()).filter(|p| m.present[*p]).collect();
+            if present.is_empty() {
+                continue;
+            }
+            let key = crate::rng::stream_key(seed, Domain::Environment, m.uid, (2u64 << 56) | m.wear_events);
+            let mut st = Stream::new(key, tick);
+            let page = present[st.below(present.len() as u32) as usize];
+            let cell = st.below(128) as usize;
+            let bit = st.below(16);
+            m.cells[page * 128 + cell] ^= 1 << bit;
+            m.wear_events += 1;
+            m.revision += 1;
+            if m.recycle.is_some_and(|(p, _)| p as usize == page) {
+                m.recycle = Some((page as u16, 0));
+            }
+            self.obs.m1.bit_flips += 1;
         }
     }
 

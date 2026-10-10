@@ -50,6 +50,8 @@ pub struct BirthEvent {
     pub genome_hash: [u8; 32],
     pub len: u32,
     pub mutation: MutationRecord,
+    /// The child's genome holds bytes copied from a public record (non-kin transmission).
+    pub foreign: bool,
     pub x: u16,
     pub y: u16,
 }
@@ -79,8 +81,25 @@ pub struct MutationStats {
     pub finish_invalid: u64,
 }
 
+/// M1a counters (SPEC §20b).
+#[derive(Clone, Debug, Default)]
+pub struct M1Stats {
+    pub emits: u64,
+    pub signal_reads: u64,
+    pub public_reads: u64,
+    pub copies_from_public: u64,
+    pub copies_to_public: u64,
+    pub draft_to_embryo: u64,
+    pub public_writes: u64,
+    pub public_resizes: u64,
+    pub drafts_created: u64,
+    pub bit_flips: u64,
+    pub foreign_births: u64,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Observer {
+    pub m1: M1Stats,
     pub tick: TickStats,
     pub acc: TickStats,
     pub births: Vec<BirthEvent>,
@@ -108,6 +127,9 @@ impl Observer {
 
     pub fn record_birth(&mut self, child: &Agent, m: &MutationRecord, tick: u64) {
         self.total_births += 1;
+        if child.code.foreign {
+            self.m1.foreign_births += 1;
+        }
         let cells = child.code.prefix(child.used_len).unwrap_or(&[]);
         self.births.push(BirthEvent {
             tick,
@@ -118,6 +140,7 @@ impl Observer {
             genome_hash: crate::genome::hash_cells(cells),
             len: child.used_len,
             mutation: m.clone(),
+            foreign: child.code.foreign,
             x: child.x,
             y: child.y,
         });

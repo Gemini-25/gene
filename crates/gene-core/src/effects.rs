@@ -84,7 +84,8 @@ impl Sim {
                     Some(r) => r,
                     None => continue, // Release reserved; receipt at stage 10
                 },
-                _ => (Outcome::InvalidTarget, 0), // LINK, UNLINK, EMIT: capability off in M0
+                op::EMIT => self.eff_emit(i, &it),
+                _ => (Outcome::InvalidTarget, 0), // LINK, UNLINK: no parcels yet
             };
             self.finish_effect(i, &it, res);
         }
@@ -294,6 +295,14 @@ impl Sim {
 
     fn eff_write(&mut self, i: usize, it: &Intent) -> Res {
         let r = it.r;
+        if self.caps.m1 {
+            if matches!(it.sub, sub::WRITE_CELL | sub::WRITE_RESIZE) && matches!(r[0], dom::OWN_DRAFT | dom::PUBLIC_TAPE) {
+                return self.eff_write_record(i, it);
+            }
+            if it.sub == 3 {
+                return self.cancel_draft(i);
+            }
+        }
         match it.sub {
             sub::WRITE_CELL => {
                 if r[0] != dom::EMBRYO {
@@ -390,57 +399,5 @@ impl Sim {
             }
             _ => (Outcome::InvalidTarget, 0),
         }
-    }
-
-    fn eff_copy(&mut self, i: usize, it: &Intent) -> Res {
-        let r = it.r;
-        let (Some((sd, so)), Some((dd, doff))) = (unpack(r[0]), unpack(r[1])) else {
-            return (Outcome::InvalidTarget, 0);
-        };
-        let src_ok = matches!((sd, so), (dom::OWN_CODE, 0) | (dom::EMBRYO, 0));
-        if !src_ok || (sd == dom::OWN_CODE && r[7] != 0) || (dd, doff) != (dom::EMBRYO, 0) {
-            return (Outcome::InvalidTarget, 0);
-        }
-        let count = r[6] as u32;
-        if !(1..=4).contains(&count) {
-            return (Outcome::InvalidTarget, 0);
-        }
-        let Some(cap) = it.copy.clone() else { return (Outcome::InvalidTarget, 0) };
-        let a = &self.st.agents[i];
-        let Some(e) = a.embryo.as_ref() else { return (Outcome::InvalidTarget, 0) };
-        if e.state != crate::agent::EmbryoState::Writing {
-            return (Outcome::InvalidTarget, 0);
-        }
-        // Source still the same media and revision?
-        let (cur_uid, cur_rev) = if sd == dom::OWN_CODE {
-            (a.code.uid, a.code.revision)
-        } else {
-            (e.raw.uid, e.raw.revision)
-        };
-        if cur_uid != cap.src_uid || cur_rev != cap.src_rev {
-            return (Outcome::Stale, 0);
-        }
-        if cap.bytes.is_empty() {
-            return (Outcome::InvalidTarget, 0);
-        }
-        // Destination prefix within present capacity.
-        let dst_off = r[5] as u32;
-        let mut room = 0u32;
-        while room < cap.bytes.len() as u32 && e.raw.read(dst_off + room).is_some() {
-            room += 1;
-        }
-        let by_energy = a.s.budget / 32;
-        let n = (cap.bytes.len() as u32).min(room).min(by_energy);
-        if n == 0 {
-            return if by_energy == 0 { (Outcome::Energy, 0) } else { (Outcome::Capacity, 0) };
-        }
-        let me = self.tile_of(i);
-        self.pay(i, 32 * n, me);
-        let raw = &mut self.st.agents[i].embryo.as_mut().unwrap().raw;
-        for k in 0..n {
-            raw.write(dst_off + k, cap.bytes[k as usize]);
-        }
-        raw.revision += 1;
-        (if n == count { Outcome::Ok } else { Outcome::Partial }, n)
     }
 }

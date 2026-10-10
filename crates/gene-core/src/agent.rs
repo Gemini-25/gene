@@ -88,6 +88,8 @@ pub struct Scratch {
     pub draws: u64,
     pub child_uid: u64,
     pub birth_tile: Option<u32>,
+    pub signal_reads: u8,
+    pub public_reads: u8,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -117,6 +119,8 @@ pub struct Agent {
     pub embryo: Option<Embryo>,
     pub embryo_ordinal: u64,
     pub children: u32,
+    /// Private draft record (M1a).
+    pub draft: Option<Media>,
     #[serde(skip)]
     pub prog: Option<Arc<Program>>,
     #[serde(skip)]
@@ -155,6 +159,7 @@ impl Agent {
             m[i] = self.inv[i] as u64;
         }
         m[G] += self.body_g as u64 + 1 + self.code.present_pages() as u64;
+        m[G] += self.draft.as_ref().map_or(0, |d| d.present_pages() as u64);
         m[S] += self.shell_s as u64;
         if let Some(e) = &self.embryo {
             let em = e.matter();
@@ -174,7 +179,11 @@ impl Agent {
     }
 
     pub fn upkeep(&self) -> u32 {
-        BASE_UPKEEP + 1 + self.code.present_pages() + self.embryo.as_ref().map_or(0, |e| e.pages())
+        BASE_UPKEEP
+            + 1
+            + self.code.present_pages()
+            + self.draft.as_ref().map_or(0, |d| d.present_pages())
+            + self.embryo.as_ref().map_or(0, |e| e.pages())
     }
 
     pub fn inv_volume(&self) -> u32 {

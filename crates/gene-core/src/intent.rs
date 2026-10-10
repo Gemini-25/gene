@@ -37,6 +37,8 @@ pub enum Fault {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CopyCapture {
+    /// Tile of an external (public) source record.
+    pub src_tile: Option<u32>,
     pub src_uid: u64,
     pub src_rev: u64,
     /// Bytes readable at Think time (prefix up to the first hole / logical end).

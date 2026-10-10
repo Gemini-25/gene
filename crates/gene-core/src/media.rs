@@ -15,6 +15,11 @@ pub struct Media {
     pub credit: u16,
     /// Paid shrink cursor: (page index, next cell).
     pub recycle: Option<(u16, u16)>,
+    /// Observer provenance: holds bytes copied from a public record (never sensed by agents).
+    pub foreign: bool,
+    /// Exposure clock and bit-wear event counter for exposed records (M1a).
+    pub exposure_clock: u16,
+    pub wear_events: u64,
 }
 
 impl Media {
@@ -27,6 +32,9 @@ impl Media {
             revision: 0,
             credit: 0,
             recycle: None,
+            foreign: false,
+            exposure_clock: 0,
+            wear_events: 0,
         }
     }
 
@@ -42,6 +50,9 @@ impl Media {
             revision: 0,
             credit: 0,
             recycle: None,
+            foreign: false,
+            exposure_clock: 0,
+            wear_events: 0,
         }
     }
 

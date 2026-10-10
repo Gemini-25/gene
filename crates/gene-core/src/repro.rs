@@ -2,7 +2,7 @@
 
 use crate::agent::{Embryo, EmbryoState, MutationRecord, BODY_G, BODY_S, INV_VOLUME, MIN_CHILD_ENERGY};
 use crate::effects::Res;
-use crate::genome::{self, pages_for, MAX_PAGES, PAGE_CELLS};
+use crate::genome::{self, pages_for};
 use crate::intent::{sub, Intent, Outcome};
 use crate::media::Media;
 use crate::rng::{stream_key, Domain, Stream};
@@ -81,66 +81,7 @@ impl Sim {
         if self.embryo_state(i) != Some(EmbryoState::Writing) {
             return (Outcome::InvalidTarget, 0);
         }
-        if target as usize > MAX_PAGES {
-            return (Outcome::Limits, 0);
-        }
-        let me = self.tile_of(i);
-        let (n, has_hole, last_present, recycle) = {
-            let raw = &self.st.agents[i].embryo.as_ref().unwrap().raw;
-            (raw.slots() as u32, raw.has_hole(), raw.present.last().copied(), raw.recycle)
-        };
-        if target > n || (target == n && has_hole) {
-            if self.st.agents[i].s.budget < 128 {
-                return (Outcome::Energy, 0);
-            }
-            if self.st.agents[i].inv[G] < 1 {
-                return (Outcome::Matter, 0);
-            }
-            self.pay(i, 128, me);
-            let a = &mut self.st.agents[i];
-            a.inv[G] -= 1;
-            let raw = &mut a.embryo.as_mut().unwrap().raw;
-            if target > n {
-                raw.push_page();
-            } else {
-                raw.restore_hole();
-            }
-            return (Outcome::Ok, 1);
-        }
-        if target == n {
-            if recycle.is_some() {
-                self.st.agents[i].embryo.as_mut().unwrap().raw.recycle = None;
-                return (Outcome::Ok, 0);
-            }
-            return (Outcome::Noop, 0);
-        }
-        // target < n
-        let last = n - 1;
-        if last_present == Some(false) {
-            self.st.agents[i].embryo.as_mut().unwrap().raw.pop_slot();
-            return (Outcome::Ok, 1);
-        }
-        let next = match recycle {
-            Some((page, next)) if page as u32 == last => next as u32,
-            _ => 0,
-        };
-        let k = (4u32).min(PAGE_CELLS as u32 - next).min(self.st.agents[i].s.budget / 32);
-        if k == 0 {
-            return (Outcome::Energy, 0);
-        }
-        self.pay(i, 32 * k, me);
-        let raw = &mut self.st.agents[i].embryo.as_mut().unwrap().raw;
-        let base = last as usize * PAGE_CELLS + next as usize;
-        raw.cells[base..base + k as usize].fill(0);
-        raw.revision += 1;
-        let next = next + k;
-        if next as usize == PAGE_CELLS {
-            raw.pop_slot();
-            self.st.world.force_loose(me, G, 1);
-            return (Outcome::Ok, 1);
-        }
-        raw.recycle = Some((last as u16, next as u16));
-        (Outcome::Partial, 0)
+        self.media_resize(i, crate::records::MediaRef::Embryo, target)
     }
 
     fn repro_finish(&mut self, i: usize, len: u32) -> Res {
@@ -263,7 +204,8 @@ impl Sim {
         self.pay(i, 2 * len, me);
         let e = self.st.agents[i].embryo.as_mut().unwrap();
         let plan = e.plan.take().unwrap();
-        let result = e.result.take().unwrap();
+        let mut result = e.result.take().unwrap();
+        result.foreign = e.raw.foreign;
         let old = std::mem::replace(&mut e.raw, result);
         e.used_len = len;
         e.mutation_applied = true;

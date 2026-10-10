@@ -4,7 +4,9 @@ use crate::agent::Agent;
 use crate::intent::{attempt_cost, dom, rotate, unpack, CopyCapture, Fault, Intent, Outcome, OFFSETS};
 use crate::isa::{decode, op};
 use crate::rng::Stream;
+use crate::media::Media;
 use crate::world::World;
+use std::collections::BTreeMap;
 
 pub const FUEL: u32 = 32;
 pub const INSTR_COST: u32 = 4;
@@ -26,9 +28,21 @@ pub struct Sense<'a> {
     pub world: &'a World,
     pub faces: &'a [ActorFace],
     pub tick: u64,
+    /// M1a capabilities (signals, public tape, drafts).
+    pub m1: bool,
+    pub signal: &'a BTreeMap<u64, i16>,
+    pub dropped: &'a BTreeMap<u32, Vec<Media>>,
 }
 
 impl Sense<'_> {
+    /// Public record on tile t by selector (1-based, UID order). Selector 0 (parcel media) is absent in M1a.
+    pub fn public(&self, t: u32, selector: u16) -> Option<&Media> {
+        if selector == 0 {
+            return None;
+        }
+        self.dropped.get(&t)?.get(selector as usize - 1)
+    }
+
     fn face_at(&self, t: u32) -> Option<&ActorFace> {
         match self.world.occ[t as usize] {
             0 => None,
@@ -115,10 +129,34 @@ fn read(a: &mut Agent, s: &Sense) -> Result<u16, Fault> {
                 _ => bad,
             }
         }
-        dom::OWN_DRAFT => match field {
-            1..=3 => Ok(0),
+        dom::OWN_DRAFT => match (field, a.draft.as_ref()) {
+            (0, Some(d)) => d.read(index as u32).ok_or(Fault::BadAddress),
+            (1, d) => Ok(d.map_or(0, |d| d.logical_len.min(65535) as u16)),
+            (2, d) => Ok(d.map_or(0, |d| d.capacity().min(65535) as u16)),
+            (3, d) => Ok(d.and_then(|d| d.recycle).map_or(0, |(_, n)| 128 - n)),
             _ => bad,
         },
+        dom::SIGNAL if s.m1 => {
+            let t = sense_tile(a, w, r[1] as i16, r[2] as i16, SENSE_RADIUS)?;
+            if field != 0 || index >= 4 {
+                return bad;
+            }
+            a.s.signal_reads = a.s.signal_reads.saturating_add(1);
+            Ok(s.signal.get(&crate::sim::signal_key(t, index)).copied().unwrap_or(0) as u16)
+        }
+        dom::PUBLIC_TAPE if s.m1 => {
+            let t = sense_tile(a, w, r[1] as i16, r[2] as i16, SENSE_RADIUS)?;
+            let m = s.public(t, r[6]).ok_or(Fault::BadAddress)?;
+            a.s.public_reads = a.s.public_reads.saturating_add(1);
+            match field {
+                0 => m.read(index as u32).ok_or(Fault::BadAddress),
+                1 => Ok(m.logical_len.min(65535) as u16),
+                2 => Ok(m.capacity().min(65535) as u16),
+                3 => m.present.get(index as usize).map(|p| *p as u16).ok_or(Fault::BadAddress),
+                4 => Ok(m.recycle.map_or(0, |(_, n)| 128 - n)),
+                _ => bad,
+            }
+        }
         dom::EMBRYO => {
             let e = a.embryo.as_ref();
             match field {
@@ -152,15 +190,21 @@ fn read(a: &mut Agent, s: &Sense) -> Result<u16, Fault> {
     }
 }
 
-fn capture_copy(a: &Agent) -> Option<CopyCapture> {
+fn capture_copy(a: &Agent, s: &Sense) -> Option<CopyCapture> {
     let r = a.vm.regs;
     let (sd, so) = unpack(r[0])?;
-    if so != 0 {
-        return None;
-    }
-    let media = match sd {
-        dom::OWN_CODE if r[7] == 0 => &a.code,
-        dom::EMBRYO => &a.embryo.as_ref()?.raw,
+    let mut src_tile = None;
+    let media = match (sd, so) {
+        (dom::OWN_CODE, 0) if r[7] == 0 => &a.code,
+        (dom::EMBRYO, 0) => &a.embryo.as_ref()?.raw,
+        (dom::OWN_DRAFT, 0) if s.m1 => a.draft.as_ref()?,
+        (dom::PUBLIC_TAPE, off) if s.m1 => {
+            let (dx, dy) = OFFSETS[off as usize];
+            let (ax, ay) = rotate(a.orient, dx, dy);
+            let t = s.world.offset(s.world.idx(a.x as u32, a.y as u32), ax, ay)?;
+            src_tile = Some(t);
+            s.public(t, r[7])?
+        }
         _ => return None,
     };
     let count = r[6] as u32;
@@ -175,7 +219,7 @@ fn capture_copy(a: &Agent) -> Option<CopyCapture> {
             None => break,
         }
     }
-    Some(CopyCapture { src_uid: media.uid, src_rev: media.revision, bytes })
+    Some(CopyCapture { src_tile, src_uid: media.uid, src_rev: media.revision, bytes })
 }
 
 fn capture_target(a: &Agent, s: &Sense) -> Option<u64> {
@@ -337,6 +381,20 @@ pub fn think(a: &mut Agent, s: &Sense, ctrl_key: [u32; 2]) {
             }
             op::WRITE | op::DRIVE | op::LINK | op::UNLINK | op::TRANSFER | op::WORK | op::EMIT
             | op::REPRO | op::COPY => {
+                // an external source record costs one sensing query (SPEC §20b)
+                if opc == op::COPY && s.m1 && unpack(a.vm.regs[0]).map(|x| x.0) == Some(dom::PUBLIC_TAPE) {
+                    if a.s.queries >= MAX_QUERIES {
+                        a.vm.fault = Fault::QueryLimit as u8;
+                        a.vm.pc = next;
+                        break;
+                    }
+                    if a.energy < QUERY_COST {
+                        a.vm.fault = Fault::EnergyStop as u8;
+                        break;
+                    }
+                    pay(a, QUERY_COST);
+                    a.s.queries += 1;
+                }
                 let cost = attempt_cost(opc, imm);
                 a.vm.pc = next;
                 if a.energy < cost {
@@ -345,7 +403,7 @@ pub fn think(a: &mut Agent, s: &Sense, ctrl_key: [u32; 2]) {
                     pay(a, cost);
                     let mut r8 = [0u16; 8];
                     r8.copy_from_slice(&a.vm.regs[..8]);
-                    let copy = if opc == op::COPY { capture_copy(a) } else { None };
+                    let copy = if opc == op::COPY { capture_copy(a, s) } else { None };
                     let target_uid = if opc == op::TRANSFER { capture_target(a, s) } else { None };
                     a.s.intent = Some(Intent { opc, sub: imm, r: r8, copy, target_uid });
                 }

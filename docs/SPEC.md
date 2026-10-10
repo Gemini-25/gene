@@ -597,6 +597,44 @@ Founder-6(`assets/founder6.asm`)은 번식 시작 조건 하나만 바꾼다.
 | D14 | WORK는 Surface와 tile Heat만(parcel 없음) | D1 |
 | D15 | 화면은 Bevy 대신 로컬 웹 viewer(`gene serve`)로 먼저 제공 | 개인 사용, 컴파일·GPU 부담 없음. core는 화면과 독립이라 Bevy를 나중에 붙일 수 있음. 시뮬레이션 thread가 상태를 단독 소유하고 화면은 스냅샷만 읽음(원본 I07) |
 
+## 20b. M1a: 신호·공개 기록·초안 (ruleset `gene-m1-1`)
+
+M1a는 원본 v0..v1에 있던 정보 경로 일부를 켠다(원본 §21, §22, §52, §55). 물리 법칙은 M0와 같고, 꺼져 있던 primitive가 동작하게 된다. ruleset `gene-m0-1`로 실행하면 M0와 결과가 같아야 한다.
+
+| 기능 | M0 | M1a |
+| --- | --- | --- |
+| EMIT, READ Signal(4) | InvalidTarget / BadAddress | 켬 |
+| PublicTape(5): READ, WRITE Cell, WRITE Resize, COPY 원천·목적지 | 꺼짐 | 버려진 매체에 대해 켬 |
+| OwnDraft(7): Resize로 생성, WRITE Cell, COPY 원천·목적지, CancelDraft | 꺼짐 | 켬 |
+| 초안 → 배아 COPY | 없음 | 켬(자기 초안만) |
+| 노출 매체의 bit 마모 | 없음 | 켬 |
+| DraftCommit, learned binding | 꺼짐 | **꺼짐(M1b)** |
+| parcel, LINK, LocalTrace | 꺼짐 | 꺼짐 |
+
+**신호.** 4채널, tile별 signed 16bit.
+- EMIT(r3 채널 0..3, r5 진폭 −255..255)는 시도비 128q에 2·|a|q를 더 내고 원자적으로 처리된다. 범위 밖은 InvalidTarget이다.
+- 다음 tick의 장에 자기 tile은 a, 네 이웃은 trunc(a/2)를 더한다. 여러 기여는 i64로 합한 뒤 한 번만 [−32767, 32767]로 자른다.
+- 전도가 없으므로(parcel 없음) 장은 매 tick 새로 방출된 값만 담는다. 비용은 열이 되고, 신호는 에너지 저장소가 아니다.
+- READ Signal은 반경 2, field 0, r4 = 채널이며, i16 비트를 u16로 돌려준다.
+
+**공개 기록.** 버려진 매체(사망·Cancel·변이 교체로 남은 기록)가 공개 기록이다.
+- 같은 tile의 매체는 UID 오름차순으로 정렬하고, r6(READ, WRITE)·r7(COPY 원천)·r3(COPY 목적지)의 selector 1..n으로 고른다. selector 0(parcel 매체)은 M1a에 없다.
+- READ는 반경 2이고 외부 query다. field는 0 cell, 1 logical_len, 2 capacity, 3 page_present, 4 recycle_remaining이다.
+- WRITE·COPY 목적지·Resize는 접촉 반경 1이다.
+- 외부 원천 COPY는 외부 query 하나를 쓰고 8q를 더 낸다. Think에서 bytes와 revision을 캡처하고, resolve 때 그 매체의 UID·revision이 바뀌었으면 Stale이다.
+- 공개 매체 Resize의 증설과 hole 복구는 행동한 개체의 inventory G1과 128q를 쓴다. G1은 매체가 있는 tile로 옮겨지므로 열과 Ug를 정산한다. 축소 재활용은 32q/cell이고, 페이지를 마치면 G1이 그 tile의 loose로 돌아간다.
+- 기록자의 UID로 권한을 주지 않는다. 누구든 읽고, 쓰고, 지울 수 있다.
+
+**초안.** 개체당 하나의 사적 매체다.
+- WRITE Resize(r0 = 7)로 첫 페이지를 만든다(G1 + 128q). 이후 Cell 쓰기는 16q, COPY는 32q/cell이다.
+- 초안은 자기 code, 공개 기록, 자기 배아에서 COPY해 올 수 있다.
+- 초안에서 배아로 COPY할 수 있다. 이것이 비혈연 코드가 다음 세대로 가는 경로다.
+- 초안 페이지는 G와 유지비 1q/tick을 낸다. 죽거나 CancelDraft(WRITE 3)하면 그 tile에 버려진 매체로 남는다.
+
+**bit 마모.** 버려진 매체는 due마다 exposure_clock에 X ≥ 64이면 4, 아니면 1을 더한다. 16384 이상이면 16384를 빼고, Present 페이지 하나, cell 하나, bit 하나를 균일 추첨해 뒤집는다. RNG는 Environment domain이고, object는 MediaUID, ordinal은 (2 << 56) | 마모 사건 번호다. 외부 화학 뒤에 처리한다.
+
+**관찰.** EMIT 수, Signal READ 수, 공개 기록 READ와 COPY 수, 공개 기록 쓰기 수, 초안 → 배아 COPY 수를 세고, 비혈연 코드가 섞인 출생을 기록한다.
+
 ## 21. 확장 규칙과 로드맵
 
 ### 증거 규칙 (원본 §62를 강제 규칙으로 승격)

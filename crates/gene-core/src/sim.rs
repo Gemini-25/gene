@@ -13,6 +13,30 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub const RULESET: &str = "gene-m0-1";
+/// M1a: signals, public tape, drafts (SPEC §20b).
+pub const RULESET_M1: &str = "gene-m1-1";
+
+/// Capabilities switched on by the ruleset.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Caps {
+    pub m1: bool,
+}
+
+impl Caps {
+    pub fn of(ruleset: &str) -> Option<Caps> {
+        match ruleset {
+            RULESET => Some(Caps { m1: false }),
+            RULESET_M1 => Some(Caps { m1: true }),
+            _ => None,
+        }
+    }
+}
+
+/// Signal field key: tile << 2 | channel.
+#[inline]
+pub fn signal_key(t: u32, ch: u16) -> u64 {
+    (t as u64) << 2 | (ch as u64 & 3)
+}
 pub const SAVE_MAGIC: &[u8; 8] = b"GENEM001";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +73,8 @@ pub struct SimState {
     pub flows: Flows,
     pub e0: i128,
     pub atoms0: [u128; NELEM],
+    /// Current signal field (nonzero entries only), key = tile << 2 | channel.
+    pub signal: BTreeMap<u64, i16>,
 }
 
 /// Cached FluxRng keys.
@@ -66,6 +92,9 @@ pub struct Sim {
     pub keys: FluxKeys,
     pub(crate) faces: Vec<ActorFace>,
     pub(crate) reserved: BTreeSet<u32>,
+    pub caps: Caps,
+    /// Emissions collected this tick for the next field.
+    pub(crate) signal_next: BTreeMap<u64, i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,6 +128,13 @@ impl Sim {
     }
 
     pub fn with_program(config: Config, prog: &Program) -> Result<Sim, SimError> {
+        Self::with_program_ruleset(config, prog, RULESET)
+    }
+
+    pub fn with_program_ruleset(config: Config, prog: &Program, ruleset: &str) -> Result<Sim, SimError> {
+        if Caps::of(ruleset).is_none() {
+            return Err(SimError::BadSave("unknown ruleset"));
+        }
         let cells = prog.to_cells();
         let parsed = genome::parse(&cells).map_err(|e| SimError::Founder(format!("{e:?}")))?;
         let parsed = Arc::new(parsed);
@@ -140,6 +176,7 @@ impl Sim {
                 embryo: None,
                 embryo_ordinal: 0,
                 children: 0,
+                draft: None,
                 prog: Some(parsed.clone()),
                 keys: Keys::derive(config.seed, uid),
                 s: Scratch::default(),
@@ -148,7 +185,7 @@ impl Sim {
             agents.push(a);
         }
         let st = SimState {
-            ruleset: RULESET.to_string(),
+            ruleset: ruleset.to_string(),
             config: config.clone(),
             tick: 0,
             world,
@@ -159,6 +196,7 @@ impl Sim {
             flows: Flows::default(),
             e0: 0,
             atoms0: [0; NELEM],
+            signal: BTreeMap::new(),
         };
         let mut sim = Sim::from_state_unchecked(st);
         // Initial temperature 300 everywhere, after all matter is placed.
@@ -191,14 +229,23 @@ impl Sim {
             keys.loose_rx[k] = rng::flux_key(seed, FluxDomain::ReactionRound, rx.id as u32);
         }
         keys.media_rx2 = rng::flux_key(seed, FluxDomain::ReactionRound, (3 << 8) | 2);
-        let mut sim = Sim { st, obs: Observer::default(), keys, faces: vec![], reserved: BTreeSet::new() };
+        let caps = Caps::of(&st.ruleset).unwrap_or_default();
+        let mut sim = Sim {
+            st,
+            obs: Observer::default(),
+            keys,
+            faces: vec![],
+            reserved: BTreeSet::new(),
+            caps,
+            signal_next: BTreeMap::new(),
+        };
         sim.rebuild_occ();
         sim.recompute_heat_cap();
         sim
     }
 
     pub fn from_state(st: SimState) -> Result<Sim, SimError> {
-        if st.ruleset != RULESET {
+        if Caps::of(&st.ruleset).is_none() {
             return Err(SimError::BadSave("ruleset mismatch"));
         }
         Ok(Self::from_state_unchecked(st))
@@ -331,7 +378,10 @@ impl Sim {
         if m.present_pages() == 0 {
             return;
         }
-        self.st.dropped.entry(t).or_default().push(m);
+        // records on a tile stay in UID order (SPEC §5.1 site order, §20b selectors)
+        let list = self.st.dropped.entry(t).or_default();
+        let pos = list.partition_point(|x| x.uid < m.uid);
+        list.insert(pos, m);
     }
 
     // ---- energy helpers used by effect resolution ----
@@ -427,7 +477,14 @@ impl Sim {
             shell: a.shell_s > 0,
             port: a.port_mask,
         }));
-        let sense = Sense { world: &self.st.world, faces: &self.faces, tick: self.st.tick };
+        let sense = Sense {
+            world: &self.st.world,
+            faces: &self.faces,
+            tick: self.st.tick,
+            m1: self.caps.m1,
+            signal: &self.st.signal,
+            dropped: &self.st.dropped,
+        };
         for a in &mut self.st.agents {
             if a.s.inert {
                 continue;
@@ -442,6 +499,8 @@ impl Sim {
                 .map_or(0, |it| crate::intent::attempt_cost(it.opc, it.sub) as u64);
             self.obs.tick.vm_q += spent - attempt;
             self.obs.tick.attempt_q += attempt;
+            self.obs.m1.signal_reads += a.s.signal_reads as u64;
+            self.obs.m1.public_reads += a.s.public_reads as u64;
         }
     }
 
@@ -548,6 +607,7 @@ impl Sim {
         let mut heat = a.energy as u64 + a.photo_credit as u64;
         let code = std::mem::replace(&mut a.code, Media::empty(0));
         let embryo = a.embryo.take();
+        let draft = a.draft.take();
         self.obs.record_death(a, self.st.tick, cause);
         if let Some(e) = embryo {
             w.force_loose(t, G, e.body_g as u64 + 1);
@@ -562,6 +622,9 @@ impl Sim {
             }
         }
         self.drop_media(t, code);
+        if let Some(d) = draft {
+            self.drop_media(t, d);
+        }
         let a = &mut self.st.agents[i];
         a.energy = 0;
         a.photo_credit = 0;
@@ -648,6 +711,7 @@ impl Sim {
             embryo: None,
             embryo_ordinal: 0,
             children: 0,
+            draft: None,
             prog: Some(prog),
             keys: Keys::derive(seed, child_uid),
             s: Scratch::default(),
@@ -666,6 +730,13 @@ impl Sim {
             a.s.intent = None;
         }
         self.reserved.clear();
+        // the field read next tick holds only this tick's emissions (no conduction in M1a)
+        let next = std::mem::take(&mut self.signal_next);
+        self.st.signal = next
+            .into_iter()
+            .filter(|(_, v)| *v != 0)
+            .map(|(k, v)| (k, v.clamp(-32767, 32767) as i16))
+            .collect();
         self.obs.end_tick(tick, &self.st);
         self.st.tick += 1;
     }
