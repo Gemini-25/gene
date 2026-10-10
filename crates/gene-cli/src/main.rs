@@ -1,0 +1,485 @@
+//! Headless runner for Gene M0. SPEC §17, §18.
+
+use gene_core::genome::hash_cells;
+use gene_core::isa;
+use gene_core::observer::DeathCause;
+use gene_core::sim::{Config, Sim};
+use gene_core::species::*;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, File};
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+const USAGE: &str = "gene — Gene M0 headless runner
+
+USAGE:
+  gene run    [--seed N] [--size S] [--agents A] [--ticks T] [--founder NAME|FILE]
+              [--out DIR] [--stats-every K] [--map-every M] [--checkpoint-every C]
+              [--audit-every K] [--keep-going]
+  gene batch  --seeds A-B [--threads N] [same options as run]  (one directory per seed)
+  gene resume --from CHECKPOINT [--ticks T] [--out DIR] [...]
+  gene asm    FILE.asm                   assemble, print size, hash and disassembly
+  gene founders                          list built-in founders
+
+Defaults follow SPEC §3: size 512, agents 1000, founder founder4.
+Runs stop early at extinction unless --keep-going is given.";
+
+#[derive(Clone, Debug)]
+struct Opts {
+    seed: u64,
+    size: u32,
+    agents: u32,
+    ticks: u64,
+    founder: String,
+    out: PathBuf,
+    stats_every: u64,
+    map_every: u64,
+    checkpoint_every: u64,
+    audit_every: u64,
+    keep_going: bool,
+    quiet: bool,
+}
+
+impl Default for Opts {
+    fn default() -> Self {
+        Opts {
+            seed: 1,
+            size: 512,
+            agents: 1000,
+            ticks: 200_000,
+            founder: "founder4".into(),
+            out: PathBuf::from("runs/out"),
+            stats_every: 256,
+            map_every: 16_384,
+            checkpoint_every: 0,
+            audit_every: 4096,
+            keep_going: false,
+            quiet: false,
+        }
+    }
+}
+
+fn die(msg: impl AsRef<str>) -> ! {
+    eprintln!("error: {}", msg.as_ref());
+    std::process::exit(2)
+}
+
+fn parse_opts(args: &[String], o: &mut Opts) -> BTreeMap<String, String> {
+    let mut extra = BTreeMap::new();
+    let mut i = 0;
+    while i < args.len() {
+        let k = args[i].as_str();
+        let mut val = || {
+            i += 1;
+            args.get(i).cloned().unwrap_or_else(|| die(format!("{k} needs a value")))
+        };
+        let num = |v: String| v.replace('_', "").parse::<u64>().unwrap_or_else(|_| die(format!("bad number {v}")));
+        match k {
+            "--seed" => o.seed = num(val()),
+            "--size" => o.size = num(val()) as u32,
+            "--agents" => o.agents = num(val()) as u32,
+            "--ticks" => o.ticks = num(val()),
+            "--founder" => o.founder = val(),
+            "--out" => o.out = PathBuf::from(val()),
+            "--stats-every" => o.stats_every = num(val()).max(1),
+            "--map-every" => o.map_every = num(val()),
+            "--checkpoint-every" => o.checkpoint_every = num(val()),
+            "--audit-every" => o.audit_every = num(val()),
+            "--keep-going" => o.keep_going = true,
+            "--quiet" => o.quiet = true,
+            "--seeds" | "--threads" | "--from" => {
+                let v = val();
+                extra.insert(k.to_string(), v);
+            }
+            _ => die(format!("unknown option {k}\n\n{USAGE}")),
+        }
+        i += 1;
+    }
+    extra
+}
+
+fn founder_source(name: &str) -> String {
+    match name {
+        "founder4" => gene_core::FOUNDER_ASM.to_string(),
+        "founder5" => gene_core::FOUNDER5_ASM.to_string(),
+        path => fs::read_to_string(path).unwrap_or_else(|e| die(format!("cannot read founder {path}: {e}"))),
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let Some(cmd) = args.first() else { die(USAGE) };
+    let mut o = Opts::default();
+    match cmd.as_str() {
+        "run" => {
+            parse_opts(&args[1..], &mut o);
+            let sim = new_sim(&o);
+            run(sim, &o);
+        }
+        "batch" => {
+            let extra = parse_opts(&args[1..], &mut o);
+            let seeds = extra.get("--seeds").unwrap_or_else(|| die("--seeds A-B required"));
+            let (a, b) = seeds.split_once('-').unwrap_or((seeds, seeds));
+            let (a, b): (u64, u64) = (a.parse().unwrap(), b.parse().unwrap());
+            let threads: usize = extra.get("--threads").map_or(4, |t| t.parse().unwrap());
+            batch(&o, a..=b, threads);
+        }
+        "resume" => {
+            let extra = parse_opts(&args[1..], &mut o);
+            let from = extra.get("--from").unwrap_or_else(|| die("--from CHECKPOINT required"));
+            let bytes = fs::read(from).unwrap_or_else(|e| die(format!("{from}: {e}")));
+            let sim = Sim::load(&bytes).unwrap_or_else(|e| die(format!("{from}: {e:?}")));
+            o.seed = sim.st.config.seed;
+            run(sim, &o);
+        }
+        "asm" => {
+            let path = args.get(1).unwrap_or_else(|| die("asm FILE"));
+            let src = founder_source(path);
+            let p = isa::assemble(&src).unwrap_or_else(|e| die(e.to_string()));
+            let cells = p.to_cells();
+            println!(
+                "modules {}  words {}  raw cells {}  pages {}  blake3 {}",
+                p.modules.len(),
+                p.words.len(),
+                cells.len(),
+                cells.len().div_ceil(128),
+                hex(&hash_cells(&cells))
+            );
+            print!("{}", isa::disassemble(&p));
+        }
+        "founders" => {
+            for name in ["founder4", "founder5"] {
+                let p = isa::assemble(&founder_source(name)).unwrap();
+                let cells = p.to_cells();
+                println!("{name}: {} words, {} cells, {}", p.words.len(), cells.len(), &hex(&hash_cells(&cells))[..16]);
+            }
+        }
+        "-h" | "--help" | "help" => println!("{USAGE}"),
+        _ => die(USAGE),
+    }
+}
+
+fn new_sim(o: &Opts) -> Sim {
+    let prog = isa::assemble(&founder_source(&o.founder)).unwrap_or_else(|e| die(e.to_string()));
+    let cfg = Config { seed: o.seed, width: o.size, height: o.size, agents: o.agents };
+    Sim::with_program(cfg, &prog).unwrap_or_else(|e| die(format!("{e:?}")))
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+#[derive(Clone, Debug, Default)]
+struct Summary {
+    seed: u64,
+    ticks_run: u64,
+    extinct_at: Option<u64>,
+    final_pop: usize,
+    peak_pop: usize,
+    births: u64,
+    deaths_energy: u64,
+    deaths_body: u64,
+    max_generation: u32,
+    distinct_genomes: usize,
+    tps: f64,
+    audit_ok: bool,
+    hash: String,
+}
+
+fn summary_json(s: &Summary, o: &Opts) -> String {
+    format!(
+        "{{\n  \"ruleset\": \"{}\",\n  \"founder\": \"{}\",\n  \"seed\": {},\n  \"size\": {},\n  \"agents\": {},\n  \"ticks_requested\": {},\n  \"ticks_run\": {},\n  \"extinct_at\": {},\n  \"final_pop\": {},\n  \"peak_pop\": {},\n  \"births\": {},\n  \"deaths_energy\": {},\n  \"deaths_body\": {},\n  \"max_generation\": {},\n  \"distinct_genomes\": {},\n  \"tps\": {:.1},\n  \"audit_ok\": {},\n  \"core_hash\": \"{}\"\n}}\n",
+        gene_core::sim::RULESET,
+        o.founder,
+        s.seed,
+        o.size,
+        o.agents,
+        o.ticks,
+        s.ticks_run,
+        s.extinct_at.map_or("null".into(), |t| t.to_string()),
+        s.final_pop,
+        s.peak_pop,
+        s.births,
+        s.deaths_energy,
+        s.deaths_body,
+        s.max_generation,
+        s.distinct_genomes,
+        s.tps,
+        s.audit_ok,
+        s.hash
+    )
+}
+
+fn run(mut sim: Sim, o: &Opts) -> Summary {
+    fs::create_dir_all(&o.out).unwrap_or_else(|e| die(format!("{}: {e}", o.out.display())));
+    let open = |name: &str| BufWriter::new(File::create(o.out.join(name)).unwrap());
+    let mut stats = open("stats.csv");
+    let mut births = open("births.csv");
+    let mut deaths = open("deaths.csv");
+    writeln!(
+        stats,
+        "tick,pop,births,deaths_energy,deaths_body,mean_energy,mean_inv_g,embryos,max_gen,mean_gen,distinct_genomes,mean_genome_len,\
+upkeep_q,vm_q,attempt_q,effect_q,photosynthesis,respiration,moves,inert,loose_G,loose_C,loose_O,loose_W,dropped_pages,mean_theta,ledger_residual"
+    )
+    .unwrap();
+    writeln!(births, "tick,uid,parent,root,generation,genome,len,structural_op,structural_applied,point_flips,x,y").unwrap();
+    writeln!(deaths, "tick,uid,cause,age,children,generation,inv_g,embryo_state").unwrap();
+    let start = Instant::now();
+    let mut s = Summary { seed: sim.st.config.seed, audit_ok: true, ..Default::default() };
+    let t_begin = sim.st.tick;
+    let t_end = t_begin + o.ticks;
+    if o.map_every > 0 {
+        write_map(&sim, &o.out.join(format!("map_{:07}.png", sim.st.tick)));
+    }
+    while sim.st.tick < t_end {
+        sim.step();
+        let t = sim.st.tick;
+        s.peak_pop = s.peak_pop.max(sim.st.agents.len());
+        for b in sim.obs.births.drain(..) {
+            writeln!(
+                births,
+                "{},{},{},{},{},{},{},{},{},{},{},{}",
+                b.tick,
+                b.uid,
+                b.parent,
+                b.root,
+                b.generation,
+                &hex(&b.genome_hash)[..16],
+                b.len,
+                b.mutation.structural_op.map_or("".into(), |x| gene_core::mutation::OP_NAMES[x as usize].to_string()),
+                b.mutation.structural_applied as u8,
+                b.mutation.point_flips,
+                b.x,
+                b.y
+            )
+            .unwrap();
+        }
+        for d in sim.obs.deaths.drain(..) {
+            let cause = match d.cause {
+                DeathCause::Energy => "energy",
+                DeathCause::Body => "body",
+            };
+            writeln!(
+                deaths,
+                "{},{},{},{},{},{},{},{}",
+                d.tick, d.uid, cause, d.age, d.children, d.generation, d.inv_g, d.embryo_state
+            )
+            .unwrap();
+        }
+        let extinct = sim.st.agents.is_empty();
+        let audit_now = o.audit_every > 0 && t % o.audit_every == 0;
+        if audit_now || extinct || t == t_end {
+            let a = sim.audit();
+            if !a.ok(&sim.st.atoms0) {
+                s.audit_ok = false;
+                eprintln!("LEDGER FAILURE at tick {t}: energy {} expected {}", a.energy, a.expected);
+                break;
+            }
+        }
+        if t % o.stats_every == 0 || extinct || t == t_end {
+            write_stats(&mut stats, &mut sim);
+        }
+        if o.map_every > 0 && (t % o.map_every == 0 || extinct || t == t_end) {
+            write_map(&sim, &o.out.join(format!("map_{t:07}.png")));
+        }
+        if o.checkpoint_every > 0 && t % o.checkpoint_every == 0 {
+            fs::write(o.out.join(format!("ckpt_{t:07}.bin")), sim.save()).unwrap();
+        }
+        if !o.quiet && t % 16_384 == 0 {
+            let el = start.elapsed().as_secs_f64();
+            eprintln!(
+                "[seed {}] t={t} pop={} births={} gen≤{} {:.0} TPS",
+                s.seed,
+                sim.st.agents.len(),
+                sim.obs.total_births,
+                sim.st.agents.iter().map(|a| a.generation).max().unwrap_or(0),
+                (t - t_begin) as f64 / el
+            );
+        }
+        if extinct {
+            s.extinct_at = Some(t);
+            if !o.keep_going {
+                break;
+            }
+        }
+    }
+    let el = start.elapsed().as_secs_f64();
+    s.ticks_run = sim.st.tick - t_begin;
+    s.tps = s.ticks_run as f64 / el.max(1e-9);
+    s.final_pop = sim.st.agents.len();
+    s.births = sim.obs.total_births;
+    s.deaths_energy = sim.obs.total_deaths_energy;
+    s.deaths_body = sim.obs.total_deaths_body;
+    s.max_generation = sim.st.agents.iter().map(|a| a.generation).max().unwrap_or(0);
+    s.distinct_genomes = distinct_genomes(&sim);
+    s.hash = hex(&sim.state_hash());
+    fs::write(o.out.join("summary.json"), summary_json(&s, o)).unwrap();
+    fs::write(o.out.join("final.bin"), sim.save()).unwrap();
+    s
+}
+
+fn distinct_genomes(sim: &Sim) -> usize {
+    let set: BTreeSet<[u8; 32]> = sim
+        .st
+        .agents
+        .iter()
+        .map(|a| hash_cells(a.code.prefix(a.used_len).unwrap_or(&[])))
+        .collect();
+    set.len()
+}
+
+fn write_stats(out: &mut impl Write, sim: &mut Sim) {
+    let acc = sim.obs.take_acc();
+    let ag = &sim.st.agents;
+    let n = ag.len().max(1) as f64;
+    let w = &sim.st.world;
+    let mut loose = [0u64; NSPEC];
+    for t in 0..w.n() as u32 {
+        for s in 0..NSPEC {
+            loose[s] += w.loose_total(t, s);
+        }
+    }
+    let theta: f64 = if ag.is_empty() {
+        0.0
+    } else {
+        ag.iter().map(|a| w.theta(w.idx(a.x as u32, a.y as u32)) as f64).sum::<f64>() / n
+    };
+    let dropped: u64 = sim.st.dropped.values().flatten().map(|m| m.present_pages() as u64).sum();
+    let a = sim.audit();
+    writeln!(
+        out,
+        "{},{},{},{},{},{:.0},{:.2},{},{},{:.2},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{}",
+        sim.st.tick,
+        ag.len(),
+        sim.obs.total_births,
+        sim.obs.total_deaths_energy,
+        sim.obs.total_deaths_body,
+        ag.iter().map(|a| a.energy as f64).sum::<f64>() / n,
+        ag.iter().map(|a| a.inv[G] as f64).sum::<f64>() / n,
+        ag.iter().filter(|a| a.embryo.is_some()).count(),
+        ag.iter().map(|a| a.generation).max().unwrap_or(0),
+        ag.iter().map(|a| a.generation as f64).sum::<f64>() / n,
+        distinct_genomes(sim),
+        ag.iter().map(|a| a.used_len as f64).sum::<f64>() / n,
+        acc.upkeep_q,
+        acc.vm_q,
+        acc.attempt_q,
+        acc.effect_q,
+        acc.photosynthesis,
+        acc.respiration,
+        acc.moves,
+        acc.inert,
+        loose[G],
+        loose[C],
+        loose[O],
+        loose[W],
+        dropped,
+        theta,
+        a.energy - a.expected
+    )
+    .unwrap();
+}
+
+fn genome_color(h: &[u8; 32]) -> [u8; 3] {
+    // bright, distinguishable colours from the hash
+    let hue = (h[0] as f32 / 255.0) * 6.0;
+    let (r, g, b) = match hue as u32 {
+        0 => (1.0, hue.fract(), 0.0),
+        1 => (1.0 - hue.fract(), 1.0, 0.0),
+        2 => (0.0, 1.0, hue.fract()),
+        3 => (0.0, 1.0 - hue.fract(), 1.0),
+        4 => (hue.fract(), 0.0, 1.0),
+        _ => (1.0, 0.0, 1.0 - hue.fract()),
+    };
+    let v = 0.75 + 0.25 * (h[1] as f32 / 255.0);
+    [(r * v * 255.0) as u8, (g * v * 255.0) as u8, (b * v * 255.0) as u8]
+}
+
+fn write_map(sim: &Sim, path: &Path) {
+    let w = &sim.st.world;
+    let scale: u32 = (512 / w.w.max(w.h)).clamp(1, 8);
+    let (iw, ih) = (w.w * scale, w.h * scale);
+    let mut px = vec![0u8; (iw * ih * 3) as usize];
+    let mut base = vec![[0u8; 3]; w.n()];
+    for t in 0..w.n() as u32 {
+        let e = w.elev[t as usize] as f32 / 15.0;
+        let water = (w.loose_total(t, W) as f32 / 64.0).min(1.0);
+        let g = 40.0 + 120.0 * e;
+        let mut c = [g * 0.85, g * 0.8, g * 0.7];
+        c[0] *= 1.0 - 0.6 * water;
+        c[1] *= 1.0 - 0.3 * water;
+        c[2] = c[2] * (1.0 - water) + 200.0 * water;
+        base[t as usize] = [c[0] as u8, c[1] as u8, c[2] as u8];
+    }
+    for (t, _) in sim.st.dropped.iter() {
+        base[*t as usize] = [90, 60, 40];
+    }
+    for a in &sim.st.agents {
+        let t = w.idx(a.x as u32, a.y as u32) as usize;
+        base[t] = genome_color(&hash_cells(a.code.prefix(a.used_len).unwrap_or(&[])));
+    }
+    for y in 0..ih {
+        for x in 0..iw {
+            let t = ((y / scale) * w.w + x / scale) as usize;
+            let k = ((y * iw + x) * 3) as usize;
+            px[k..k + 3].copy_from_slice(&base[t]);
+        }
+    }
+    let file = File::create(path).unwrap();
+    let mut enc = png::Encoder::new(BufWriter::new(file), iw, ih);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header().unwrap().write_image_data(&px).unwrap();
+}
+
+fn batch(o: &Opts, seeds: std::ops::RangeInclusive<u64>, threads: usize) {
+    let seeds: Vec<u64> = seeds.collect();
+    let queue = std::sync::Mutex::new(seeds.clone());
+    let results = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|sc| {
+        for _ in 0..threads.max(1) {
+            sc.spawn(|| loop {
+                let Some(seed) = queue.lock().unwrap().pop() else { break };
+                let mut so = o.clone();
+                so.seed = seed;
+                so.out = o.out.join(format!("seed_{seed:03}"));
+                let sim = new_sim(&so);
+                let s = run(sim, &so);
+                eprintln!(
+                    "[seed {seed}] done: ticks {} extinct {:?} births {} gen≤{} final pop {} ({:.0} TPS)",
+                    s.ticks_run, s.extinct_at, s.births, s.max_generation, s.final_pop, s.tps
+                );
+                results.lock().unwrap().push(s);
+            });
+        }
+    });
+    let mut rs = results.into_inner().unwrap();
+    rs.sort_by_key(|s| s.seed);
+    let mut f = BufWriter::new(File::create(o.out.join("batch.csv")).unwrap());
+    writeln!(
+        f,
+        "seed,ticks_run,extinct_at,final_pop,peak_pop,births,deaths_energy,deaths_body,max_generation,distinct_genomes,tps,audit_ok,core_hash"
+    )
+    .unwrap();
+    for s in &rs {
+        writeln!(
+            f,
+            "{},{},{},{},{},{},{},{},{},{},{:.1},{},{}",
+            s.seed,
+            s.ticks_run,
+            s.extinct_at.map_or(String::new(), |t| t.to_string()),
+            s.final_pop,
+            s.peak_pop,
+            s.births,
+            s.deaths_energy,
+            s.deaths_body,
+            s.max_generation,
+            s.distinct_genomes,
+            s.tps,
+            s.audit_ok,
+            s.hash
+        )
+        .unwrap();
+    }
+}

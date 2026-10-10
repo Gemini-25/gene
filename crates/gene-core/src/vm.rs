@@ -1,0 +1,368 @@
+//! Register VM and the read-only Think stage. SPEC §8, §9.
+
+use crate::agent::Agent;
+use crate::intent::{attempt_cost, dom, rotate, unpack, CopyCapture, Fault, Intent, Outcome, OFFSETS};
+use crate::isa::{decode, op};
+use crate::rng::Stream;
+use crate::world::World;
+
+pub const FUEL: u32 = 32;
+pub const INSTR_COST: u32 = 4;
+pub const QUERY_COST: u32 = 8;
+pub const MAX_QUERIES: u8 = 4;
+pub const MAX_FRAMES: usize = 8;
+pub const SENSE_RADIUS: i32 = 2;
+
+/// Publicly visible face of an actor (readable via ActorSurface).
+#[derive(Clone, Copy, Debug)]
+pub struct ActorFace {
+    pub uid: u64,
+    pub orient: u8,
+    pub shell: bool,
+    pub port: u16,
+}
+
+pub struct Sense<'a> {
+    pub world: &'a World,
+    pub faces: &'a [ActorFace],
+    pub tick: u64,
+}
+
+impl Sense<'_> {
+    fn face_at(&self, t: u32) -> Option<&ActorFace> {
+        match self.world.occ[t as usize] {
+            0 => None,
+            i => Some(&self.faces[(i - 1) as usize]),
+        }
+    }
+}
+
+fn sense_tile(a: &Agent, w: &World, dx: i16, dy: i16, radius: i32) -> Result<u32, Fault> {
+    let (dx, dy) = (dx as i32, dy as i32);
+    if dx.abs() + dy.abs() > radius {
+        return Err(Fault::BadAddress);
+    }
+    let (ax, ay) = rotate(a.orient, dx, dy);
+    w.offset(w.idx(a.x as u32, a.y as u32), ax, ay).ok_or(Fault::Boundary)
+}
+
+fn read(a: &mut Agent, s: &Sense) -> Result<u16, Fault> {
+    let r = a.vm.regs;
+    let (domain, field, index) = (r[0], r[3], r[4]);
+    let w = s.world;
+    let bad = Err(Fault::BadAddress);
+    match domain {
+        dom::SELF => Ok(match field {
+            0 => a.energy.min(65535) as u16,
+            1 => {
+                if index >= 10 {
+                    return bad;
+                }
+                a.inv[index as usize]
+            }
+            2 => a.age as u16,
+            3 => (a.age >> 16) as u16,
+            4 => a.orient as u16,
+            5 => {
+                let f = a.vm.fault;
+                a.vm.fault = Fault::Ok as u8;
+                f as u16
+            }
+            6 => a.embryo_state_code(),
+            7 => a.used_len as u16,
+            8 => 0,
+            9 => a.port_mask,
+            10 => a.last_actual,
+            11 => a.body_g,
+            12 => a.shell_s,
+            _ => return bad,
+        }),
+        dom::LOOSE => {
+            let t = sense_tile(a, w, r[1] as i16, r[2] as i16, SENSE_RADIUS)?;
+            if field != 0 || index >= 10 {
+                return bad;
+            }
+            Ok(w.loose_visible(t, index as usize))
+        }
+        dom::PARCEL => {
+            sense_tile(a, w, r[1] as i16, r[2] as i16, SENSE_RADIUS)?;
+            if field == 6 {
+                Ok(0)
+            } else {
+                bad
+            }
+        }
+        dom::ACTOR => {
+            let t = sense_tile(a, w, r[1] as i16, r[2] as i16, SENSE_RADIUS)?;
+            let face = s.face_at(t);
+            match (field, face) {
+                (0, f) => Ok(f.is_some() as u16),
+                (_, None) => bad,
+                (1, Some(f)) => Ok(f.orient as u16),
+                (2, Some(f)) => Ok(f.shell as u16),
+                (3, Some(f)) => Ok(f.port),
+                _ => bad,
+            }
+        }
+        dom::OWN_CODE => {
+            if r[6] != 0 {
+                return bad;
+            }
+            match field {
+                0 => a.code.read(index as u32).ok_or(Fault::BadAddress),
+                1 => Ok(a.code.logical_len.min(65535) as u16),
+                2 => Ok(a.code.capacity().min(65535) as u16),
+                _ => bad,
+            }
+        }
+        dom::OWN_DRAFT => match field {
+            1..=3 => Ok(0),
+            _ => bad,
+        },
+        dom::EMBRYO => {
+            let e = a.embryo.as_ref();
+            match field {
+                0 => e.and_then(|e| e.raw.read(index as u32)).ok_or(Fault::BadAddress),
+                1 => Ok(e.map_or(0, |e| e.raw.logical_len.min(65535) as u16)),
+                2 => Ok(e.map_or(0, |e| e.raw.capacity().min(65535) as u16)),
+                3 => Ok(a.embryo_state_code()),
+                4 => Ok(e.map_or(0, |e| e.energy.min(65535) as u16)),
+                5 => {
+                    if index >= 10 {
+                        return bad;
+                    }
+                    Ok(e.map_or(0, |e| e.ret[index as usize]))
+                }
+                _ => bad,
+            }
+        }
+        dom::SURFACE => {
+            let t = sense_tile(a, w, r[1] as i16, r[2] as i16, SENSE_RADIUS)?;
+            Ok(match field {
+                0 => w.elev[t as usize] as u16,
+                1 => w.mu[t as usize],
+                2 => w.surface_c[t as usize] as u16,
+                3 => w.theta(t).min(65535) as u16,
+                4 => w.light(t, s.tick).min(65535) as u16,
+                _ => return bad,
+            })
+        }
+        // Signal, PublicTape, LocalTrace, PoreStock: capability off in M0.
+        _ => bad,
+    }
+}
+
+fn capture_copy(a: &Agent) -> Option<CopyCapture> {
+    let r = a.vm.regs;
+    let (sd, so) = unpack(r[0])?;
+    if so != 0 {
+        return None;
+    }
+    let media = match sd {
+        dom::OWN_CODE if r[7] == 0 => &a.code,
+        dom::EMBRYO => &a.embryo.as_ref()?.raw,
+        _ => return None,
+    };
+    let count = r[6] as u32;
+    let start = r[4] as u32;
+    let mut bytes = Vec::new();
+    for i in start..start.saturating_add(count.min(4)) {
+        if i >= media.logical_len {
+            break;
+        }
+        match media.read(i) {
+            Some(v) => bytes.push(v),
+            None => break,
+        }
+    }
+    Some(CopyCapture { src_uid: media.uid, src_rev: media.revision, bytes })
+}
+
+fn capture_target(a: &Agent, s: &Sense) -> Option<u64> {
+    let r = a.vm.regs;
+    let (dd, off) = unpack(r[1])?;
+    if dd != dom::ACTOR || off == 0 {
+        return None;
+    }
+    let (dx, dy) = OFFSETS[off as usize];
+    let (ax, ay) = rotate(a.orient, dx, dy);
+    let t = s.world.offset(s.world.idx(a.x as u32, a.y as u32), ax, ay)?;
+    s.face_at(t).map(|f| f.uid)
+}
+
+#[inline]
+fn pay(a: &mut Agent, q: u32) {
+    a.energy -= q;
+    a.s.heat_pending += q as u64;
+}
+
+/// Run the agent's VM for one tick. Writes only the agent itself.
+pub fn think(a: &mut Agent, s: &Sense, ctrl_key: [u32; 2]) {
+    if let Some((o, act)) = a.receipt.take() {
+        a.vm.regs[14] = o as u16;
+        a.vm.regs[15] = act;
+        a.last_actual = act;
+    }
+    let prog = a.prog.clone().expect("program");
+    let entry = prog.entry_index() as u8;
+    let mut fuel = FUEL;
+    while fuel > 0 {
+        let m = prog.modules[a.vm.module as usize];
+        if a.vm.pc > m.len {
+            a.vm.module = entry;
+            a.vm.pc = 0;
+            break;
+        }
+        if a.energy < INSTR_COST {
+            a.vm.fault = Fault::EnergyStop as u8;
+            break;
+        }
+        pay(a, INSTR_COST);
+        fuel -= 1;
+        if a.vm.pc == m.len {
+            // implicit RET
+            if let Some((mi, pc)) = a.vm.stack.pop() {
+                a.vm.module = mi;
+                a.vm.pc = pc;
+                continue;
+            }
+            a.vm.module = entry;
+            a.vm.pc = 0;
+            break;
+        }
+        let word = prog.word(a.vm.module as usize, a.vm.pc);
+        let (opc, ra, rb, imm) = decode(word);
+        let mut next = a.vm.pc + 1;
+        match opc {
+            op::NOP => {}
+            op::CONST => a.vm.regs[ra] = imm,
+            op::MOV => a.vm.regs[ra] = a.vm.regs[rb],
+            op::ADD => a.vm.regs[ra] = a.vm.regs[ra].wrapping_add(a.vm.regs[rb]),
+            op::SUB => a.vm.regs[ra] = a.vm.regs[ra].wrapping_sub(a.vm.regs[rb]),
+            op::MUL => a.vm.regs[ra] = a.vm.regs[ra].wrapping_mul(a.vm.regs[rb]),
+            op::DIV | op::REM => {
+                if a.vm.regs[rb] == 0 {
+                    a.vm.regs[ra] = 0;
+                    a.vm.fault = Fault::DivZero as u8;
+                } else if opc == op::DIV {
+                    a.vm.regs[ra] /= a.vm.regs[rb];
+                } else {
+                    a.vm.regs[ra] %= a.vm.regs[rb];
+                }
+            }
+            op::AND => a.vm.regs[ra] &= a.vm.regs[rb],
+            op::OR => a.vm.regs[ra] |= a.vm.regs[rb],
+            op::XOR => a.vm.regs[ra] ^= a.vm.regs[rb],
+            op::SHL => a.vm.regs[ra] <<= a.vm.regs[rb] & 15,
+            op::SHR => a.vm.regs[ra] >>= a.vm.regs[rb] & 15,
+            op::EQ => a.vm.regs[ra] = (a.vm.regs[ra] == a.vm.regs[rb]) as u16,
+            op::LTU => a.vm.regs[ra] = (a.vm.regs[ra] < a.vm.regs[rb]) as u16,
+            op::LTS => a.vm.regs[ra] = ((a.vm.regs[ra] as i16) < (a.vm.regs[rb] as i16)) as u16,
+            op::BRNZ | op::JUMP => {
+                if opc == op::JUMP || a.vm.regs[ra] != 0 {
+                    let target = a.vm.pc as i32 + 1 + imm as i16 as i32;
+                    if target >= 0 && target < m.len as i32 {
+                        next = target as u16;
+                    }
+                }
+            }
+            op::CALL => match prog.module_index(imm) {
+                None => a.vm.fault = Fault::MissingTag as u8,
+                Some(_) if a.vm.stack.len() >= MAX_FRAMES => a.vm.fault = Fault::StackFull as u8,
+                Some(mi) => {
+                    a.vm.stack.push((a.vm.module, a.vm.pc + 1));
+                    a.vm.module = mi as u8;
+                    a.vm.pc = 0;
+                    continue;
+                }
+            },
+            op::RET => {
+                if let Some((mi, pc)) = a.vm.stack.pop() {
+                    a.vm.module = mi;
+                    a.vm.pc = pc;
+                    continue;
+                }
+                a.vm.module = entry;
+                a.vm.pc = 0;
+                break;
+            }
+            op::LOAD => {
+                let addr = a.vm.regs[rb] as usize;
+                if addr < 64 {
+                    a.vm.regs[ra] = a.mem[addr];
+                } else {
+                    a.vm.regs[ra] = 0;
+                    a.vm.fault = Fault::BadAddress as u8;
+                }
+            }
+            op::STORE => {
+                let addr = a.vm.regs[rb] as usize;
+                if addr < 64 {
+                    a.mem[addr] = a.vm.regs[ra];
+                } else {
+                    a.vm.fault = Fault::BadAddress as u8;
+                }
+            }
+            op::RANDOM => {
+                let mut st = Stream::at(ctrl_key, s.tick, a.s.draws);
+                a.vm.regs[ra] = st.next_u32() as u16;
+                a.s.draws += 1;
+            }
+            op::YIELD => {
+                a.vm.pc = next;
+                break;
+            }
+            op::READ => {
+                let domain = a.vm.regs[0];
+                if imm != 0 {
+                    a.vm.regs[ra] = 0;
+                    a.vm.fault = Fault::BadAddress as u8;
+                } else if dom::is_external(domain) {
+                    if a.s.queries >= MAX_QUERIES {
+                        a.vm.regs[ra] = 0;
+                        a.vm.fault = Fault::QueryLimit as u8;
+                    } else if a.energy < QUERY_COST {
+                        a.vm.fault = Fault::EnergyStop as u8;
+                        break;
+                    } else {
+                        pay(a, QUERY_COST);
+                        a.s.queries += 1;
+                        let v = read(a, s);
+                        set_read(a, ra, v);
+                    }
+                } else {
+                    let v = read(a, s);
+                    set_read(a, ra, v);
+                }
+            }
+            op::WRITE | op::DRIVE | op::LINK | op::UNLINK | op::TRANSFER | op::WORK | op::EMIT
+            | op::REPRO | op::COPY => {
+                let cost = attempt_cost(opc, imm);
+                a.vm.pc = next;
+                if a.energy < cost {
+                    a.receipt = Some((Outcome::Energy as u8, 0));
+                } else {
+                    pay(a, cost);
+                    let mut r8 = [0u16; 8];
+                    r8.copy_from_slice(&a.vm.regs[..8]);
+                    let copy = if opc == op::COPY { capture_copy(a) } else { None };
+                    let target_uid = if opc == op::TRANSFER { capture_target(a, s) } else { None };
+                    a.s.intent = Some(Intent { opc, sub: imm, r: r8, copy, target_uid });
+                }
+                break;
+            }
+            _ => a.vm.fault = Fault::InvalidOpcode as u8,
+        }
+        a.vm.pc = next;
+    }
+}
+
+fn set_read(a: &mut Agent, ra: usize, v: Result<u16, Fault>) {
+    match v {
+        Ok(x) => a.vm.regs[ra] = x,
+        Err(f) => {
+            a.vm.regs[ra] = 0;
+            a.vm.fault = f as u8;
+        }
+    }
+}

@@ -1,0 +1,13 @@
+[package]
+name = "gene-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gene"
+path = "src/main.rs"
+
+[dependencies]
+gene-core = { path = "../gene-core" }
+png = "0.17"
