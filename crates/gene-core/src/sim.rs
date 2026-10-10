@@ -102,7 +102,7 @@ impl Sim {
         let cells = prog.to_cells();
         let parsed = genome::parse(&cells).map_err(|e| SimError::Founder(format!("{e:?}")))?;
         let parsed = Arc::new(parsed);
-        let mut world = world::generate(config.seed, config.width, config.height);
+        let world = world::generate(config.seed, config.width, config.height);
         let tiles = world::spawn_tiles(&world, config.seed, config.agents as usize)
             .ok_or(SimError::NotEnoughSpawnTiles)?;
         let mut agents = Vec::with_capacity(tiles.len());
@@ -147,7 +147,6 @@ impl Sim {
             a.s = Scratch::default();
             agents.push(a);
         }
-        world.occ = vec![0; world.n()];
         let st = SimState {
             ruleset: RULESET.to_string(),
             config: config.clone(),
@@ -302,6 +301,24 @@ impl Sim {
         }
         let st: SimState = postcard::from_bytes(body).map_err(|_| SimError::BadSave("decode"))?;
         Self::from_state(st)
+    }
+
+    /// Fixture helper: place agent i at (x, y) with an orientation. Call `fixture_rebase` after.
+    pub fn fixture_place(&mut self, i: usize, x: u16, y: u16, orient: u8) {
+        let a = &mut self.st.agents[i];
+        a.x = x;
+        a.y = y;
+        a.orient = orient & 3;
+    }
+
+    /// Fixture helper: rebuild caches and reset the ledger baseline after manual edits.
+    pub fn fixture_rebase(&mut self) {
+        self.rebuild_occ();
+        self.recompute_heat_cap();
+        let a = self.audit();
+        let f = &self.st.flows;
+        self.st.e0 = a.energy - (f.solar_in as i128 + f.sky_in as i128 - f.radiation_out as i128);
+        self.st.atoms0 = a.atoms;
     }
 
     pub fn alloc_media_uid(&mut self) -> u64 {

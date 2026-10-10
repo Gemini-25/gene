@@ -16,7 +16,7 @@ const USAGE: &str = "gene — Gene M0 headless runner
 USAGE:
   gene run    [--seed N] [--size S] [--agents A] [--ticks T] [--founder NAME|FILE]
               [--out DIR] [--stats-every K] [--map-every M] [--checkpoint-every C]
-              [--audit-every K] [--keep-going]
+              [--audit-every K] [--keep-going] [--save-final] [--quiet]
   gene batch  --seeds A-B [--threads N] [same options as run]  (one directory per seed)
   gene resume --from CHECKPOINT [--ticks T] [--out DIR] [...]
   gene asm    FILE.asm                   assemble, print size, hash and disassembly
@@ -39,6 +39,7 @@ struct Opts {
     audit_every: u64,
     keep_going: bool,
     quiet: bool,
+    save_final: bool,
 }
 
 impl Default for Opts {
@@ -56,6 +57,7 @@ impl Default for Opts {
             audit_every: 4096,
             keep_going: false,
             quiet: false,
+            save_final: false,
         }
     }
 }
@@ -88,6 +90,7 @@ fn parse_opts(args: &[String], o: &mut Opts) -> BTreeMap<String, String> {
             "--audit-every" => o.audit_every = num(val()),
             "--keep-going" => o.keep_going = true,
             "--quiet" => o.quiet = true,
+            "--save-final" => o.save_final = true,
             "--seeds" | "--threads" | "--from" => {
                 let v = val();
                 extra.insert(k.to_string(), v);
@@ -315,7 +318,9 @@ upkeep_q,vm_q,attempt_q,effect_q,photosynthesis,respiration,moves,inert,loose_G,
     s.distinct_genomes = distinct_genomes(&sim);
     s.hash = hex(&sim.state_hash());
     fs::write(o.out.join("summary.json"), summary_json(&s, o)).unwrap();
-    fs::write(o.out.join("final.bin"), sim.save()).unwrap();
+    if o.save_final {
+        fs::write(o.out.join("final.bin"), sim.save()).unwrap();
+    }
     s
 }
 

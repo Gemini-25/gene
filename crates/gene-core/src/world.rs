@@ -71,6 +71,22 @@ impl World {
         self.offset(t, dx, dy)
     }
 
+    pub fn heat_u_at(&self, t: u32) -> u64 {
+        self.heat_u[t as usize]
+    }
+
+    pub fn heat_c_at(&self, t: u32) -> u64 {
+        self.heat_c[t as usize]
+    }
+
+    pub fn surface_c_at(&self, t: u32) -> u8 {
+        self.surface_c[t as usize]
+    }
+
+    pub fn rx_credit_at(&self, t: u32) -> [u16; 5] {
+        self.rx_credit[t as usize]
+    }
+
     #[inline]
     pub fn theta(&self, t: u32) -> u64 {
         self.heat_u[t as usize] / self.heat_c[t as usize]
