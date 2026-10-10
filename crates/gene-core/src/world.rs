@@ -17,6 +17,15 @@ pub struct Parcel {
     pub c: u8,
     /// Reaction credits per site (matrix, pore, boundary) for Rx2..Rx6.
     pub credit: [[u16; 5]; 3],
+    /// M1d: symmetric face bond strength per absolute face (N, E, S, W).
+    pub bond: [u8; 4],
+    /// M1d: bond to the fixed ground.
+    pub anchor: u8,
+    /// M1d: quarter turns accumulated by assembly rotation.
+    pub orient: u8,
+    /// M1d: grip strength and the gripping agent's uid (0 = none).
+    pub grip: u8,
+    pub grip_uid: u64,
 }
 
 /// Species allowed in a matrix (solids).
@@ -24,7 +33,31 @@ pub const SOLID: [bool; NSPEC] = [false, false, false, true, false, true, true, 
 /// Gases (exchange through pores, leave matrices to the loose stock).
 pub const GAS: [bool; NSPEC] = [false, true, true, false, true, false, false, false, true, false];
 
+/// Cohesion per matrix unit (G, X, M, S, I; others 0). Original §11.
+pub const COHESION: [u32; NSPEC] = [0, 0, 0, 3, 0, 4, 6, 4, 0, 1];
+
 impl Parcel {
+    pub fn new(uid: u64) -> Parcel {
+        Parcel {
+            uid,
+            matrix: [0; NSPEC],
+            pore: [0; NSPEC],
+            c: 0,
+            credit: [[0; 5]; 3],
+            bond: [0; 4],
+            anchor: 0,
+            orient: 0,
+            grip: 0,
+            grip_uid: 0,
+        }
+    }
+
+    /// Bond limit of this parcel: min(255, Σ cohesion·matrix).
+    pub fn cohesion(&self) -> u8 {
+        let b: u32 = (0..NSPEC).map(|s| COHESION[s] * self.matrix[s] as u32).sum();
+        b.min(255) as u8
+    }
+
     pub fn volume(&self) -> u32 {
         volume(&self.matrix)
     }
@@ -126,6 +159,12 @@ impl World {
         }
     }
 
+    pub fn manhattan(&self, a: u32, b: u32) -> u32 {
+        let (ax, ay) = self.xy(a);
+        let (bx, by) = self.xy(b);
+        ax.abs_diff(bx) + ay.abs_diff(by)
+    }
+
     pub fn neighbor(&self, t: u32, abs_dir: u8) -> Option<u32> {
         let (dx, dy) = DIRS[(abs_dir & 3) as usize];
         self.offset(t, dx, dy)
@@ -221,10 +260,16 @@ impl World {
         self.lpeak[t as usize] as u64 * f / 1024
     }
 
-    pub fn mu_eff(&self, t: u32) -> u64 {
+    /// Ground friction without the parcel term (what a parcel slides on, M1d).
+    pub fn mu_ground(&self, t: u32) -> u64 {
         let mu = self.mu[t as usize] as u64;
         let surf = mu.saturating_sub(self.surface_c[t as usize] as u64 / 2).max(64);
-        let mut m = mu.min(surf);
+        mu.min(surf)
+    }
+
+    pub fn mu_eff(&self, t: u32) -> u64 {
+        let mu = self.mu[t as usize] as u64;
+        let mut m = self.mu_ground(t);
         if let Some(p) = self.parcels.get(&t) {
             let s = p.volume() as u64;
             if !p.blocks() && s >= 4 && p.c >= 64 {

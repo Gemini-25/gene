@@ -32,6 +32,8 @@ pub struct Sense<'a> {
     pub m1: bool,
     /// M1c parcels.
     pub parcels: bool,
+    /// M1d bonds, anchors and grip.
+    pub bonds: bool,
     pub signal: &'a BTreeMap<u64, i16>,
     pub dropped: &'a BTreeMap<u32, Vec<Media>>,
 }
@@ -121,10 +123,12 @@ fn read(a: &mut Agent, s: &Sense) -> Result<u16, Fault> {
                 (_, None) => bad,
                 (0, Some(p)) if index < 10 => Ok(p.matrix[index as usize]),
                 (1, Some(p)) => Ok(p.c as u16),
-                (2, Some(_)) => Ok(0),
-                (3, Some(_)) if index < 4 => Ok(0),
-                (4, Some(_)) => Ok(0),
+                (2, Some(p)) => Ok(p.orient as u16),
+                (3, Some(p)) if index < 4 => Ok(p.bond[index as usize] as u16),
+                (4, Some(p)) => Ok(p.anchor as u16),
                 (5, Some(p)) => Ok(p.capacity() as u16),
+                (7, Some(p)) if s.bonds => Ok(p.grip as u16),
+                (8, Some(p)) if s.bonds => Ok(p.cohesion() as u16),
                 _ => bad,
             }
         }
@@ -270,10 +274,23 @@ fn capture_parcel(a: &Agent, s: &Sense, opc: u8) -> Option<u64> {
             let (ax, ay) = rotate(a.orient, dx, dy);
             s.world.offset(me, ax, ay)?
         }
-        op::WORK if r[0] == dom::PARCEL => sense_tile(a, s.world, r[1] as i16, r[2] as i16, 1).ok()?,
+        op::WORK | op::LINK | op::UNLINK if r[0] == dom::PARCEL => {
+            sense_tile(a, s.world, r[1] as i16, r[2] as i16, 1).ok()?
+        }
         _ => return None,
     };
     s.world.parcels.get(&t).map(|p| p.uid)
+}
+
+/// LINK/UNLINK on a face: the partner parcel across face r4 of the target.
+fn capture_partner(a: &Agent, s: &Sense) -> Option<u64> {
+    let r = a.vm.regs;
+    if r[0] != dom::PARCEL || r[4] > 3 {
+        return None;
+    }
+    let t = sense_tile(a, s.world, r[1] as i16, r[2] as i16, 1).ok()?;
+    let nb = s.world.neighbor(t, r[4] as u8)?;
+    s.world.parcels.get(&nb).map(|p| p.uid)
 }
 
 fn capture_target(a: &Agent, s: &Sense) -> Option<u64> {
@@ -464,7 +481,11 @@ pub fn think(a: &mut Agent, s: &Sense, ctrl_key: [u32; 2]) {
                     let mut r8 = [0u16; 8];
                     r8.copy_from_slice(&a.vm.regs[..8]);
                     let copy = if opc == op::COPY { capture_copy(a, s) } else { None };
-                    let target_uid = if opc == op::TRANSFER { capture_target(a, s) } else { None };
+                    let target_uid = match opc {
+                        op::TRANSFER => capture_target(a, s),
+                        op::LINK | op::UNLINK if s.bonds => capture_partner(a, s),
+                        _ => None,
+                    };
                     let parcel_uid = if s.parcels { capture_parcel(a, s, opc) } else { None };
                     a.s.intent = Some(Intent { opc, sub: imm, r: r8, copy, target_uid, parcel_uid });
                 }

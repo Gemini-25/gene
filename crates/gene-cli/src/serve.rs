@@ -242,7 +242,11 @@ fn snapshot(sim: &Sim, cache: &HashCache, ctl: &Control, tps: f64) -> String {
         w.parcels
             .iter()
             .take(50000)
-            .map(|(t, p)| format!("{},{},{}", t, p.volume(), p.c))
+            // tile, volume, compression, east bond, south bond, flags (1 anchored, 2 gripped)
+            .map(|(t, p)| {
+                let flags = (p.anchor > 0) as u8 | ((p.grip > 0) as u8) << 1;
+                format!("{},{},{},{},{},{}", t, p.volume(), p.c, p.bond[1], p.bond[2], flags)
+            })
             .collect::<Vec<_>>()
             .join(","),
         list(&|a| a.uid.to_string()),

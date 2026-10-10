@@ -728,6 +728,89 @@ M1c는 M1b에 parcel을 더한다(원본 §10, §11, §12, §16, §17, §18, §6
 
 **장부.** parcel의 matrix와 pore는 tile의 물질이다. 열용량, 질량·Ug, 원자 수, 엔탈피에 모두 들어간다.
 
+## 20e. M1d: 결합·고정·grip·조립체 이동 (ruleset `gene-m1-4`)
+
+M1d는 M1c에 결합과 조립체 이동을 더한다(원본 §11, §64). parcel 매체(parcel에 붙은 tape)와 개체 밀기(PushActor)는 아직 없다.
+
+**상태.** parcel마다 다음을 더한다.
+- bond[4]: 절대 방위 면(N, E, S, W)별 결합 강도(0..255). 결합은 대칭이다. A의 면 f와 그 이웃 B의 면 f+2가 항상 같은 값이다.
+- anchor: 땅과의 결합 강도.
+- orient: 조립체 회전으로 누적된 quarter-turn.
+- grip, grip_uid: 개체와의 결합 강도와 그 개체의 UID(0이면 없음). grip은 개체당 1개, parcel당 1개다.
+
+**응집력.** b = min(255, Σ 응집 계수 × matrix 양). 계수는 G 3, X 4, M 6, S 4, I 1이다.
+- 면 결합 상한: min(bA, bB)
+- anchor와 grip 상한: b
+- matrix가 바뀌어 b가 줄면(꺼내기, 화학) 그 parcel의 모든 결합을 새 상한으로 줄인다. 상대편도 같이 줄인다.
+- parcel이 사라지면 이웃의 마주 보는 면 결합이 0이 되고 grip도 사라진다.
+- 개체가 죽으면 그 개체의 grip이 풀린다.
+
+**LINK(0x23)와 UNLINK(0x24).** r0 = 2(Parcel), (r1, r2) = 대상 parcel의 상대 좌표(접촉 반경 1), r4 = 면 0..3 / anchor 4 / grip 5, r5 = 강도 변화량.
+
+| 대상 | 조건 |
+| --- | --- |
+| 면 0..3 | 대상의 면 r4 너머 이웃 parcel이 상대다. 두 끝이 모두 개체로부터 Manhattan 1 이내여야 한다. 격자에서는 둘 중 하나가 개체가 서 있는 tile이라는 뜻이다. 그래서 서로 붙은 두 차단 parcel 사이에는 새 결합을 만들 수 없다 |
+| anchor 4 | 대상만 |
+| grip 5 | 다른 개체가 잡고 있으면 Busy. LINK는 이미 다른 parcel을 잡고 있어도 Busy. UNLINK는 자기 grip에만 작용한다 |
+
+- LINK: 강도 1당 64q. n = min(r5, 상한 − 현재, 봉인 잔량/64). 여유가 0이면 Capacity, 64q도 없으면 Energy다. n < r5이면 Partial이다.
+- UNLINK: 행동당 128q. n = min(r5, 현재). 현재가 0이면 Noop이다.
+- r15는 실제 강도 변화량이다. 에너지는 모두 대상 tile의 열이 된다. 결합 자체는 에너지를 저장하지 않는다.
+- Think 때 대상 parcel의 UID와 면 상대의 UID를 캡처한다. 실행 때 다르면 Stale이다.
+
+**단계 5: 구조 이동.** M1d에서는 모든 DRIVE를 단계 4가 아니라 단계 5에서 처리한다. 개체를 (prio6 우선순위, UID) 순서로 하나씩 처리하고, 각 처리는 그 시점의 세계를 본다.
+
+| intent | 처리 |
+| --- | --- |
+| DRIVE 0, grip 있음 | 조립체 평행 이동 |
+| DRIVE 0, grip 없음 | 단계 6(기존 동시 이동)으로 넘김 |
+| DRIVE 1, grip 있음, r5 1..3 | 조립체 회전 |
+| DRIVE 1, 그 밖 | 기존 방향 전환 |
+| DRIVE 2 | PushParcel |
+| DRIVE 3 이상 | InvalidTarget |
+
+**조립체.** 기준 parcel에서 결합 강도 > 0인 면을 N, E, S, W 순서로 따라가는 BFS 연결 성분이다. 17번째 parcel을 발견하면 Limits다.
+
+| 동작 | 기준 parcel | 이동 | 하중 진입 용량 | 기본비 |
+| --- | --- | --- | --- | --- |
+| 평행 이동 | grip parcel | 개체와 조립체가 같은 방향으로 1칸 | 16 × grip | 256 |
+| 회전 | grip parcel(중심) | 개체와 조립체가 중심 둘레로 시계 방향 r5 quarter-turn | 16 × grip | 64 |
+| PushParcel | 앞 tile의 parcel | 조립체만 개체의 앞 방향으로 1칸 | 16 × b(앞 parcel) | 256 |
+
+회전하면 각 parcel의 bond 면도 같이 돈다(면 f → f + r5). parcel orient와 개체 orient에 r5를 더한다. 중간 궤적의 충돌은 보지 않고 시작과 끝 위치만 검사한다.
+
+**실패 조건(검사 순서).**
+1. 17번째 parcel: Limits
+2. 개체나 parcel의 목적지가 경계 밖: Boundary
+3. 조립체 안에 anchor > 0인 parcel: Blocked
+4. 다른 개체의 grip: Busy. PushParcel은 자기 grip을 포함해 어떤 grip이든 Busy
+5. 목적지에 조립체 밖의 parcel: Blocked
+6. 차단 parcel의 목적지에 다른 개체, 움직이지 않는 자기 자신, 개체의 목적지, 출생 예약 tile: Blocked
+7. 개체의 목적지에 다른 개체, 출생 예약, 조립체 밖의 차단 parcel: Blocked
+8. 하중 검사 실패: Blocked
+9. 봉인 잔량 부족: Energy
+
+실패하면 시도비 말고는 아무것도 바뀌지 않는다. 결합이 자동으로 끊어지지도 않는다.
+
+**하중 검사(원본 §64).** 각 parcel v의 요구량은 다음과 같다. m은 matrix와 pore의 질량, d는 시작과 끝의 Manhattan 거리, μg는 목적지 지면 마찰(μeff에서 parcel 항을 뺀 값), Δz는 고도차다.
+
+demand(v) = ceil(m · d · μg / 960) + max(0, m · Δz)
+
+source → 기준 parcel의 용량은 위 표의 진입 용량이다. 결합된 두 parcel 사이에는 양방향 용량 16 × 강도인 간선이 있다. 각 parcel → sink의 용량은 demand(v)다. 최대 유량이 총 요구량과 같아야 통과한다. 구현은 정수 Edmonds–Karp다. 통과 여부만 쓰고 유량 배치는 저장하지 않는다. 개체 자신의 질량은 grip 하중에 넣지 않는다.
+
+**비용과 장부.**
+- 지불 = 기본비 + 개체 마찰 ceil(m_a · d_a · μeff / 960) + Σ parcel 마찰 ceil(m · d · μg / 960) + Σ max(0, 각 물체의 ΔUg)
+- 내리막에서 풀린 Ug는 그 물체의 목적지 tile 열이 된다. 오르막과 서로 상쇄하지 않는다.
+- 마찰 열은 각 물체의 출발 tile에 남는다. 기본비 열은 개체의 출발 tile에 남는다.
+- 열용량과 그 몫의 열은 시작 상태에서 모두 계산한 뒤 한꺼번에 옮긴다. 그래서 줄지어 이동해도 순서에 따라 결과가 바뀌지 않는다.
+- r15는 움직인 parcel 수다.
+
+**감각.** Parcel READ 필드가 실제 값을 돌려준다: 2 orient, 3 bond[r4], 4 anchor. M1d에서만 7 grip 강도, 8 응집력 b를 더한다.
+
+**관찰.** `stats.csv`에 links(LINK로 더한 강도 합), unlinks, assembly_moves, parcels_moved, pushes, load_failures 열을 더한다.
+
+**저장 호환.** Parcel 구조가 바뀌어 parcel이 있는 M1c 저장 파일은 읽을 수 없다. parcel이 없는 저장(M0..M1b)과 M0 물리 지문은 그대로다.
+
 ## 21. 확장 규칙과 로드맵
 
 ### 증거 규칙 (원본 §62를 강제 규칙으로 승격)
@@ -745,6 +828,6 @@ M1c는 M1b에 parcel을 더한다(원본 §10, §11, §12, §16, §17, §18, §6
 | --- | --- | --- |
 | M0 | 이 명세 | — |
 | E1 | 조상 생존 실험 | M0 시험 통과 |
-| M1 | parcel, LINK, EMIT, 공개 tape, draft·learned(원본 v0..v1의 나머지) | E1에서 지속 개체군 확인 |
+| M1 | parcel, LINK, EMIT, 공개 tape, draft·learned(원본 v0..v1의 나머지). M1a..M1d로 구현함(§20b..§20e) | E1에서 지속 개체군 확인 |
 | M2 | 병렬 Think, Bevy viewer, S2 성능 gate | M1 |
 | 연구 부록 | 원본 Matter-1, R7..R10(형상 역학, 일반 화학, 발생, 자기·광학, 파동장, 핵, 양자, LawField, 분산) | 위 증거 규칙을 항목별로 통과 |

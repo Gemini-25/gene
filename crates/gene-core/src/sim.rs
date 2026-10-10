@@ -19,6 +19,8 @@ pub const RULESET_M1: &str = "gene-m1-1";
 pub const RULESET_M1B: &str = "gene-m1-2";
 /// M1c: M1b + parcels (SPEC §20d).
 pub const RULESET_M1C: &str = "gene-m1-3";
+/// M1d: M1c + bonds, anchors, grip and assembly motion (SPEC §20e).
+pub const RULESET_M1D: &str = "gene-m1-4";
 
 /// Capabilities switched on by the ruleset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -26,15 +28,17 @@ pub struct Caps {
     pub m1: bool,
     pub commit: bool,
     pub parcels: bool,
+    pub bonds: bool,
 }
 
 impl Caps {
     pub fn of(ruleset: &str) -> Option<Caps> {
         match ruleset {
-            RULESET => Some(Caps { m1: false, commit: false, parcels: false }),
-            RULESET_M1 => Some(Caps { m1: true, commit: false, parcels: false }),
-            RULESET_M1B => Some(Caps { m1: true, commit: true, parcels: false }),
-            RULESET_M1C => Some(Caps { m1: true, commit: true, parcels: true }),
+            RULESET => Some(Caps::default()),
+            RULESET_M1 => Some(Caps { m1: true, ..Caps::default() }),
+            RULESET_M1B => Some(Caps { m1: true, commit: true, ..Caps::default() }),
+            RULESET_M1C => Some(Caps { m1: true, commit: true, parcels: true, bonds: false }),
+            RULESET_M1D => Some(Caps { m1: true, commit: true, parcels: true, bonds: true }),
             _ => None,
         }
     }
@@ -469,6 +473,7 @@ impl Sim {
         self.stage_think();
         self.stage_seal();
         self.stage_local_resolve();
+        self.stage_assembly();
         self.stage_single_motion();
         self.stage_transport();
         self.stage_environment();
@@ -484,7 +489,10 @@ impl Sim {
             1 => self.stage_think(),
             2 => self.stage_seal(),
             3 => self.stage_local_resolve(),
-            4 => self.stage_single_motion(),
+            4 => {
+                self.stage_assembly();
+                self.stage_single_motion()
+            }
             5 => self.stage_transport(),
             6 => self.stage_environment(),
             7 => self.stage_metabolism(),
@@ -525,6 +533,7 @@ impl Sim {
             tick: self.st.tick,
             m1: self.caps.m1,
             parcels: self.caps.parcels,
+            bonds: self.caps.bonds,
             signal: &self.st.signal,
             dropped: &self.st.dropped,
         };
@@ -639,6 +648,7 @@ impl Sim {
     }
 
     fn kill(&mut self, i: usize, cause: crate::observer::DeathCause) {
+        self.release_grip(i);
         let t = self.tile_of(i);
         let a = &mut self.st.agents[i];
         let w = &mut self.st.world;

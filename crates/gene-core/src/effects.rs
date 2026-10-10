@@ -1,4 +1,4 @@
-//! Stage 4 LocalResolve: TRANSFER, DRIVE Rotate, WRITE, WORK, COPY dispatch. SPEC §10, §13.
+//! Stage 4 LocalResolve: TRANSFER, DRIVE Rotate, WRITE, WORK, COPY, LINK dispatch. SPEC §10, §13.
 
 use crate::agent::{ENERGY_MAX, INV_VOLUME};
 use crate::intent::{dom, rotate, sub, unpack, Intent, Outcome, OFFSETS};
@@ -65,7 +65,8 @@ impl Sim {
         let mut order: Vec<(usize, u64, u64, usize)> = Vec::new();
         for (i, a) in self.st.agents.iter().enumerate() {
             let Some(it) = &a.s.intent else { continue };
-            if it.opc == op::DRIVE && it.sub == sub::DRIVE_TRANSLATE {
+            // motion is stage 6; with bonds every DRIVE is stage 5 (it may carry an assembly)
+            if it.opc == op::DRIVE && (it.sub == sub::DRIVE_TRANSLATE || self.caps.bonds) {
                 continue;
             }
             let bx = (a.x as i64 - ox).div_euclid(64);
@@ -87,7 +88,8 @@ impl Sim {
                     None => continue, // Release reserved; receipt at stage 10
                 },
                 op::EMIT => self.eff_emit(i, &it),
-                _ => (Outcome::InvalidTarget, 0), // LINK, UNLINK: no parcels yet
+                op::LINK | op::UNLINK if self.caps.bonds => self.eff_link(i, &it),
+                _ => (Outcome::InvalidTarget, 0), // LINK, UNLINK before M1d
             };
             self.finish_effect(i, &it, res);
         }
@@ -277,7 +279,7 @@ impl Sim {
                     self.st.next_parcel_uid += 1;
                     self.st.world.parcels.insert(
                         dst_tile,
-                        crate::world::Parcel { uid, matrix: [0; NSPEC], pore: [0; NSPEC], c: 0, credit: [[0; 5]; 3] },
+                        crate::world::Parcel::new(uid),
                     );
                     self.obs.m1.parcels_created += 1;
                 }
@@ -358,7 +360,7 @@ impl Sim {
         (if n == amount { Outcome::Ok } else { Outcome::Partial }, n)
     }
 
-    fn eff_rotate(&mut self, i: usize, it: &Intent) -> Res {
+    pub(crate) fn eff_rotate(&mut self, i: usize, it: &Intent) -> Res {
         match it.sub {
             sub::DRIVE_ROTATE => {
                 let q = it.r[5];
@@ -504,13 +506,7 @@ impl Sim {
             if let Some(k) = touched.iter().position(|x| x.0 == t) {
                 return k;
             }
-            let p = self.st.world.parcels.get(&t).cloned().unwrap_or(crate::world::Parcel {
-                uid: 0,
-                matrix: [0; NSPEC],
-                pore: [0; NSPEC],
-                c: 0,
-                credit: [[0; 5]; 3],
-            });
+            let p = self.st.world.parcels.get(&t).cloned().unwrap_or(crate::world::Parcel::new(0));
             touched.push((t, p));
             touched.len() - 1
         };
@@ -557,6 +553,7 @@ impl Sim {
                 w.force_loose(t, s, p.pore[s] as u64);
             }
         }
-        w.parcel_changed(t);
+        self.clamp_bonds(t);
+        self.st.world.parcel_changed(t);
     }
 }

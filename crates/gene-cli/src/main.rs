@@ -18,7 +18,7 @@ const USAGE: &str = "gene — Gene M0 headless runner
 USAGE:
   gene run    [--seed N] [--size S] [--agents A] [--ticks T] [--founder NAME|FILE]
               [--out DIR] [--stats-every K] [--map-every M] [--checkpoint-every C]
-              [--audit-every K] [--keep-going] [--save-final] [--quiet] [--ruleset m0|m1a|m1b|m1c] [--sim-threads N]
+              [--audit-every K] [--keep-going] [--save-final] [--quiet] [--ruleset m0|m1a|m1b|m1c|m1d] [--sim-threads N]
   gene batch  --seeds A-B [--threads N] [same options as run]  (one directory per seed)
   gene resume --from CHECKPOINT [--ticks T] [--out DIR] [...]
   gene serve  [--port 8080] [--load SAVE.bin] [same world options as run]
@@ -108,7 +108,8 @@ fn parse_opts(args: &[String], o: &mut Opts) -> BTreeMap<String, String> {
                     "m1" | "m1a" | "gene-m1-1" => gene_core::sim::RULESET_M1.into(),
                     "m1b" | "gene-m1-2" => gene_core::sim::RULESET_M1B.into(),
                     "m1c" | "gene-m1-3" => gene_core::sim::RULESET_M1C.into(),
-                    other => die(format!("unknown ruleset {other} (m0, m1a, m1b, m1c)")),
+                    "m1d" | "gene-m1-4" => gene_core::sim::RULESET_M1D.into(),
+                    other => die(format!("unknown ruleset {other} (m0, m1a, m1b, m1c, m1d)")),
                 }
             }
             "--seeds" | "--threads" | "--from" | "--port" | "--load" => {
@@ -272,7 +273,7 @@ fn run(mut sim: Sim, o: &Opts) -> Summary {
         stats,
         "tick,pop,births,deaths_energy,deaths_body,mean_energy,mean_inv_g,embryos,max_gen,mean_gen,distinct_genomes,mean_genome_len,\
 upkeep_q,vm_q,attempt_q,effect_q,photosynthesis,respiration,moves,inert,loose_G,loose_C,loose_O,loose_W,dropped_pages,mean_theta,ledger_residual,\
-emits,signal_reads,public_reads,copies_from_public,copies_to_public,draft_to_embryo,public_writes,drafts_created,bit_flips,foreign_births,commits,adoptions,parcels,parcels_created,parcel_reactions"
+emits,signal_reads,public_reads,copies_from_public,copies_to_public,draft_to_embryo,public_writes,drafts_created,bit_flips,foreign_births,commits,adoptions,parcels,parcels_created,parcel_reactions,links,unlinks,assembly_moves,parcels_moved,pushes,load_failures"
     )
     .unwrap();
     writeln!(births, "tick,uid,parent,root,generation,genome,len,structural_op,structural_applied,point_flips,foreign,x,y").unwrap();
@@ -405,7 +406,7 @@ fn write_stats(out: &mut impl Write, sim: &mut Sim) {
     let a = sim.audit();
     writeln!(
         out,
-        "{},{},{},{},{},{:.0},{:.2},{},{},{:.2},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{},{},{},{},{},{:.0},{:.2},{},{},{:.2},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         sim.st.tick,
         ag.len(),
         sim.obs.total_births,
@@ -447,7 +448,13 @@ fn write_stats(out: &mut impl Write, sim: &mut Sim) {
         sim.obs.m1.adoptions,
         sim.st.world.parcels.len(),
         sim.obs.m1.parcels_created,
-        sim.obs.m1.parcel_reactions
+        sim.obs.m1.parcel_reactions,
+        sim.obs.m1.links,
+        sim.obs.m1.unlinks,
+        sim.obs.m1.assembly_moves,
+        sim.obs.m1.parcels_moved,
+        sim.obs.m1.pushes,
+        sim.obs.m1.load_failures
     )
     .unwrap();
 }

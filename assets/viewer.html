@@ -189,8 +189,9 @@ function draw() {
     }
   }
   if (state.parcels && state.parcels.length) {
+    // stride 6: tile, volume, compression, east bond, south bond, flags (1 anchored, 2 gripped)
     const pc = state.parcels;
-    for (let k = 0; k < pc.length; k += 3) {
+    for (let k = 0; k < pc.length; k += 6) {
       const t = pc[k], s = pc[k + 1], c = pc[k + 2];
       const x = t % W, y = Math.floor(t / W);
       const blocks = s >= 16 && c >= 128;
@@ -198,6 +199,26 @@ function draw() {
       ctx.fillStyle = `rgb(${shade},${shade - 10},${shade - 25})`;
       const inset = blocks ? 0 : 0.18;
       ctx.fillRect(x + inset, y + inset, 1 - 2 * inset, 1 - 2 * inset);
+    }
+    if (view.scale >= 4) {
+      ctx.strokeStyle = "rgba(235,104,52,0.9)";
+      for (let k = 0; k < pc.length; k += 6) {
+        const t = pc[k], be = pc[k + 3], bs = pc[k + 4], f = pc[k + 5];
+        const x = t % W + 0.5, y = Math.floor(t / W) + 0.5;
+        for (const [b, dx, dy] of [[be, 1, 0], [bs, 0, 1]]) {
+          if (!b) continue;
+          ctx.lineWidth = 0.08 + 0.3 * Math.min(1, b / 64);
+          ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + dx, y + dy); ctx.stroke();
+        }
+        if (f & 1) { // anchor: a small square at the centre
+          ctx.fillStyle = "rgba(40,40,40,0.9)";
+          ctx.fillRect(x - 0.12, y - 0.12, 0.24, 0.24);
+        }
+        if (f & 2) { // grip: outline
+          ctx.lineWidth = 0.1;
+          ctx.strokeRect(x - 0.42, y - 0.42, 0.84, 0.84);
+        }
+      }
     }
   }
   const a = state.agents, n = a.uid.length;

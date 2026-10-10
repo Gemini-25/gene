@@ -11,7 +11,7 @@
 | 항목 | 상태 |
 | --- | --- |
 | M0 엔진(`gene-core`) | 구현 완료 |
-| 시험 | 48개 통과 (단위 17, 장부·결정론·병렬 5, VM·이동 10, M1a/b 9, parcel 6, 조상 크기 1) |
+| 시험 | 61개 통과 (단위 19, 장부·결정론·병렬 5, VM·이동 10, M1a/b 9, parcel 6, 결합·조립체 11, 조상 크기 1) |
 | 에너지·원자 장부 | 시험에서는 매 tick 정확히 일치, 실행 중에는 4096 tick마다 검사 |
 | 결정론 | 같은 seed면 같은 hash. 저장 후 이어 간 결과도 같음 |
 | E1-a: Founder-4(원본 §57) | 20/20 seed가 첫 밤에 전멸 |
@@ -20,7 +20,8 @@
 | 속도(512², 개체 약 1,700) | 약 190 TPS, 단일 thread. 명세 목표 S1(500+) 미달, 병목은 환경 수송 |
 | M1a(신호·공개 기록·초안) | ruleset `gene-m1-1`(`--ruleset m1a`) |
 | M1b(학습 채택) | ruleset `gene-m1-2`(`--ruleset m1b`): DraftCommit, learned binding, 실행 중 옛 코드 보존 |
-| M1c(구조물 parcel) | ruleset `gene-m1-3`(`--ruleset m1c`): 짓기·압축·내부 저장·차폐·통행 차단·내부 화학. 결합·조립체 이동은 M1d |
+| M1c(구조물 parcel) | ruleset `gene-m1-3`(`--ruleset m1c`): 짓기·압축·내부 저장·차폐·통행 차단·내부 화학 |
+| M1d(결합·조립체) | ruleset `gene-m1-4`(`--ruleset m1d`): LINK/UNLINK 면 결합·고정·grip, 최대 유량 하중 검사, 16칸까지 조립체 평행 이동·회전, 밀기 |
 | 화면 | `gene serve`: 브라우저용 로컬 viewer(지도·재생·속도·개체 상세·genome 순위). Bevy는 보류 |
 
 ## 빠른 시작
@@ -49,7 +50,7 @@ cargo build --release
 python3 scripts/e1_summary.py runs/E1b
 ```
 
-`--founder`에는 `founder4`, `founder5` 또는 어셈블리 파일 경로를 줄 수 있다. 실행마다 다음 파일이 생긴다.
+`--founder`에는 `founder4`, `founder5`, `founder6` 또는 어셈블리 파일 경로를 줄 수 있다. `--ruleset`은 `m0`(기본), `m1a`, `m1b`, `m1c`, `m1d`다. 실행마다 다음 파일이 생긴다.
 
 | 파일 | 내용 |
 | --- | --- |
@@ -67,7 +68,10 @@ crates/gene-core   시뮬레이션 core (Bevy·관찰기에 의존하지 않음)
   world.rs         지형 생성 WorldGen-3, tile 상태
   species.rs       10종 물질, 원소, 반응 Rx0..Rx8
   vm.rs, isa.rs    레지스터 VM, 어셈블러
-  effects.rs       TRANSFER·WRITE·WORK·COPY (stage 4)
+  effects.rs       TRANSFER·WRITE·WORK·COPY·LINK (stage 4)
+  records.rs       신호·공개 기록·초안·학습 채택 (M1a, M1b)
+  parcels.rs       구조물 parcel: WORK, pore 교환, 내부 화학 (M1c)
+  bonds.rs         결합·grip, 하중 graph, 조립체 이동 (M1d, stage 5)
   repro.rs         배아 상태 기계
   mutation.rs      point·구조 변이 8종
   motion.rs        동시 이동 의존 graph (stage 6)
@@ -75,7 +79,7 @@ crates/gene-core   시뮬레이션 core (Bevy·관찰기에 의존하지 않음)
   sim.rs           tick 순서, 장부, 저장·이어하기
 crates/gene-cli    실행기 `gene` (run, batch, resume, serve, inspect, asm)
   serve.rs         로컬 viewer 서버 (std만 사용, 시뮬레이션 thread가 상태를 단독 소유)
-assets/            공개 조상 founder4.asm, founder5.asm, viewer.html
+assets/            공개 조상 founder4/5/6.asm, viewer.html
 scripts/           결과 집계
 docs/              명세, 결과, 원본 보관본
 ```

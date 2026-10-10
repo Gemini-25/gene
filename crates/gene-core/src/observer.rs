@@ -99,6 +99,14 @@ pub struct M1Stats {
     pub adoptions: u64,
     pub parcels_created: u64,
     pub parcel_reactions: u64,
+    /// M1d: strength units added by LINK, UNLINK actions, assembly moves (and parcels carried),
+    /// pushes, and moves refused by the load graph.
+    pub links: u64,
+    pub unlinks: u64,
+    pub assembly_moves: u64,
+    pub parcels_moved: u64,
+    pub pushes: u64,
+    pub load_failures: u64,
 }
 
 #[derive(Clone, Debug, Default)]

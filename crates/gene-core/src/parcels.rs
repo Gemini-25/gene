@@ -307,7 +307,7 @@ mod tests {
         let prog = crate::isa::assemble(".module 0\nspin: YIELD\n JUMP spin\n").unwrap();
         let mut s = Sim::with_program_ruleset(Config { seed: 2, width: 64, height: 64, agents: 1 }, &prog, RULESET_M1C).unwrap();
         let t = s.st.world.idx(40, 40);
-        s.st.world.parcels.insert(t, Parcel { uid: 77, matrix, pore: [0; NSPEC], c: 0, credit: [[0; 5]; 3] });
+        s.st.world.parcels.insert(t, Parcel { matrix, ..Parcel::new(77) });
         s.st.world.parcel_changed(t);
         s.fixture_rebase();
         (s, t)
