@@ -98,6 +98,9 @@ pub struct Lineage {
     running: BTreeMap<u64, (u64, bool, u32)>,
     /// (agent, media, author) already reported.
     reported: BTreeSet<(u64, u64, u64)>,
+    /// Code media (genomes) and whose genome each is: cells of such a medium with no recorded
+    /// origin are that agent's (its replication copies are not tracked to save memory).
+    code_of: BTreeMap<u64, u64>,
     pub transfers: Vec<Transfer>,
     pub writes: u64,
     pub copies: u64,
@@ -106,6 +109,11 @@ pub struct Lineage {
 }
 
 impl Lineage {
+    /// Register an agent's genome medium (founders; children come with their Born fact).
+    pub fn code(&mut self, media: u64, agent: u64) {
+        self.code_of.insert(media, agent);
+    }
+
     /// The spans of a medium, sorted and disjoint.
     pub fn spans(&self, media: u64) -> &[Span] {
         self.spans.get(&media).map_or(&[], |v| v.as_slice())
@@ -169,8 +177,9 @@ impl Lineage {
             MediaFact::Copy { tick, agent, src, own_code, src_start, dst, dst_start, len } => {
                 self.copies += 1;
                 self.copied_cells += len as u64;
-                // cells of one's own code without a recorded origin are that agent's
-                let fill = own_code.then_some(Author::Code(agent));
+                // cells of one's own code without a recorded origin are that agent's; so are those
+                // of another genome, alive or dropped as a record after death
+                let fill = if own_code { Some(Author::Code(agent)) } else { self.code_of.get(&src).map(|&a| Author::Code(a)) };
                 for (a, b, author) in self.slice(src, src_start, len, fill) {
                     let off = a - src_start;
                     self.set(dst, dst_start + off, dst_start + off + (b - a), Origin::Copied { src, agent, tick, author });
@@ -187,6 +196,7 @@ impl Lineage {
             }
             MediaFact::Born { agent, parent, media, .. } => {
                 self.parent.insert(agent, parent);
+                self.code_of.insert(media, agent);
                 if self.spans.contains_key(&media) {
                     self.running.insert(media, (agent, false, u32::MAX));
                 }
@@ -262,6 +272,20 @@ mod tests {
         assert_eq!(l.transfers.len(), 1, "reported once");
         let t = &l.transfers[0];
         assert_eq!((t.agent, t.author, t.cells, t.kind, t.learned), (9, 5, 6, TransferKind::NonKin, true));
+    }
+
+    #[test]
+    fn learning_a_dead_agents_dropped_genome_is_a_transfer_from_it() {
+        let mut l = Lineage::default();
+        // agent 5 was born with genome 100 (its copies were not tracked); it died and 100 lies on
+        // the ground; agent 9 copies it into draft 400 and adopts it
+        l.push(&MediaFact::Born { tick: 1, agent: 5, parent: 2, media: 100 });
+        l.push(&MediaFact::Copy { tick: 2, agent: 9, src: 100, own_code: false, src_start: 0, dst: 400, dst_start: 0, len: 600 });
+        l.push(&MediaFact::Adopt { tick: 3, agent: 9, media: 400, len: 600 });
+        l.push(&MediaFact::Exec { tick: 4, agent: 9, media: 400 });
+        assert_eq!(l.transfers.len(), 1);
+        let t = &l.transfers[0];
+        assert_eq!((t.author, t.cells, t.kind, t.learned), (5, 600, TransferKind::NonKin, true));
     }
 
     #[test]

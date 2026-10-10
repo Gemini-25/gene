@@ -254,6 +254,9 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
     let mut terr = gene_core::relations::Territory::new(sim.st.world.w, sim.st.world.h);
     let mut member: BTreeMap<u64, u64> = BTreeMap::new();
     let mut lin = gene_core::lineage::Lineage::default();
+    for a in &sim.st.agents {
+        lin.code(a.code.uid, a.uid);
+    }
     sim.obs.rel = Some(Vec::new());
     sim.obs.lineage = Some(Vec::new());
     let mut timeline = Timeline { every: 4096, budget: 400_000_000, points: Vec::new() };
@@ -287,6 +290,9 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                                 terr = gene_core::relations::Territory::new(sim.st.world.w, sim.st.world.h);
                                 member.clear();
                                 lin = gene_core::lineage::Lineage::default();
+                                for a in &sim.st.agents {
+                                    lin.code(a.code.uid, a.uid);
+                                }
                                 sim.obs.lineage = Some(Vec::new());
                                 recent.clear();
                                 cache.refresh(&sim);

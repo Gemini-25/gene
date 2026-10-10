@@ -586,6 +586,9 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     let mut graph = gene_core::relations::Graph::default();
     let mut artifacts = gene_core::artifacts::Artifacts::default();
     let mut lineage = gene_core::lineage::Lineage::default();
+    for a in &sim.st.agents {
+        lineage.code(a.code.uid, a.uid);
+    }
     sim.obs.lineage = Some(Vec::new());
     let mut groups = open("groups.csv");
     writeln!(groups, "window,tick,id,agents,parcels,media,kinds,weight,windows,border,hub,civ,parent").unwrap();
