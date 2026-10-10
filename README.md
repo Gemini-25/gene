@@ -24,9 +24,15 @@
 | M1b(학습 채택) | ruleset `gene-m1-2`(`--ruleset m1b`): DraftCommit, learned binding, 실행 중 옛 코드 보존 |
 | M1c(구조물 parcel) | ruleset `gene-m1-3`(`--ruleset m1c`): 짓기·압축·내부 저장·차폐·통행 차단·내부 화학 |
 | M1d(결합·조립체) | ruleset `gene-m1-4`(`--ruleset m1d`): LINK/UNLINK 면 결합·고정·grip, 최대 유량 하중 검사, 16칸까지 조립체 평행 이동·회전, 밀기 |
-| 화면 | `gene serve`: 브라우저용 로컬 viewer(지도·재생·속도·개체 상세·genome 순위·탄소 그래프). Bevy는 보류 |
+| 화면 | `gene serve`: 브라우저용 로컬 viewer. WebGL2로 그리며 60 FPS를 목표로 한다(지형 bake, 개체 point sprite, 해상도 자동 조절). 절차적 텍스처(풀·마른 땅·바위·젖은 흙), 물결, 낮·밤, 생물 모양 개체와 보간 이동. 재생·속도·개체 상세·genome 순위·탄소 그래프·새 행동 목록 |
 
-진행 상황과 결정이 필요한 것: [`docs/NEXT.md`](docs/NEXT.md)
+진행 상황, 완성률, 결정이 필요한 것: [`docs/NEXT.md`](docs/NEXT.md)
+
+![지도](docs/img/viewer_map.jpg)
+
+| 군집 | 가까이 |
+| --- | --- |
+| ![군집](docs/img/viewer_colonies.jpg) | ![가까이](docs/img/viewer_closeup.jpg) |
 
 ## 빠른 시작
 

@@ -28,6 +28,8 @@ struct Control {
 struct Shared {
     control: Control,
     snapshot: Arc<String>,
+    /// Agents as packed arrays (see `agents_bin`).
+    agents: Arc<Vec<u8>>,
     history: Arc<String>,
     behaviors: Arc<String>,
 }
@@ -50,6 +52,7 @@ pub fn serve(sim: Sim, o: ServeOpts) {
     let shared = Arc::new(Mutex::new(Shared {
         control: Control { paused: true, tps: 10, step: 0 },
         snapshot: Arc::new(String::from("{}")),
+        agents: Arc::new(vec![0; 4]),
         history: Arc::new(String::from("{}")),
         behaviors: Arc::new(String::from("{}")),
     }));
@@ -235,6 +238,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
             let snap = snapshot(&sim, &cache, &ctl, tps);
             let mut sh = shared.lock().unwrap();
             sh.snapshot = Arc::new(snap);
+            sh.agents = Arc::new(agents_bin(&sim, &cache));
             sh.history = Arc::new(hist.json());
             sh.behaviors = Arc::new(behaviors_json(&behavior));
             dirty = ran > 0;
@@ -250,17 +254,41 @@ fn color_u32(h: &[u8; 32]) -> u32 {
     (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32
 }
 
+/// Agents for the viewer, little endian, grouped by element size so typed arrays line up:
+/// u32 n; u32 uid[n]; u32 colour[n]; u16 x[n]; u16 y[n]; u16 energy[n]; u16 generation[n];
+/// u8 orientation[n]; u8 embryo state[n].
+fn agents_bin(sim: &Sim, cache: &HashCache) -> Vec<u8> {
+    let ag = &sim.st.agents;
+    let mut out = Vec::with_capacity(4 + 18 * ag.len());
+    out.extend_from_slice(&(ag.len() as u32).to_le_bytes());
+    for a in ag {
+        out.extend_from_slice(&(a.uid as u32).to_le_bytes());
+    }
+    for a in ag {
+        out.extend_from_slice(&cache.0.get(&a.uid).map_or(0, color_u32).to_le_bytes());
+    }
+    type Field = fn(&gene_core::agent::Agent) -> u16;
+    let fields: [Field; 4] = [|a| a.x, |a| a.y, |a| (a.energy >> 1) as u16, |a| a.generation.min(65535) as u16];
+    for f in fields {
+        for a in ag {
+            out.extend_from_slice(&f(a).to_le_bytes());
+        }
+    }
+    out.extend(ag.iter().map(|a| a.orient));
+    out.extend(ag.iter().map(|a| a.embryo_state_code().min(255) as u8));
+    out
+}
+
 fn snapshot(sim: &Sim, cache: &HashCache, ctl: &Control, tps: f64) -> String {
     let ag = &sim.st.agents;
     let w = &sim.st.world;
     let tick = sim.st.tick;
     let p = (tick + 1024) % 4096;
     let light = (1024 - (p as i64 - 1024).abs()).max(0) as f64 / 1024.0;
-    let list = |f: &dyn Fn(&gene_core::agent::Agent) -> String| ag.iter().map(f).collect::<Vec<_>>().join(",");
     format!(
         "{{\"tick\":{tick},\"day\":{},\"phase\":{p},\"light\":{light:.3},\"pop\":{},\"births\":{},\"deaths\":{},\
 \"genomes\":{},\"tps\":{tps:.1},\"paused\":{},\"speed\":{},\"w\":{},\"h\":{},\"seed\":{},\"ruleset\":\"{}\",\
-\"signal\":[{}],\"parcels\":[{}],\"agents\":{{\"uid\":[{}],\"x\":[{}],\"y\":[{}],\"c\":[{}],\"e\":[{}],\"g\":[{}],\"emb\":[{}]}}}}",
+\"signal\":[{}],\"parcels\":[{}]}}",
         tick / 4096,
         ag.len(),
         sim.obs.total_births,
@@ -283,13 +311,6 @@ fn snapshot(sim: &Sim, cache: &HashCache, ctl: &Control, tps: f64) -> String {
             })
             .collect::<Vec<_>>()
             .join(","),
-        list(&|a| a.uid.to_string()),
-        list(&|a| a.x.to_string()),
-        list(&|a| a.y.to_string()),
-        list(&|a| cache.0.get(&a.uid).map_or(0, color_u32).to_string()),
-        list(&|a| a.energy.to_string()),
-        list(&|a| a.generation.to_string()),
-        list(&|a| a.embryo_state_code().to_string()),
     )
 }
 
@@ -448,25 +469,29 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::ge
             let _ = tx.send(format!("{{\"distinct\":{},\"top\":[{}]}}", v.len(), items.join(",")));
         }
         Req::Water(tx) => {
+            // 4 bytes per tile: water, loose G (dead organic matter), flags (1 records, 2 ore), loose S
             let w = &sim.st.world;
-            let mut out = Vec::with_capacity(w.n());
+            let mut out = Vec::with_capacity(4 * w.n());
             for t in 0..w.n() as u32 {
-                let mut v = w.loose_total(t, W).min(254) as u8;
-                if sim.st.dropped.contains_key(&t) {
-                    v = 255; // marker: dropped records here
-                }
-                out.push(v);
+                let flags = sim.st.dropped.contains_key(&t) as u8 | ((w.loose_total(t, gene_core::species::X) > 0) as u8) << 1;
+                out.push(w.loose_total(t, W).min(255) as u8);
+                out.push(w.loose_total(t, gene_core::species::G).min(255) as u8);
+                out.push(flags);
+                out.push(w.loose_total(t, gene_core::species::S).min(255) as u8);
             }
             let _ = tx.send(out);
         }
         Req::Terrain(tx) => {
+            // header w, h; 4 bytes per tile: elevation 0..15, moisture, light peak, 0
             let w = &sim.st.world;
-            let mut out = Vec::with_capacity(8 + 2 * w.n());
+            let mut out = Vec::with_capacity(8 + 4 * w.n());
             out.extend_from_slice(&w.w.to_le_bytes());
             out.extend_from_slice(&w.h.to_le_bytes());
             for t in 0..w.n() {
-                out.push(w.elev[t] as u8);
+                out.push(w.elev[t].clamp(0, 255) as u8);
+                out.push(((w.mu[t].saturating_sub(256)) >> 1).min(255) as u8);
                 out.push((w.lpeak[t] >> 8) as u8);
+                out.push(0);
             }
             let _ = tx.send(out);
         }
@@ -534,6 +559,10 @@ fn handle(mut stream: TcpStream, shared: &Arc<Mutex<Shared>>, tx: &mpsc::Sender<
         "/api/state" => {
             let s = shared.lock().unwrap().snapshot.clone();
             respond(&mut stream, "200 OK", json, s.as_bytes())
+        }
+        "/api/agents" => {
+            let b = shared.lock().unwrap().agents.clone();
+            respond(&mut stream, "200 OK", "application/octet-stream", &b)
         }
         "/api/history" => {
             let s = shared.lock().unwrap().history.clone();

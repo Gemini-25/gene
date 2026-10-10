@@ -40,6 +40,8 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 main { display: flex; height: calc(100% - 46px); min-height: 0; }
 #mapwrap { flex: 1; position: relative; min-width: 0; background: var(--page); }
 #map { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+#fps { position: absolute; right: 12px; top: 10px; color: #f4f4f0; font: 12px/1.2 ui-monospace, Menlo, monospace;
+  background: rgba(10,12,20,0.55); border-radius: 6px; padding: 3px 8px; pointer-events: none; font-variant-numeric: tabular-nums; }
 #maphint { position: absolute; left: 12px; bottom: 10px; color: var(--muted); font-size: 12px;
   background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; }
 aside { width: 380px; overflow-y: auto; border-left: 1px solid var(--border); background: var(--surface); padding: 12px 16px; }
@@ -94,7 +96,8 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
 <main>
   <div id="mapwrap">
     <canvas id="map"></canvas>
-    <div id="maphint">휠: 확대 · 끌기: 이동 · 클릭: 개체 선택</div>
+    <div id="maphint">휠: 확대 · 끌기: 이동 · 클릭: 개체 선택 · 두 번 클릭: 전체 보기</div>
+    <div id="fps">– fps</div>
   </div>
   <aside>
     <div class="tiles">
@@ -126,11 +129,9 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
 "use strict";
 const $ = (id) => document.getElementById(id);
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-let state = null, hist = null, terrain = null, water = null, W = 0, H = 0;
+let state = null, hist = null, W = 0, H = 0;
 let selected = 0, highlight = null, showSignal = false;
-let view = { scale: 1, ox: 0, oy: 0, fitted: false };
-const base = document.createElement("canvas");
-const map = $("map"), ctx = map.getContext("2d");
+const map = $("map");
 
 async function getJSON(p) { const r = await fetch(p, { cache: "no-store" }); return r.json(); }
 async function getBin(p) { const r = await fetch(p, { cache: "no-store" }); return new Uint8Array(await r.arrayBuffer()); }
@@ -139,29 +140,667 @@ const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? (n / 1e3).
 const fmtAxis = (n) => fmt(n).replace(".0K", "K").replace(".0M", "M");
 const hexColor = (c) => "#" + c.toString(16).padStart(6, "0");
 
-// ---------------- map
-function rebuildBase() {
-  if (!terrain) return;
-  base.width = W; base.height = H;
-  const bctx = base.getContext("2d");
-  const img = bctx.createImageData(W, H);
-  const dark = matchMedia("(prefers-color-scheme: dark)").matches && document.documentElement.dataset.theme !== "light"
-    || document.documentElement.dataset.theme === "dark";
-  for (let t = 0; t < W * H; t++) {
-    const e = terrain[8 + 2 * t] / 15;
-    let g = dark ? 26 + 70 * e : 150 + 90 * e;
-    let r = g * 0.97, gg = g * 0.95, b = g * 0.88;
-    if (water) {
-      const wv = water[t];
-      if (wv === 255) { r = 140; gg = 95; b = 60; }
-      else {
-        const f = Math.min(1, wv / 64);
-        r = r * (1 - 0.65 * f); gg = gg * (1 - 0.35 * f); b = b * (1 - f) + (dark ? 150 : 205) * f;
+// ---------------- map: WebGL2 renderer, drawn every animation frame (target 60+ fps)
+// Terrain is one shader pass over the world rectangle; it blends four textures generated below
+// (grass, dry ground, rock, damp soil) with hillshading, water, ground detail, parcels and
+// day/night light. Agents are instanced quads drawn as small creatures; their positions are
+// interpolated between snapshots so movement stays smooth while the simulation reports at ~4 Hz.
+const gl = map.getContext("webgl2", { antialias: true, alpha: false });
+let view = { scale: 1, ox: 0, oy: 0, fitted: false };   // css px per tile, offset in css px
+let zoomTo = null;                                      // smoothed wheel zoom target
+let terrainTex = null, fieldTex = null, parcelTex = null, sigTex = null, groundTex = null, noiseTex = null;
+let parcelBuf = null, sigBuf = null, agentTex = null, agentBuf = null, lastAgentTiles = [];
+const DOT_LOD = 6;   // device px per tile below which agents are drawn by the terrain pass
+const fps = { frames: 0, since: performance.now(), value: 0, scale: 1, lowered: 0, good: 0, start: performance.now() };
+window.__fps = () => fps.value;
+// ?debug=noterrain,noagents,fixed (measurement aid: skip a pass, or keep full resolution)
+const DEBUG = (new URLSearchParams(location.search).get("debug") || "").split(",");
+
+// --- procedural textures (tileable, seeded, made once at startup)
+function rng(seed) { let s = seed >>> 0; return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ t >>> 15, t | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61); return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function valueNoise(size, cells, seed) {
+  // tileable value noise on a cells x cells lattice, smooth interpolation
+  const r = rng(seed), lat = new Float32Array(cells * cells).map(() => r()), out = new Float32Array(size * size);
+  const sm = (t) => t * t * (3 - 2 * t);
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const fx = x / size * cells, fy = y / size * cells, ix = Math.floor(fx), iy = Math.floor(fy);
+    const tx = sm(fx - ix), ty = sm(fy - iy), x1 = (ix + 1) % cells, y1 = (iy + 1) % cells;
+    const a = lat[iy * cells + ix], b = lat[iy * cells + x1], c = lat[y1 * cells + ix], d = lat[y1 * cells + x1];
+    out[y * size + x] = (a + (b - a) * tx) * (1 - ty) + (c + (d - c) * tx) * ty;
+  }
+  return out;
+}
+function fbm(size, seed, octaves) {
+  const out = new Float32Array(size * size); let amp = 0.5, total = 0;
+  for (let o = 0; o < octaves; o++) {
+    const n = valueNoise(size, 4 << o, seed + o * 101);
+    for (let i = 0; i < out.length; i++) out[i] += n[i] * amp;
+    total += amp; amp *= 0.5;
+  }
+  for (let i = 0; i < out.length; i++) out[i] /= total;
+  return out;
+}
+function paintLayer(size, seed, base, vary, noise, draw) {
+  const cv = document.createElement("canvas"); cv.width = cv.height = size;
+  const c = cv.getContext("2d"), img = c.createImageData(size, size), n = fbm(size, seed, noise);
+  for (let i = 0; i < size * size; i++) {
+    const k = (n[i] - 0.5) * vary;
+    img.data[4 * i] = base[0] * (1 + k); img.data[4 * i + 1] = base[1] * (1 + k); img.data[4 * i + 2] = base[2] * (1 + k); img.data[4 * i + 3] = 255;
+  }
+  c.putImageData(img, 0, 0);
+  const r = rng(seed * 7 + 3);
+  // draw each mark at 9 offsets so the texture tiles seamlessly
+  const wrap = (f) => { for (const dx of [-size, 0, size]) for (const dy of [-size, 0, size]) { c.save(); c.translate(dx, dy); f(); c.restore(); } };
+  draw(c, r, wrap, size);
+  return c.getImageData(0, 0, size, size).data;
+}
+function makeGroundTextures() {
+  const S = 256;
+  const grass = paintLayer(S, 11, [92, 138, 62], 0.5, 5, (c, r, wrap) => {
+    c.lineCap = "round";
+    for (let i = 0; i < 2600; i++) {
+      const x = r() * S, y = r() * S, a = -Math.PI / 2 + (r() - 0.5) * 1.1, l = 3 + r() * 6, g = r();
+      const col = g < 0.5 ? `rgba(${70 + g * 40},${120 + g * 60},${45 + g * 20},0.8)` : `rgba(${120 + g * 40},${165 + g * 30},${70},0.7)`;
+      wrap(() => { c.strokeStyle = col; c.lineWidth = 1 + r() * 0.6; c.beginPath(); c.moveTo(x, y); c.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); c.stroke(); });
+    }
+    for (let i = 0; i < 70; i++) {
+      const x = r() * S, y = r() * S, col = r() < 0.5 ? "#f4e27a" : "#f6f1e6";
+      wrap(() => { c.fillStyle = col; c.beginPath(); c.arc(x, y, 1.2, 0, 7); c.fill(); });
+    }
+  });
+  const dry = paintLayer(S, 23, [196, 172, 120], 0.35, 6, (c, r, wrap) => {
+    for (let i = 0; i < 1800; i++) {
+      const x = r() * S, y = r() * S, v = r();
+      wrap(() => { c.fillStyle = `rgba(${150 + v * 60},${125 + v * 50},${85 + v * 40},0.6)`; c.fillRect(x, y, 1.3, 1.3); });
+    }
+    for (let i = 0; i < 90; i++) {
+      const x = r() * S, y = r() * S, rx = 2 + r() * 3.5, ry = rx * (0.6 + r() * 0.3), a = r() * 3, v = r();
+      wrap(() => {
+        c.fillStyle = `rgba(0,0,0,0.18)`; c.beginPath(); c.ellipse(x + 1, y + 1.2, rx, ry, a, 0, 7); c.fill();
+        c.fillStyle = `rgb(${150 + v * 50},${140 + v * 45},${125 + v * 40})`; c.beginPath(); c.ellipse(x, y, rx, ry, a, 0, 7); c.fill();
+        c.fillStyle = "rgba(255,255,255,0.25)"; c.beginPath(); c.ellipse(x - rx * 0.3, y - ry * 0.35, rx * 0.4, ry * 0.3, a, 0, 7); c.fill();
+      });
+    }
+  });
+  const rock = paintLayer(S, 37, [132, 128, 122], 0.6, 6, (c, r, wrap) => {
+    c.lineJoin = "round";
+    for (let i = 0; i < 28; i++) {
+      let x = r() * S, y = r() * S, a = r() * 6.28;
+      const pts = [[x, y]];
+      for (let k = 0; k < 7; k++) { a += (r() - 0.5) * 1.2; x += Math.cos(a) * 9; y += Math.sin(a) * 9; pts.push([x, y]); }
+      wrap(() => {
+        c.strokeStyle = "rgba(40,38,36,0.55)"; c.lineWidth = 1.2; c.beginPath(); c.moveTo(...pts[0]); for (const p of pts) c.lineTo(...p); c.stroke();
+        c.strokeStyle = "rgba(255,255,255,0.18)"; c.lineWidth = 0.8; c.beginPath(); c.moveTo(pts[0][0] + 1, pts[0][1] + 1); for (const p of pts) c.lineTo(p[0] + 1, p[1] + 1); c.stroke();
+      });
+    }
+    for (let i = 0; i < 160; i++) {
+      const x = r() * S, y = r() * S, rad = 1 + r() * 2.5;
+      wrap(() => { c.fillStyle = r() < 0.5 ? "rgba(150,165,95,0.45)" : "rgba(200,190,140,0.35)"; c.beginPath(); c.arc(x, y, rad, 0, 7); c.fill(); });
+    }
+  });
+  const soil = paintLayer(S, 51, [104, 80, 58], 0.5, 6, (c, r, wrap) => {
+    for (let i = 0; i < 220; i++) {
+      const x = r() * S, y = r() * S, rad = 0.8 + r() * 2.2, v = r();
+      wrap(() => { c.fillStyle = `rgba(${70 + v * 50},${55 + v * 40},${40 + v * 30},0.8)`; c.beginPath(); c.arc(x, y, rad, 0, 7); c.fill(); });
+    }
+    for (let i = 0; i < 400; i++) {
+      const x = r() * S, y = r() * S;
+      wrap(() => { c.fillStyle = "rgba(60,80,40,0.5)"; c.fillRect(x, y, 1, 2.5); });
+    }
+  });
+  return { size: S, layers: [grass, dry, rock, soil] };
+}
+
+// --- GL helpers
+function shader(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function program(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, shader(gl.VERTEX_SHADER, vs)); gl.attachShader(p, shader(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const name = gl.getActiveUniform(p, i).name; u[name] = gl.getUniformLocation(p, name); }
+  return { p, u };
+}
+function tex2d(w, h, data, filter) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+function upload(t, w, h, data) { gl.bindTexture(gl.TEXTURE_2D, t); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, data); }
+
+const VS_TERRAIN = `#version 300 es
+in vec2 a_pos;
+uniform vec2 u_world; uniform vec3 u_view; uniform vec2 u_vp; uniform float u_flip;
+out vec2 v_p;
+void main() {
+  vec2 p = a_pos * u_world; v_p = p;
+  vec2 s = p * u_view.x + u_view.yz;
+  vec2 c = s / u_vp * 2.0 - 1.0;
+  gl_Position = vec4(c.x, c.y * u_flip, 0.0, 1.0);
+}`;
+// Bake: the slow, static part of the ground into world-space textures (re-run in strips when
+// the terrain or the water/detail field changes). Output 0: colour + water coverage; output 1:
+// biome weights (grass, dry, rock, soil) for the per-frame detail.
+const FS_BAKE = `#version 300 es
+precision highp float;
+precision highp sampler2DArray;
+in vec2 v_p;
+uniform sampler2D u_terr, u_field;
+uniform sampler2DArray u_ground;
+uniform vec2 u_world;
+layout(location = 0) out vec4 o_albedo;
+layout(location = 1) out vec4 o_weights;
+float elev(vec2 p) { return texture(u_terr, p / u_world).a * 255.0 / 16.0; }
+void main() {
+  vec2 p = v_p;
+  vec4 T = texture(u_terr, p / u_world);
+  float e = T.r * 255.0, m = T.g, lp = T.b;
+  // smoothed gradient: terraces of whole elevation steps read as gentle slopes
+  float ex = (elev(p + vec2(1.0, 0.0)) - elev(p - vec2(1.0, 0.0))) * 0.5;
+  float ey = (elev(p + vec2(0.0, 1.0)) - elev(p - vec2(0.0, 1.0))) * 0.5;
+  vec3 n = normalize(vec3(-ex * 1.6, -ey * 1.6, 1.0));
+  float shade = clamp(0.25 + dot(n, normalize(vec3(-0.55, -0.75, 1.1))), 0.55, 1.2);
+  float slope = length(vec2(ex, ey));
+  float he = e / 15.0;
+  float wRock = clamp(smoothstep(0.66, 0.9, he) + smoothstep(0.45, 0.9, slope) * 0.6, 0.0, 1.0);
+  float wDry = (1.0 - smoothstep(0.18, 0.42, m)) * (1.0 - wRock);
+  float wSoil = smoothstep(0.78, 0.97, m) * (1.0 - wRock) * 0.7;
+  float wGrass = max(0.0, 1.0 - wRock - wDry - wSoil);
+  vec2 uv = p / 3.0;
+  vec3 col = wGrass * texture(u_ground, vec3(uv, 0.0)).rgb * mix(vec3(0.84, 0.94, 0.86), vec3(1.1, 1.06, 0.84), lp)
+           + wDry * texture(u_ground, vec3(uv * 1.3 + 0.37, 1.0)).rgb
+           + wRock * texture(u_ground, vec3(uv * 0.7 + 0.71, 2.0)).rgb
+           + wSoil * texture(u_ground, vec3(uv + 0.13, 3.0)).rgb;
+  col *= shade;
+  float wv = texture(u_field, p / u_world).r * 255.0;
+  col *= 1.0 - 0.14 * smoothstep(24.0, 48.0, wv);
+  float wa = smoothstep(36.0, 80.0, wv);
+  if (wa > 0.0) {
+    vec3 wc = mix(vec3(0.24, 0.57, 0.63), vec3(0.07, 0.24, 0.48), smoothstep(70.0, 230.0, wv));
+    float foam = smoothstep(0.0, 0.3, wa) * (1.0 - smoothstep(0.3, 0.65, wa));
+    wc = mix(wc, vec3(0.9, 0.95, 0.96), foam * 0.45);
+    col = mix(col, wc, wa);
+  }
+  o_albedo = vec4(col, wa);
+  o_weights = vec4(wGrass, wDry, wRock, wSoil);
+}`;
+// Per frame: baked colour, fine detail when zoomed in, moving water, ground detail, parcels,
+// signals, tile grid and the light of the day.
+const FS_TERRAIN = `#version 300 es
+precision highp float;
+in vec2 v_p;
+uniform sampler2D u_albedo, u_weights, u_detail, u_field, u_parc, u_sig, u_noise, u_agents;
+uniform vec2 u_world;
+uniform float u_time, u_light, u_ppt, u_showSig, u_bakeR, u_flat, u_agentDots;
+out vec4 o;
+float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+void main() {
+  vec2 p = v_p;
+  ivec2 ti = ivec2(floor(p)); vec2 f = fract(p);
+  vec2 uv = p / u_world;
+  vec4 A = texture(u_albedo, uv);
+  vec3 col = A.rgb;
+  float wa = A.a;
+  if (u_flat > 0.5) { o = vec4(col, 1.0); return; }
+  float mag = smoothstep(u_bakeR * 0.8, u_bakeR * 3.0, u_ppt) * (1.0 - wa);
+  if (mag > 0.0) {
+    vec4 d = texture(u_detail, p / 3.0) - 0.5;
+    col *= 1.0 + dot(texture(u_weights, uv), d) * 2.4 * mag;
+  }
+  if (wa < 0.6 && u_ppt > 3.0) {
+    vec4 F = texelFetch(u_field, ti, 0);
+    vec2 sc = floor(f * 4.0), sf = fract(f * 4.0);
+    float h = hash(vec2(ti) * 4.0 + sc);
+    vec2 dc = vec2(0.3 + 0.4 * hash(sc + vec2(ti) * 1.7), 0.3 + 0.4 * hash(sc.yx + vec2(ti) * 2.3));
+    float aa = 4.0 / u_ppt;
+    if (h < clamp(F.g * 255.0 / 40.0, 0.0, 0.85)) {
+      col = mix(col, vec3(0.30, 0.20, 0.10), smoothstep(0.24 + aa, 0.24 - aa, length(sf - dc)) * 0.85);
+    }
+    int fl = int(F.b * 255.0 + 0.5);
+    if ((fl & 2) != 0 && h > 0.72) {
+      float dd = length(sf - dc);
+      col = mix(col, vec3(0.62, 0.36, 0.28) + 0.25 * step(dd, 0.08), smoothstep(0.22 + aa, 0.22 - aa, dd));
+    }
+    if ((fl & 1) != 0) {
+      vec2 q = f - vec2(0.5 + 0.18 * (hash(vec2(ti)) - 0.5), 0.5 + 0.18 * (hash(vec2(ti).yx) - 0.5));
+      float ca = 0.5 * (hash(vec2(ti) + 3.1) - 0.5);
+      q = mat2(cos(ca), -sin(ca), sin(ca), cos(ca)) * q;
+      float box = max(abs(q.x) - 0.2, abs(q.y) - 0.12);
+      float ab = 1.0 / u_ppt;
+      col = mix(col, vec3(0.94, 0.89, 0.74), smoothstep(ab, -ab, box));
+      col = mix(col, vec3(0.45, 0.38, 0.28), smoothstep(ab * 1.5, 0.0, abs(box + ab)) * 0.7);
+    }
+  }
+  if (wa > 0.0) {
+    float n1 = texture(u_noise, p * 0.11 + vec2(u_time * 0.013, u_time * 0.007)).r;
+    float n2 = texture(u_noise, p * 0.17 - vec2(u_time * 0.009, -u_time * 0.011)).g;
+    float rip = n1 + n2 - 1.0;
+    col *= 1.0 + 0.22 * rip * wa;
+    col += vec3(0.9, 0.95, 1.0) * pow(clamp(rip * 1.7, 0.0, 1.0), 5.0) * (0.25 + 0.5 * u_light) * wa;
+  }
+  vec4 P = texelFetch(u_parc, ti, 0);
+  if (P.r > 0.0) {
+    float ps = P.r * 255.0, pc = P.g * 255.0;
+    if (ps >= 16.0 && pc >= 128.0) {
+      float row = floor(f.y * 4.0);
+      float bx = fract(f.x * 2.0 + mod(row, 2.0) * 0.5), by = fract(f.y * 4.0);
+      vec3 brick = mix(vec3(0.58, 0.50, 0.44), vec3(0.44, 0.38, 0.34), hash(vec2(ti) * 8.0 + vec2(floor(f.x * 2.0 + mod(row, 2.0) * 0.5), row)));
+      vec3 wall = mix(brick, vec3(0.30, 0.28, 0.26), max(step(bx, 0.06), step(by, 0.12)));
+      float edge = min(min(f.x, f.y), min(1.0 - f.x, 1.0 - f.y));
+      col = wall * (0.75 + 0.35 * smoothstep(0.0, 0.12, edge) - 0.15 * (f.x + f.y - 1.0));
+    } else {
+      float size = 0.18 + 0.3 * clamp(ps / 32.0, 0.0, 1.0);
+      vec2 q = f - 0.5;
+      float d = max(abs(q.x), abs(q.y)) * 0.6 + length(q) * 0.4;
+      vec3 stone = mix(vec3(0.62, 0.58, 0.52), vec3(0.42, 0.42, 0.44), clamp(pc / 255.0, 0.0, 1.0)) * (0.92 + 0.16 * hash(floor(f * 6.0) + vec2(ti)));
+      stone *= 1.08 - 0.5 * (q.x + q.y);
+      col = mix(col * 0.8, col, smoothstep(size, size + 0.08, d));
+      col = mix(col, stone, smoothstep(size + 0.01, size - 0.02, d));
+    }
+    int bf = int(P.b * 255.0 + 0.5), pf = int(P.a * 255.0 + 0.5);
+    int west = int(texelFetch(u_parc, ti - ivec2(1, 0), 0).b * 255.0 + 0.5);
+    int north = int(texelFetch(u_parc, ti - ivec2(0, 1), 0).b * 255.0 + 0.5);
+    float bar = 0.0;
+    if ((bf & 1) != 0 && f.x > 0.5) bar = max(bar, smoothstep(0.08, 0.05, abs(f.y - 0.5)));
+    if ((west & 1) != 0 && f.x < 0.5) bar = max(bar, smoothstep(0.08, 0.05, abs(f.y - 0.5)));
+    if ((bf & 2) != 0 && f.y > 0.5) bar = max(bar, smoothstep(0.08, 0.05, abs(f.x - 0.5)));
+    if ((north & 2) != 0 && f.y < 0.5) bar = max(bar, smoothstep(0.08, 0.05, abs(f.x - 0.5)));
+    col = mix(col, vec3(0.62, 0.36, 0.20), bar * 0.9);
+    float r0 = length(f - 0.5);
+    if ((pf & 1) != 0) col = mix(col, vec3(0.15, 0.14, 0.14), smoothstep(0.12, 0.09, r0));
+    if ((pf & 2) != 0) col = mix(col, vec3(0.95, 0.85, 0.35), smoothstep(0.03, 0.0, abs(r0 - 0.42)));
+  }
+  if (u_showSig > 0.5) {
+    float s = texelFetch(u_sig, ti, 0).r * 255.0 - 128.0;
+    col = mix(col, s > 0.0 ? vec3(1.0, 0.75, 0.2) : vec3(0.45, 0.8, 1.0), clamp(abs(s) / 100.0, 0.0, 0.8));
+  }
+  if (u_ppt > 26.0) {
+    float edge = min(min(f.x, f.y), min(1.0 - f.x, 1.0 - f.y)) * u_ppt;
+    col *= 1.0 - 0.07 * smoothstep(1.2, 0.2, edge);
+  }
+  vec3 night = vec3(0.56, 0.62, 0.84);
+  float dl = smoothstep(0.0, 0.3, u_light);
+  vec3 tint = mix(night, vec3(1.0), dl) * mix(vec3(1.0), vec3(1.06, 0.97, 0.88), (1.0 - dl) * dl * 2.0);
+  col *= tint;
+  if (u_agentDots > 0.5) {
+    // zoomed out: one dot per agent straight from the agent texture (cost independent of count)
+    vec4 ag = texelFetch(u_agents, ti, 0);
+    if (ag.a > 0.0) {
+      int af = int(ag.a * 255.0 + 0.5) - 1;
+      float r = length(f - 0.5), aa = 1.5 / max(u_ppt, 1.0);
+      vec3 ac = ag.rgb * mix(tint, vec3(1.0), 0.7) * 1.1;
+      if ((af & 4) != 0) ac = mix(ac, vec3(dot(ac, vec3(0.3, 0.59, 0.11))), 0.8) * 0.8 + col * 0.2;
+      col = mix(col, ac * 0.4, smoothstep(0.55 + aa, 0.55 - aa, r));
+      col = mix(col, ac, smoothstep(0.42 + aa, 0.42 - aa, r));
+    }
+  }
+  o = vec4(col, 1.0);
+}`;
+
+// One point sprite per agent (a single draw call): the fragment shader turns gl_PointCoord into
+// local creature coordinates (tile half-size = 1, with a margin for the shadow and the ring).
+const VS_AGENT = `#version 300 es
+in vec4 a_i0;   // x, y, angle, alpha
+in vec4 a_i1;   // r, g, b, flags (1 embryo, 2 selected, 4 dimmed, 8 walking)
+uniform vec3 u_view; uniform vec2 u_vp; uniform float u_maxPoint;
+out vec2 v_fwd; out vec3 v_col; out float v_flags; out float v_alpha; out float v_px;
+void main() {
+  float px = max(u_view.x, 5.0);
+  vec2 centre = (a_i0.xy + 0.5) * u_view.x + u_view.yz;
+  vec2 c = centre / u_vp * 2.0 - 1.0;
+  gl_Position = vec4(c.x, -c.y, 0.0, 1.0);
+  gl_PointSize = min(px * 1.35, u_maxPoint);
+  v_fwd = vec2(sin(a_i0.z), -cos(a_i0.z));
+  v_col = a_i1.rgb; v_flags = a_i1.a; v_alpha = a_i0.w; v_px = px;
+}`;
+const FS_AGENT = `#version 300 es
+precision highp float;
+in vec2 v_fwd; in vec3 v_col; in float v_flags; in float v_alpha; in float v_px;
+uniform float u_light, u_time;
+out vec4 o;
+float sdEllipse(vec2 p, vec2 r) { return (length(p / r) - 1.0) * min(r.x, r.y); }
+float smin(float a, float b, float k) { float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0); return mix(b, a, h) - k * h * (1.0 - h); }
+float sdSeg(vec2 p, vec2 a, vec2 b) { vec2 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0); return length(pa - ba * h); }
+void main() {
+  int fl = int(v_flags + 0.5);
+  float aa = 2.4 / v_px;
+  vec2 v_d = (gl_PointCoord * 2.0 - 1.0) * 1.35;
+  vec2 v_q = vec2(dot(v_d, v_fwd), dot(v_d, vec2(-v_fwd.y, v_fwd.x)));
+  if (v_px < 11.0) {
+    float sd = length(v_d) - 0.66;
+    vec3 col = v_col * (0.85 + 0.35 * clamp(0.5 - 0.35 * (v_d.x + v_d.y), 0.0, 1.0));
+    col = mix(col, v_col * 0.4, smoothstep(-0.3, -0.05, sd));
+    float a = smoothstep(aa, -aa, sd);
+    if ((fl & 2) != 0) { float ring = abs(length(v_d) - 1.15) - 0.1; col = mix(col, vec3(1.0), smoothstep(aa, -aa, ring)); a = max(a, smoothstep(aa, -aa, ring)); }
+    if ((fl & 4) != 0) { col = mix(col, vec3(dot(col, vec3(0.3, 0.59, 0.11))), 0.8); a *= 0.45; }
+    a *= v_alpha;
+    if (a < 0.003) discard;
+    o = vec4(col * a, a);
+    return;
+  }
+  vec2 q = v_q;
+  float body = sdEllipse(q - vec2(-0.08, 0.0), vec2(0.58, 0.46));
+  float head = length(q - vec2(0.5, 0.0)) - 0.3;
+  float sd = smin(body, head, 0.12);
+  float legs = 1e3;
+  if (v_px > 14.0) {
+    float walk = (fl & 8) != 0 ? 1.0 : 0.0;
+    for (int i = 0; i < 3; i++) {
+      float x = -0.34 + 0.26 * float(i);
+      float side = q.y > 0.0 ? 1.0 : -1.0;
+      float w = 0.09 * walk * sin(u_time * 14.0 + float(i) * 2.1 + side * 1.6);
+      legs = min(legs, sdSeg(vec2(q.x, abs(q.y)), vec2(x, 0.34), vec2(x + 0.06 + w, 0.66)) - 0.05);
+    }
+  }
+  float shadow = length((v_d - vec2(0.14, 0.2)) / vec2(0.78, 0.72)) - 0.82;
+  vec4 c = vec4(0.0);
+  c = mix(c, vec4(0.0, 0.0, 0.0, 0.28), smoothstep(0.25, -0.15, shadow));
+  vec3 dark = v_col * 0.42;
+  if (legs < 0.0) c = vec4(dark, 1.0);
+  if ((fl & 1) != 0) {
+    float egg = sdEllipse(q - vec2(-0.72, 0.0), vec2(0.2, 0.15));
+    c = mix(c, vec4(0.97, 0.95, 0.86, 1.0), smoothstep(aa, -aa, egg));
+    c = mix(c, vec4(0.55, 0.5, 0.4, 1.0), smoothstep(aa, 0.0, abs(egg)) * 0.6);
+  }
+  if (sd < aa) {
+    float lightDir = clamp(0.5 - 0.35 * (v_d.x + v_d.y), 0.0, 1.0);
+    vec3 col = v_col * (0.78 + 0.45 * lightDir);
+    float stripe = smoothstep(0.05, 0.0, abs(q.x + 0.18) - 0.06) * step(body, 0.0);
+    col = mix(col, v_col * 0.62, stripe * 0.6);
+    col = mix(col, dark, smoothstep(-0.09, -0.02, sd));
+    col += vec3(0.25) * smoothstep(0.22, 0.0, length(v_d - vec2(-0.22, -0.26))) * step(sd, -0.05);
+    if (v_px > 9.0) {
+      for (int s = -1; s <= 1; s += 2) {
+        vec2 e = q - vec2(0.62, float(s) * 0.15);
+        float eye = length(e) - 0.1, pupil = length(e - vec2(0.04, 0.0)) - 0.05;
+        col = mix(col, vec3(1.0), smoothstep(aa * 0.6, -aa * 0.6, eye));
+        vec3 pc = mix(vec3(0.05), vec3(1.0, 0.85, 0.35), (1.0 - smoothstep(0.0, 0.3, u_light)) * 0.9);
+        col = mix(col, pc, smoothstep(aa * 0.6, -aa * 0.6, pupil));
       }
     }
-    img.data[4 * t] = r; img.data[4 * t + 1] = gg; img.data[4 * t + 2] = b; img.data[4 * t + 3] = 255;
+    c = mix(c, vec4(col, 1.0), smoothstep(aa, -aa, sd));
   }
-  bctx.putImageData(img, 0, 0);
+  if ((fl & 2) != 0) {
+    float ring = abs(length(v_d) - 1.18 - 0.05 * sin(u_time * 5.0)) - 0.06;
+    c = mix(c, vec4(1.0, 1.0, 1.0, 1.0), smoothstep(aa, -aa, ring));
+  }
+  float nightGlow = (1.0 - smoothstep(0.0, 0.3, u_light)) * 0.35 * smoothstep(1.3, 0.3, length(v_d)) * step(0.0, sd);
+  c.rgb += v_col * nightGlow; c.a = max(c.a, nightGlow);
+  if ((fl & 4) != 0) { c.rgb = mix(c.rgb, vec3(dot(c.rgb, vec3(0.3, 0.59, 0.11))), 0.8); c.a *= 0.45; }
+  c.a *= v_alpha;
+  if (c.a < 0.003) discard;
+  o = vec4(c.rgb * c.a, c.a);
+}`;
+
+let progT = null, progA = null, progB = null, quadVao = null, agentVao = null, instBuf = null, instData = new Float32Array(0);
+let detailTex = null, maxPoint = 64;
+// world-space bake: two buffers so a re-bake can run in strips while the other is shown
+const bake = { r: 4, w: 0, h: 0, front: null, back: null, row: 0, pending: false, strips: 32, last: 0, levels: null };
+function bakeTarget(w, h) {
+  const mk = () => { const t = tex2d(w, h, null, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); return t; };
+  const albedo = mk(), weights = mk(), fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, albedo, 0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, weights, 0);
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { albedo, weights, fb };
+}
+// Bake rows [y0, y1) of the back buffer; when the last strip is done, swap and build mipmaps.
+function bakeStrip(rows) {
+  const y0 = bake.row, y1 = Math.min(bake.h, y0 + rows);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, bake.back.fb);
+  gl.viewport(0, 0, bake.w, bake.h);
+  gl.enable(gl.SCISSOR_TEST); gl.scissor(0, y0, bake.w, y1 - y0);
+  gl.useProgram(progB.p);
+  const u = progB.u;
+  gl.uniform2f(u.u_world, W, H); gl.uniform3f(u.u_view, bake.r, 0, 0); gl.uniform2f(u.u_vp, bake.w, bake.h); gl.uniform1f(u.u_flip, 1);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, terrainTex); gl.uniform1i(u.u_terr, 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, fieldTex); gl.uniform1i(u.u_field, 1);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D_ARRAY, groundTex); gl.uniform1i(u.u_ground, 2);
+  gl.disable(gl.BLEND);
+  gl.bindVertexArray(quadVao); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  gl.disable(gl.SCISSOR_TEST);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  bake.row = y1;
+  if (bake.row >= bake.h) {
+    for (const t of [bake.back.albedo, bake.back.weights]) { gl.bindTexture(gl.TEXTURE_2D, t); gl.generateMipmap(gl.TEXTURE_2D); }
+    [bake.front, bake.back] = [bake.back, bake.front];
+    bake.row = 0; bake.pending = false;
+  }
+}
+function requestBake() { if (!bake.pending) { bake.pending = true; bake.row = 0; } }
+function initGL() {
+  if (!gl) { $("maphint").textContent = "이 브라우저는 WebGL2를 지원하지 않아요."; return false; }
+  progT = program(VS_TERRAIN, FS_TERRAIN);
+  progB = program(VS_TERRAIN, FS_BAKE);
+  progA = program(VS_AGENT, FS_AGENT);
+  maxPoint = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1];
+  const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
+  quadVao = gl.createVertexArray(); gl.bindVertexArray(quadVao);
+  let loc = gl.getAttribLocation(progT.p, "a_pos"); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  const corners = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, corners);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  agentVao = gl.createVertexArray(); gl.bindVertexArray(agentVao);
+  instBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+  for (const [name, off] of [["a_i0", 0], ["a_i1", 16]]) {
+    loc = gl.getAttribLocation(progA.p, name); gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 4, gl.FLOAT, false, 32, off);
+  }
+  gl.bindVertexArray(null);
+  // generated textures: ground layers (2D array with mipmaps) and a water noise
+  const g = makeGroundTextures();
+  groundTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D_ARRAY, groundTex);
+  gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8, g.size, g.size, 4, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  g.layers.forEach((d, i) => gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, g.size, g.size, 1, gl.RGBA, gl.UNSIGNED_BYTE, d));
+  gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  // fine detail for close zoom: each layer's luminance minus its local average, one layer per channel
+  const dd = new Uint8Array(g.size * g.size * 4), S = g.size;
+  g.layers.forEach((d, li) => {
+    const lum = new Float32Array(S * S);
+    for (let i = 0; i < S * S; i++) lum[i] = 0.3 * d[4 * i] + 0.59 * d[4 * i + 1] + 0.11 * d[4 * i + 2];
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      let sum = 0;
+      for (let k = -4; k <= 4; k++) sum += lum[y * S + ((x + k + S) % S)] + lum[((y + k + S) % S) * S + x];
+      const hp = lum[y * S + x] - sum / 18;
+      dd[4 * (y * S + x) + li] = Math.max(0, Math.min(255, 128 + hp * 1.6));
+    }
+  });
+  detailTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, detailTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, S, S, 0, gl.RGBA, gl.UNSIGNED_BYTE, dd);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  const N = 128, a = fbm(N, 77, 4), b = fbm(N, 91, 4), nd = new Uint8Array(N * N * 4);
+  for (let i = 0; i < N * N; i++) { nd[4 * i] = a[i] * 255; nd[4 * i + 1] = b[i] * 255; nd[4 * i + 3] = 255; }
+  noiseTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, noiseTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, N, N, 0, gl.RGBA, gl.UNSIGNED_BYTE, nd);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  return true;
+}
+
+function setTerrain(bin) {
+  const dv = new DataView(bin.buffer, bin.byteOffset);
+  W = dv.getUint32(0, true); H = dv.getUint32(4, true);
+  const td = bin.slice(8, 8 + 4 * W * H);
+  // smoothed elevation (two box blurs of radius 3) goes to alpha: hills instead of terrace steps
+  let e = new Float32Array(W * H).map((_, t) => td[4 * t]);
+  for (let pass = 0; pass < 2; pass++) for (const horiz of [true, false]) {
+    const o = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      let sum = 0, n = 0;
+      for (let k = -3; k <= 3; k++) {
+        const xx = horiz ? x + k : x, yy = horiz ? y : y + k;
+        if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+        sum += e[yy * W + xx]; n++;
+      }
+      o[y * W + x] = sum / n;
+    }
+    e = o;
+  }
+  for (let t = 0; t < W * H; t++) td[4 * t + 3] = Math.min(255, Math.round(e[t] * 16));
+  terrainTex = tex2d(W, H, td, gl.LINEAR);
+  fieldTex = tex2d(W, H, new Uint8Array(4 * W * H), gl.LINEAR);
+  parcelBuf = new Uint8Array(4 * W * H); parcelTex = tex2d(W, H, parcelBuf, gl.NEAREST);
+  sigBuf = new Uint8Array(4 * W * H).fill(128); sigTex = tex2d(W, H, sigBuf, gl.NEAREST);
+  agentBuf = new Uint8Array(4 * W * H); agentTex = tex2d(W, H, agentBuf, gl.NEAREST);
+  bake.r = Math.max(2, Math.min(16, Math.floor(1024 / Math.max(W, H))));
+  bake.w = W * bake.r; bake.h = H * bake.r;
+  bake.front = bakeTarget(bake.w, bake.h); bake.back = bakeTarget(bake.w, bake.h);
+}
+// first bake, all at once, after the first water field has arrived
+function firstBake() { bake.pending = true; bake.row = 0; bake.last = performance.now(); bakeStrip(bake.h); }
+let lastField = null;
+function setField(bin) {
+  if (!fieldTex || bin.length !== 4 * W * H) return;
+  if (lastField && lastField.length === bin.length) {
+    let same = true;
+    for (let i = 0; i < bin.length; i += 4) if (bin[i] !== lastField[i] || bin[i + 1] !== lastField[i + 1] || bin[i + 2] !== lastField[i + 2]) { same = false; break; }
+    if (same) return;
+  }
+  lastField = bin;
+  upload(fieldTex, W, H, bin);
+  // the bake uses water only: redo it when the drawn water level changed somewhere
+  const levels = new Uint8Array(W * H);
+  let changed = !bake.levels;
+  for (let t = 0; t < W * H; t++) {
+    levels[t] = Math.min(255, bin[4 * t]) >> 3;
+    if (!changed && levels[t] !== bake.levels[t]) changed = true;
+  }
+  const now = performance.now();
+  if (!bake.levels) { bake.levels = levels; return; }
+  if (changed && now - bake.last > 15000 && !DEBUG.includes("nobake")) { bake.levels = levels; bake.last = now; requestBake(); }
+}
+let lastParcels = [], lastSignal = [];
+let agentTexStale = true, dotsOn = false;
+function setAgentTexture() {
+  if (!agentTex || !snap.cur) return;
+  if (!dotsOn) { agentTexStale = true; return; }   // zoomed in: point sprites only
+  agentTexStale = false;
+  for (const t of lastAgentTiles) agentBuf.fill(0, 4 * t, 4 * t + 4);
+  lastAgentTiles = [];
+  const c = snap.cur, hl = highlight;
+  for (let i = 0; i < c.uid.length; i++) {
+    const t = c.y[i] * W + c.x[i], col = c.c[i];
+    agentBuf[4 * t] = col >> 16 & 255; agentBuf[4 * t + 1] = col >> 8 & 255; agentBuf[4 * t + 2] = col & 255;
+    agentBuf[4 * t + 3] = 1 + ((c.emb[i] > 0 ? 1 : 0) | (hl !== null && col !== hl ? 4 : 0));
+    lastAgentTiles.push(t);
+  }
+  upload(agentTex, W, H, agentBuf);
+}
+function setOverlays(s) {
+  if (!parcelTex) return;
+  setAgentTexture();
+  const had = lastParcels.length > 0;
+  for (const t of lastParcels) parcelBuf.fill(0, 4 * t, 4 * t + 4);
+  lastParcels = [];
+  const pc = s.parcels || [];
+  for (let k = 0; k < pc.length; k += 6) {
+    const t = pc[k], i = 4 * t;
+    parcelBuf[i] = Math.min(255, pc[k + 1]); parcelBuf[i + 1] = pc[k + 2];
+    parcelBuf[i + 2] = (pc[k + 3] > 0 ? 1 : 0) | (pc[k + 4] > 0 ? 2 : 0); parcelBuf[i + 3] = pc[k + 5];
+    lastParcels.push(t);
+  }
+  if (had || lastParcels.length) upload(parcelTex, W, H, parcelBuf);
+  if (showSignal) {
+    for (const t of lastSignal) sigBuf[4 * t] = 128;
+    lastSignal = [];
+    const sg = s.signal || [], sum = new Map();
+    for (let k = 0; k < sg.length; k += 3) sum.set(sg[k], (sum.get(sg[k]) || 0) + sg[k + 2]);
+    for (const [t, v] of sum) { sigBuf[4 * t] = 128 + Math.max(-127, Math.min(127, v)); lastSignal.push(t); }
+    upload(sigTex, W, H, sigBuf);
+  }
+}
+
+// --- agents: snapshot pairs for interpolation, fade-in at birth, fade-out at death
+const snap = { prev: null, cur: null, tPrev: 0, tCur: 0, lightPrev: 1, lightCur: 1, born: new Map(), dying: [] };
+function onSnapshot(s) {
+  const now = performance.now();
+  const a = s.agents, n = a.uid.length;
+  const prev = snap.cur;
+  const px = new Float32Array(n), py = new Float32Array(n), pa = new Float32Array(n);
+  const idx = new Map();
+  if (prev) for (let i = 0; i < prev.uid.length; i++) idx.set(prev.uid[i], i);
+  const still = new Set();
+  for (let i = 0; i < n; i++) {
+    const j = idx.get(a.uid[i]);
+    const ang = a.o[i] * Math.PI / 2;
+    if (j !== undefined) {
+      still.add(j);
+      const ox = prev.x[j], oy = prev.y[j];
+      const near = Math.abs(ox - a.x[i]) + Math.abs(oy - a.y[i]) <= 1;
+      px[i] = near ? prev.ix[j] : a.x[i]; py[i] = near ? prev.iy[j] : a.y[i];
+      let pa0 = prev.ia[j];
+      while (ang - pa0 > Math.PI) pa0 += 2 * Math.PI;
+      while (pa0 - ang > Math.PI) pa0 -= 2 * Math.PI;
+      pa[i] = pa0;
+    } else {
+      px[i] = a.x[i]; py[i] = a.y[i]; pa[i] = ang;
+      if (prev) snap.born.set(a.uid[i], now);
+    }
+  }
+  snap.dying = snap.dying.filter((d) => now - d.t < 450);
+  if (prev) for (let j = 0; j < prev.uid.length; j++) if (!still.has(j)) {
+    snap.dying.push({ x: prev.x[j], y: prev.y[j], a: prev.ia[j], c: prev.c[j], t: now });
+    snap.born.delete(prev.uid[j]);
+  }
+  // where each agent is drawn right now: interpolation starts from there
+  const cur = { uid: a.uid, x: a.x, y: a.y, c: a.c, emb: a.emb, sx: px, sy: py, sa: pa,
+    ix: Float32Array.from(a.x), iy: Float32Array.from(a.y), ia: Float32Array.from(a.o, (o) => o * Math.PI / 2) };
+  snap.prev = prev; snap.cur = cur;
+  snap.tPrev = snap.tCur || now; snap.tCur = now;
+  snap.lightPrev = snap.lightCur; snap.lightCur = s.light;
+  if (snap.born.size > 20000) snap.born.clear();
+}
+function visibleRect(cw, ch, dpr) {
+  const s = view.scale * dpr, x0 = -view.ox * dpr / s, y0 = -view.oy * dpr / s;
+  return [x0 - 2, y0 - 2, x0 + cw / s + 2, y0 + ch / s + 2];
+}
+function agentInstances(now, dots, rect) {
+  const c = snap.cur;
+  if (!c) return 0;
+  const dt = Math.min(1000, Math.max(80, snap.tCur - snap.tPrev));
+  const k = Math.min(1, (now - snap.tCur) / dt);
+  const ease = k * k * (3 - 2 * k);
+  const n = c.uid.length, m = n + snap.dying.length;
+  if (instData.length < m * 8) instData = new Float32Array(Math.ceil(m * 1.5) * 8);
+  const hl = highlight;
+  let w = 0;
+  for (let i = 0; i < n; i++) {
+    const x = c.sx[i] + (c.x[i] - c.sx[i]) * ease, y = c.sy[i] + (c.y[i] - c.sy[i]) * ease;
+    c.ix[i] = x; c.iy[i] = y;
+    if ((dots && c.uid[i] !== selected) || x < rect[0] || y < rect[1] || x > rect[2] || y > rect[3]) continue;
+    const ang = c.sa[i] + (c.ia[i] - c.sa[i]) * ease;
+    const b = snap.born.get(c.uid[i]);
+    const alpha = b === undefined ? 1 : Math.min(1, (now - b) / 350);
+    const col = c.c[i];
+    let flags = c.emb[i] > 0 ? 1 : 0;
+    if (k < 1 && (c.x[i] !== c.sx[i] || c.y[i] !== c.sy[i])) flags |= 8;
+    if (c.uid[i] === selected) flags |= 2;
+    if (hl !== null && col !== hl) flags |= 4;
+    instData[w] = x; instData[w + 1] = y; instData[w + 2] = ang; instData[w + 3] = alpha;
+    instData[w + 4] = (col >> 16 & 255) / 255; instData[w + 5] = (col >> 8 & 255) / 255; instData[w + 6] = (col & 255) / 255; instData[w + 7] = flags;
+    w += 8;
+  }
+  for (const d of snap.dying) {
+    const alpha = 1 - (now - d.t) / 450;
+    if (alpha <= 0 || dots) continue;
+    instData[w] = d.x; instData[w + 1] = d.y; instData[w + 2] = d.a; instData[w + 3] = alpha;
+    instData[w + 4] = (d.c >> 16 & 255) / 255; instData[w + 5] = (d.c >> 8 & 255) / 255; instData[w + 6] = (d.c & 255) / 255; instData[w + 7] = 4;
+    w += 8;
+  }
+  return w / 8;
 }
 
 function fit() {
@@ -169,135 +808,114 @@ function fit() {
   view.scale = Math.min(r.width / W, r.height / H) * 0.98;
   view.ox = (r.width - W * view.scale) / 2;
   view.oy = (r.height - H * view.scale) / 2;
-  view.fitted = true;
+  view.fitted = true; zoomTo = null;
 }
-
-function draw() {
-  const dpr = window.devicePixelRatio || 1;
+function draw() { /* the frame loop redraws continuously */ }
+const cpu = { sum: 0, n: 0, max: 0 };
+window.__cpuMs = () => { const v = [cpu.n ? cpu.sum / cpu.n : 0, cpu.max]; cpu.sum = 0; cpu.n = 0; cpu.max = 0; return v; };
+function frame(now) {
+  requestAnimationFrame(frame);
+  const t0 = performance.now();
+  drawFrame(now);
+  const dt = performance.now() - t0;
+  cpu.sum += dt; cpu.n++; cpu.max = Math.max(cpu.max, dt);
+}
+function drawFrame(now) {
+  fps.frames++;
+  if (now - fps.since >= 500) {
+    fps.value = fps.frames * 1000 / (now - fps.since); fps.frames = 0; fps.since = now;
+    // adaptive resolution: keep the frame rate, give back sharpness when there is headroom
+    if (DEBUG.includes("fixed") || now - fps.start < 3000) {} else if (fps.value < 50 && fps.scale > 0.4) { fps.scale = Math.max(0.4, fps.scale * 0.85); fps.lowered = now; fps.good = 0; }
+    else if (fps.value >= 57 && fps.scale < 1 && now - fps.lowered > 2000 && ++fps.good >= 2) { fps.scale = Math.min(1, fps.scale * 1.15); fps.good = 0; }
+    $("fps").textContent = `${Math.round(fps.value)} fps` + (fps.scale < 1 ? ` · 해상도 ${Math.round(fps.scale * 100)}%` : "");
+  }
+  if (!gl || !terrainTex || !W) return;
+  const dpr = Math.min(2, window.devicePixelRatio || 1) * fps.scale;
   const r = map.getBoundingClientRect();
-  if (map.width !== Math.round(r.width * dpr) || map.height !== Math.round(r.height * dpr)) {
-    map.width = Math.round(r.width * dpr); map.height = Math.round(r.height * dpr);
-  }
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.fillStyle = css("--page");
-  ctx.fillRect(0, 0, r.width, r.height);
-  if (!state || !terrain) return;
+  const cw = Math.round(r.width * dpr), ch = Math.round(r.height * dpr);
+  if (map.width !== cw || map.height !== ch) { map.width = cw; map.height = ch; }
   if (!view.fitted) fit();
-  ctx.save();
-  ctx.translate(view.ox, view.oy);
-  ctx.scale(view.scale, view.scale);
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(base, 0, 0);
-  // night: the world is darker when light is low
-  ctx.fillStyle = `rgba(5,10,40,${(0.45 * (1 - state.light)).toFixed(3)})`;
-  ctx.fillRect(0, 0, W, H);
-  if (showSignal && state.signal && state.signal.length) {
-    const sg = state.signal;
-    for (let k = 0; k < sg.length; k += 3) {
-      const t = sg[k], v = sg[k + 2];
-      const x = t % W, y = Math.floor(t / W);
-      const al = Math.min(0.85, Math.abs(v) / 200);
-      ctx.fillStyle = v > 0 ? `rgba(255,190,40,${al})` : `rgba(120,200,255,${al})`;
-      ctx.fillRect(x - 0.5, y - 0.5, 2, 2);
-    }
+  if (zoomTo) {
+    const k = 1 - Math.exp(-(now - (zoomTo.t || now)) / 60);
+    zoomTo.t = now;
+    const ns = view.scale + (zoomTo.scale - view.scale) * Math.max(0.25, k);
+    view.ox = zoomTo.mx - (zoomTo.mx - view.ox) * (ns / view.scale);
+    view.oy = zoomTo.my - (zoomTo.my - view.oy) * (ns / view.scale);
+    view.scale = ns;
+    if (Math.abs(ns / zoomTo.scale - 1) < 0.002) zoomTo = null;
   }
-  if (state.parcels && state.parcels.length) {
-    // stride 6: tile, volume, compression, east bond, south bond, flags (1 anchored, 2 gripped)
-    const pc = state.parcels;
-    for (let k = 0; k < pc.length; k += 6) {
-      const t = pc[k], s = pc[k + 1], c = pc[k + 2];
-      const x = t % W, y = Math.floor(t / W);
-      const blocks = s >= 16 && c >= 128;
-      const shade = Math.round(blocks ? 70 : 200 - Math.min(120, c / 2));
-      ctx.fillStyle = `rgb(${shade},${shade - 10},${shade - 25})`;
-      const inset = blocks ? 0 : 0.18;
-      ctx.fillRect(x + inset, y + inset, 1 - 2 * inset, 1 - 2 * inset);
-    }
-    if (view.scale >= 4) {
-      ctx.strokeStyle = "rgba(235,104,52,0.9)";
-      for (let k = 0; k < pc.length; k += 6) {
-        const t = pc[k], be = pc[k + 3], bs = pc[k + 4], f = pc[k + 5];
-        const x = t % W + 0.5, y = Math.floor(t / W) + 0.5;
-        for (const [b, dx, dy] of [[be, 1, 0], [bs, 0, 1]]) {
-          if (!b) continue;
-          ctx.lineWidth = 0.08 + 0.3 * Math.min(1, b / 64);
-          ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + dx, y + dy); ctx.stroke();
-        }
-        if (f & 1) { // anchor: a small square at the centre
-          ctx.fillStyle = "rgba(40,40,40,0.9)";
-          ctx.fillRect(x - 0.12, y - 0.12, 0.24, 0.24);
-        }
-        if (f & 2) { // grip: outline
-          ctx.lineWidth = 0.1;
-          ctx.strokeRect(x - 0.42, y - 0.42, 0.84, 0.84);
-        }
-      }
-    }
+  if (bake.pending) bakeStrip(Math.ceil(bake.h / bake.strips));
+  gl.viewport(0, 0, cw, ch);
+  const bg = dark() ? [0.05, 0.05, 0.05] : [0.976, 0.976, 0.969];
+  gl.clearColor(bg[0], bg[1], bg[2], 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  const vu = [view.scale * dpr, view.ox * dpr, view.oy * dpr];
+  const dtl = Math.min(1, (now - snap.tCur) / Math.max(80, snap.tCur - snap.tPrev));
+  const light = snap.lightPrev + (snap.lightCur - snap.lightPrev) * dtl;
+  const t = now / 1000;
+  // terrain
+  gl.useProgram(progT.p);
+  const u = progT.u;
+  gl.uniform2f(u.u_world, W, H); gl.uniform3f(u.u_view, ...vu); gl.uniform2f(u.u_vp, cw, ch); gl.uniform1f(u.u_flip, -1);
+  gl.uniform1f(u.u_bakeR, bake.r); gl.uniform1f(u.u_flat, DEBUG.includes("flat") ? 1 : 0);
+  gl.uniform1f(u.u_time, t); gl.uniform1f(u.u_light, light); gl.uniform1f(u.u_ppt, view.scale * dpr); gl.uniform1f(u.u_showSig, showSignal ? 1 : 0);
+  const dots = view.scale * dpr < DOT_LOD;
+  dotsOn = dots;
+  if (dots && agentTexStale) setAgentTexture();
+  gl.uniform1f(u.u_agentDots, dots && !DEBUG.includes("noagents") ? 1 : 0);
+  const units = [[u.u_albedo, bake.front.albedo], [u.u_weights, bake.front.weights], [u.u_detail, detailTex], [u.u_field, fieldTex],
+    [u.u_parc, parcelTex], [u.u_sig, sigTex], [u.u_noise, noiseTex], [u.u_agents, agentTex]];
+  units.forEach(([loc, tx], i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tx); gl.uniform1i(loc, i); });
+  gl.disable(gl.BLEND);
+  if (!DEBUG.includes("noterrain")) { gl.bindVertexArray(quadVao); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); }
+  // agents
+  const n = DEBUG.includes("noagents") ? 0 : agentInstances(now, dots, visibleRect(cw, ch, dpr));
+  if (n) {
+    gl.useProgram(progA.p);
+    gl.uniform3f(progA.u.u_view, ...vu); gl.uniform2f(progA.u.u_vp, cw, ch);
+    gl.uniform1f(progA.u.u_light, light); gl.uniform1f(progA.u.u_time, t);
+    gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+    if (instBuf.cap !== instData.length) { gl.bufferData(gl.ARRAY_BUFFER, instData.byteLength, gl.DYNAMIC_DRAW); instBuf.cap = instData.length; }
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, instData, 0, n * 8);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.uniform1f(progA.u.u_maxPoint, maxPoint);
+    gl.bindVertexArray(agentVao); gl.drawArrays(gl.POINTS, 0, n);
   }
-  const a = state.agents, n = a.uid.length;
-  const s = view.scale;
-  const size = s >= 3 ? 1 : Math.min(3, 2 / s);
-  const off = (1 - size) / 2;
-  for (let i = 0; i < n; i++) {
-    const c = a.c[i];
-    if (highlight !== null && c !== highlight) {
-      ctx.fillStyle = "rgba(160,160,160,0.55)";
-    } else {
-      ctx.fillStyle = hexColor(c);
-    }
-    ctx.fillRect(a.x[i] + off, a.y[i] + off, size, size);
-    if (s >= 8 && a.emb[i] > 0) {
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(a.x[i] + 0.38, a.y[i] + 0.38, 0.24, 0.24);
-    }
-  }
-  if (selected) {
-    const i = a.uid.indexOf(selected);
-    if (i >= 0) {
-      ctx.lineWidth = 2 / s;
-      ctx.strokeStyle = css("--ink");
-      ctx.beginPath();
-      ctx.arc(a.x[i] + 0.5, a.y[i] + 0.5, Math.max(2.5, 6 / s), 0, Math.PI * 2);
-      ctx.stroke();
-    }
-  }
-  ctx.restore();
+  gl.bindVertexArray(null);
 }
+const dark = () => document.documentElement.dataset.theme === "dark"
+  || (document.documentElement.dataset.theme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
 
 let drag = null;
-map.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy, moved: false }; map.setPointerCapture(e.pointerId); });
+map.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy, moved: false }; zoomTo = null; map.setPointerCapture(e.pointerId); });
 map.addEventListener("pointermove", (e) => {
   if (!drag) return;
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
   if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
-  view.ox = drag.ox + dx; view.oy = drag.oy + dy; draw();
+  view.ox = drag.ox + dx; view.oy = drag.oy + dy;
 });
 map.addEventListener("pointerup", (e) => {
   const d = drag; drag = null;
-  if (!d || d.moved || !state) return;
+  if (!d || d.moved || !snap.cur) return;
   const r = map.getBoundingClientRect();
   const wx = (e.clientX - r.left - view.ox) / view.scale, wy = (e.clientY - r.top - view.oy) / view.scale;
-  const a = state.agents;
-  let best = -1, bd = Math.max(3, 8 / view.scale) ** 2;
-  for (let i = 0; i < a.uid.length; i++) {
-    const d2 = (a.x[i] + 0.5 - wx) ** 2 + (a.y[i] + 0.5 - wy) ** 2;
+  const c = snap.cur;
+  let best = -1, bd = Math.max(1, 8 / view.scale) ** 2;
+  for (let i = 0; i < c.uid.length; i++) {
+    const d2 = (c.ix[i] + 0.5 - wx) ** 2 + (c.iy[i] + 0.5 - wy) ** 2;
     if (d2 < bd) { bd = d2; best = i; }
   }
-  selected = best >= 0 ? a.uid[best] : 0;
-  loadAgent(); draw();
+  selected = best >= 0 ? c.uid[best] : 0;
+  loadAgent();
 });
 map.addEventListener("wheel", (e) => {
   e.preventDefault();
   const r = map.getBoundingClientRect();
-  const mx = e.clientX - r.left, my = e.clientY - r.top;
-  const k = Math.exp(-e.deltaY * 0.0015);
-  const ns = Math.min(64, Math.max(0.2, view.scale * k));
-  view.ox = mx - (mx - view.ox) * (ns / view.scale);
-  view.oy = my - (my - view.oy) * (ns / view.scale);
-  view.scale = ns; draw();
+  const base = zoomTo ? zoomTo.scale : view.scale;
+  const ns = Math.min(96, Math.max(0.2, base * Math.exp(-e.deltaY * 0.0018)));
+  zoomTo = { scale: ns, mx: e.clientX - r.left, my: e.clientY - r.top, t: performance.now() };
 }, { passive: false });
-map.addEventListener("dblclick", () => { view.fitted = false; draw(); });
-window.addEventListener("resize", () => { view.fitted = false; draw(); drawCharts(); });
+map.addEventListener("dblclick", () => { view.fitted = false; });
+window.addEventListener("resize", () => { view.fitted = false; drawCharts(); });
 
 // ---------------- charts (one series each, one axis, hover readout)
 const hover = {};
@@ -398,7 +1016,7 @@ async function loadCensus() {
       <span>${t.hash} <span class="small">· ${t.cells} cell · 최대 ${t.max_gen}세대 · 계통 ${t.lineages}</span></span>
       <span>${t.count}</span>`;
     li.title = t.diff;
-    li.onclick = () => { highlight = highlight === t.color ? null : t.color; loadCensus(); draw(); };
+    li.onclick = () => { highlight = highlight === t.color ? null : t.color; loadCensus(); setAgentTexture(); };
     ul.appendChild(li);
   }
 }
@@ -428,7 +1046,7 @@ const THEMES = ["auto", "light", "dark"], THEME_NAMES = { auto: "자동", light:
 function applyTheme(t) {
   if (t === "auto") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
   $("theme").textContent = "테마: " + THEME_NAMES[t];
-  rebuildBase(); draw(); drawCharts();
+  drawCharts();
 }
 let theme = "auto";
 try { theme = localStorage.getItem("gene-theme") || "auto"; } catch {}
@@ -446,9 +1064,21 @@ window.addEventListener("keydown", (e) => {
 });
 
 // ---------------- polling
+// u32 n; u32 uid[n]; u32 colour[n]; u16 x, y, energy/2, generation [n]; u8 orientation, embryo [n]
+function parseAgents(buf) {
+  const n = new DataView(buf).getUint32(0, true);
+  let off = 4;
+  const take = (T, bytes) => { const a = new T(buf, off, n); off += n * bytes; return a; };
+  const uid = take(Uint32Array, 4), c = take(Uint32Array, 4);
+  const x = take(Uint16Array, 2), y = take(Uint16Array, 2), e = take(Uint16Array, 2), g = take(Uint16Array, 2);
+  const o = take(Uint8Array, 1), emb = take(Uint8Array, 1);
+  return { uid, c, x, y, e, g, o, emb };
+}
 async function poll() {
   try {
-    state = await getJSON("/api/state");
+    const [s, ab] = await Promise.all([getJSON("/api/state"), fetch("/api/agents", { cache: "no-store" }).then((r) => r.arrayBuffer())]);
+    state = s;
+    state.agents = parseAgents(ab);
   } catch { $("meta").textContent = "연결 끊김"; return; }
   if (!state.tick && state.tick !== 0) return;
   W = state.w; H = state.h;
@@ -463,25 +1093,39 @@ async function poll() {
   $("play").textContent = state.paused ? "▶ 재생" : "⏸ 정지";
   $("play").classList.toggle("on", !state.paused);
   for (const b of document.querySelectorAll("button[data-tps]")) b.classList.toggle("on", Number(b.dataset.tps) === state.speed);
-  draw();
+  // positions, the agent texture and overlays only change with the tick
+  if (snap.cur && state.tick === snap.tick) return;
+  snap.tick = state.tick;
+  onSnapshot(state);
+  setOverlays(state);
 }
+// periodic work, spread so that no single frame carries all of it
+const later = (f, ms) => setTimeout(f, ms);
+let lastHistTick = -1;
 async function slowPoll() {
   try {
-    hist = await getJSON("/api/history"); drawCharts();
-    loadBehaviors();
-    water = await getBin("/api/water"); rebuildBase(); draw();
+    const h = await getJSON("/api/history");
+    const t = h.tick && h.tick.length ? h.tick[h.tick.length - 1] : 0;
+    if (t !== lastHistTick) { lastHistTick = t; hist = h; later(drawCharts, 0); later(loadBehaviors, 400); }
+    const field = await getBin("/api/water");
+    later(() => setField(field), 800);
   } catch {}
 }
 async function start() {
+  if (initGL()) {
+    setTerrain(await getBin("/api/terrain"));
+    setField(await getBin("/api/water"));
+    firstBake();
+    requestAnimationFrame(frame);
+  }
   await poll();
-  terrain = await getBin("/api/terrain");
   await slowPoll();
   loadCensus();
   setInterval(() => { if (!document.hidden) poll(); }, 250);
   setInterval(() => { if (!document.hidden) slowPoll(); }, 3000);
-  setInterval(() => { if (!document.hidden) { loadCensus(); if (selected) loadAgent(); } }, 4000);
+  setTimeout(() => setInterval(() => { if (!document.hidden) { loadCensus(); if (selected) loadAgent(); } }, 4000), 1700);
 }
-matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { rebuildBase(); draw(); drawCharts(); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => drawCharts());
 applyTheme(theme);
 start();
 </script>
