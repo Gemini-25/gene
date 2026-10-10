@@ -23,6 +23,8 @@ struct Control {
     /// Target ticks per second, 0 = as fast as possible.
     tps: u32,
     step: u64,
+    /// Run as fast as possible up to this tick, then pause (replay after a rewind).
+    until: Option<u64>,
 }
 
 struct Shared {
@@ -56,7 +58,7 @@ pub struct ServeOpts {
 
 pub fn serve(sim: Sim, o: ServeOpts) {
     let shared = Arc::new(Mutex::new(Shared {
-        control: Control { paused: true, tps: 10, step: 0 },
+        control: Control { paused: true, tps: 10, step: 0, until: None },
         snapshot: Arc::new(String::from("{}")),
         agents: Arc::new(vec![0; 4]),
         history: Arc::new(String::from("{}")),
@@ -302,6 +304,13 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
                     break;
                 }
                 sh.control.step -= 1;
+            } else if let Some(t) = ctl.until {
+                if sim.st.tick >= t {
+                    let mut sh = shared.lock().unwrap();
+                    sh.control.until = None;
+                    sh.control.paused = true;
+                    break;
+                }
             } else if ctl.tps > 0 {
                 let allowed = (epoch.elapsed().as_secs_f64() * ctl.tps as f64) as u64;
                 if epoch_ticks >= allowed {
@@ -439,7 +448,7 @@ fn snapshot(sim: &Sim, cache: &HashCache, ctl: &Control, tps: f64) -> String {
     let light = (1024 - (p as i64 - 1024).abs()).max(0) as f64 / 1024.0;
     format!(
         "{{\"tick\":{tick},\"day\":{},\"phase\":{p},\"light\":{light:.3},\"pop\":{},\"births\":{},\"deaths\":{},\
-\"genomes\":{},\"tps\":{tps:.1},\"paused\":{},\"speed\":{},\"w\":{},\"h\":{},\"seed\":{},\"ruleset\":\"{}\",\
+\"genomes\":{},\"tps\":{tps:.1},\"paused\":{},\"until\":{},\"speed\":{},\"w\":{},\"h\":{},\"seed\":{},\"ruleset\":\"{}\",\
 \"signal\":[{}],\"parcels\":[{}]}}",
         tick / 4096,
         ag.len(),
@@ -447,6 +456,7 @@ fn snapshot(sim: &Sim, cache: &HashCache, ctl: &Control, tps: f64) -> String {
         sim.obs.total_deaths_energy + sim.obs.total_deaths_body,
         cache.distinct(),
         ctl.paused,
+        ctl.until.map_or("null".to_string(), |t| t.to_string()),
         ctl.tps,
         w.w,
         w.h,
@@ -896,6 +906,10 @@ fn handle(mut stream: TcpStream, shared: &Arc<Mutex<Shared>>, tx: &mpsc::Sender<
             }
             if let Some(t) = query(q, "tps").and_then(|v| v.parse::<u32>().ok()) {
                 sh.control.tps = t;
+            }
+            if let Some(t) = query(q, "until").and_then(|v| v.parse::<u64>().ok()) {
+                sh.control.until = Some(t);
+                sh.control.paused = false;
             }
             drop(sh);
             respond(&mut stream, "200 OK", json, b"{\"ok\":true}")

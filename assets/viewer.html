@@ -52,6 +52,7 @@ main { display: flex; height: calc(100% - 46px); min-height: 0; }
 #tl-track button { position: absolute; top: 50%; width: 12px; height: 12px; min-height: 0; padding: 0; margin: -6px 0 0 -6px;
   border-radius: 50%; border: 2px solid #f4f4f0; background: #2a78d6; }
 #tl-track button:hover { transform: scale(1.35); }
+#tl-replay { min-height: 22px; padding: 1px 8px; font-size: 11px; white-space: nowrap; }
 #tl-now { position: absolute; top: 4px; bottom: 4px; width: 2px; margin-left: -1px; background: #eda100; }
 #tip { position: absolute; display: none; pointer-events: none; background: rgba(10,12,20,0.82); color: #f4f4f0;
   border-radius: 6px; padding: 4px 8px; font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -1065,7 +1066,8 @@ map.addEventListener("pointermove", (e) => {
   tip.style.top = Math.max(8, hoverAt.y - 30) + "px";
 });
 
-// --- timeline: saved days to rewind to
+// --- timeline: saved days to rewind to; after a rewind, replay up to where we were
+let furthest = 0;
 async function loadTimeline() {
   let tl;
   try { tl = await getJSON("/api/timeline"); } catch { return; }
@@ -1078,6 +1080,7 @@ async function loadTimeline() {
     b.style.left = (100 * (t - start) / span) + "%";
     b.title = `${(t / 4096).toFixed(1)}일째로 되감기 (그 뒤 저장점은 지워지고, 같은 규칙으로 다시 진행돼요)`;
     b.onclick = async () => {
+      furthest = Math.max(furthest, state.tick);
       const res = await getJSON("/api/rewind?tick=" + t);
       if (res.error) { alert("되감기 실패: " + res.error); return; }
       snap.cur = null; snap.tick = -1; lastHistTick = -1;
@@ -1087,7 +1090,23 @@ async function loadTimeline() {
   }
   const now = document.createElement("div"); now.id = "tl-now"; now.style.left = (100 * (state.tick - start) / span) + "%";
   track.appendChild(now);
-  $("tl-label").textContent = `되감기 · 저장점 ${tl.ticks.length}개 · ${tl.mb} MB`;
+  if (furthest > state.tick + 4096) {
+    const fx = document.createElement("div"); fx.id = "tl-now"; fx.style.background = "rgba(237,161,0,0.45)";
+    fx.style.left = Math.min(100, 100 * (furthest - start) / span) + "%"; fx.title = "되감기 전 시점";
+    track.appendChild(fx);
+  }
+  $("tl-label").textContent = state.until != null ? `다시 보기 중 → ${(state.until / 4096).toFixed(1)}일째`
+    : `되감기 · 저장점 ${tl.ticks.length}개 · ${tl.mb} MB`;
+  let rb = $("tl-replay");
+  if (furthest > state.tick + 256 && state.until == null) {
+    if (!rb) {
+      rb = document.createElement("button"); rb.id = "tl-replay";
+      $("timeline").insertBefore(rb, $("tl-track"));
+    }
+    rb.textContent = `▶ ${(furthest / 4096).toFixed(1)}일째까지 다시 보기`;
+    rb.title = "같은 규칙이라 같은 역사가 다시 나와요. 그 시점에서 멈춥니다.";
+    rb.onclick = () => control("until=" + furthest);
+  } else if (rb) rb.remove();
 }
 const dark = () => document.documentElement.dataset.theme === "dark"
   || (document.documentElement.dataset.theme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
