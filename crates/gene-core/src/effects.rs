@@ -300,7 +300,12 @@ impl Sim {
             Store::Inv => self.st.agents[i].inv[s] += n as u16,
             Store::Loose(_) => self.st.world.put_loose(dst_tile, s, n),
             Store::Actor(_) => self.st.agents[target.unwrap()].inv[s] += n as u16,
-            Store::EmbryoRet => self.st.agents[i].embryo.as_mut().unwrap().ret[s] += n as u16,
+            Store::EmbryoRet => {
+                self.st.agents[i].embryo.as_mut().unwrap().ret[s] += n as u16;
+                if src != Store::EmbryoRet {
+                    self.obs.m1.provisioned += n;
+                }
+            }
             Store::Matrix(_) => {
                 if !self.st.world.parcels.contains_key(&dst_tile) {
                     let uid = self.st.next_parcel_uid;

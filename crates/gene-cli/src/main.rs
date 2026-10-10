@@ -506,6 +506,7 @@ fn effects_json(sim: &Sim, an: &gene_core::behavior::Analyzer) -> String {
         ("actor_pushes", m.actor_pushes),
         ("parcel_media_created", m.parcel_media_created),
         ("parcel_media_dropped", m.parcel_media_dropped),
+        ("provisioned", m.provisioned),
     ];
     let m1: Vec<String> = m1.iter().map(|(k, v)| format!("\"{k}\": {v}")).collect();
     let c = &an.counts;
@@ -560,10 +561,10 @@ fn run(mut sim: Sim, o: &Opts) -> Summary {
         "tick,pop,births,deaths_energy,deaths_body,mean_energy,mean_inv_g,embryos,max_gen,mean_gen,distinct_genomes,mean_genome_len,\
 upkeep_q,vm_q,attempt_q,effect_q,photosynthesis,respiration,moves,inert,loose_G,loose_C,loose_O,loose_W,dropped_pages,mean_theta,ledger_residual,\
 emits,signal_reads,public_reads,copies_from_public,copies_to_public,draft_to_embryo,public_writes,drafts_created,bit_flips,foreign_births,commits,adoptions,parcels,parcels_created,parcel_reactions,links,unlinks,assembly_moves,parcels_moved,pushes,load_failures,\
-taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_media_created,parcel_media_dropped,dry_tiles"
+taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_media_created,parcel_media_dropped,dry_tiles,provisioned"
     )
     .unwrap();
-    writeln!(births, "tick,uid,parent,root,generation,genome,len,structural_op,structural_applied,point_flips,foreign,x,y").unwrap();
+    writeln!(births, "tick,uid,parent,root,generation,genome,len,structural_op,structural_applied,point_flips,foreign,x,y,inv_g").unwrap();
     writeln!(deaths, "tick,uid,cause,age,children,generation,inv_g,embryo_state").unwrap();
     let start = Instant::now();
     let mut s = Summary { seed: sim.st.config.seed, audit_ok: true, ..Default::default() };
@@ -628,7 +629,7 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
             judge.birth(b.uid, b.parent, b.tick, b.genome_hash);
             writeln!(
                 births,
-                "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 b.tick,
                 b.uid,
                 b.parent,
@@ -641,7 +642,8 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
                 b.mutation.point_flips,
                 b.foreign as u8,
                 b.x,
-                b.y
+                b.y,
+                b.inv_g
             )
             .unwrap();
         }
@@ -772,7 +774,7 @@ fn write_stats(out: &mut impl Write, sim: &mut Sim) {
     let a = sim.audit();
     writeln!(
         out,
-        "{},{},{},{},{},{:.0},{:.2},{},{},{:.2},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{},{},{},{},{},{:.0},{:.2},{},{},{:.2},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         sim.st.tick,
         ag.len(),
         sim.obs.total_births,
@@ -829,7 +831,8 @@ fn write_stats(out: &mut impl Write, sim: &mut Sim) {
         sim.st.world.parcels.values().filter(|p| p.media.is_some()).count(),
         sim.obs.m1.parcel_media_created,
         sim.obs.m1.parcel_media_dropped,
-        dry
+        dry,
+        sim.obs.m1.provisioned
     )
     .unwrap();
 }

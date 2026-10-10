@@ -54,6 +54,8 @@ pub struct BirthEvent {
     pub foreign: bool,
     pub x: u16,
     pub y: u16,
+    /// G the child was born carrying (provisioned by its parent through the embryo store).
+    pub inv_g: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +120,8 @@ pub struct M1Stats {
     /// parcel vanished.
     pub parcel_media_created: u64,
     pub parcel_media_dropped: u64,
+    /// Matter units a parent put into its embryo's store (they go to the child at birth).
+    pub provisioned: u64,
 }
 
 /// One resolved effect, as the behaviour analysis sees it (original §58). Observer only.
@@ -219,6 +223,7 @@ impl Observer {
             foreign: child.code.foreign,
             x: child.x,
             y: child.y,
+            inv_g: child.inv[crate::species::G],
         });
     }
 

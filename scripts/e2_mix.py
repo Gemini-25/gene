@@ -61,7 +61,7 @@ def main(run, n, names):
             cross.setdefault(key, []).append(int(b["tick"]))
     for (a, b), ts in sorted(cross.items()):
         print(f"{a} parent line, {b} founder genome: {len(ts)} births, first at day {min(ts) / DAY:.1f}")
-    cols = ["emits", "signal_reads", "public_reads", "copies_from_public", "drafts_created", "commits", "adoptions", "parcels", "parcels_created"]
+    cols = ["emits", "signal_reads", "public_reads", "copies_from_public", "drafts_created", "commits", "adoptions", "parcels", "parcels_created", "provisioned"]
     last = stats[-1]
     print("end:", ", ".join(f"{c} {last[c]}" for c in cols if c in last))
 

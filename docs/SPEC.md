@@ -576,8 +576,8 @@ E2는 기록·신호·구조물을 하나씩 쓰는 조상들을 한 세계에 �
 
 | 파일 | 내용 |
 | --- | --- |
-| `stats.csv` | 주기별 개체 수, 출생, 사망 원인, 평균 energy·inventory G, 배아 상태, 변이 사건, 고유 genome 수, 최대 세대, 장부 잔차, 서식지 W·C |
-| `births.csv` | tick, 자식, 부모, 세대, genome hash, 길이, 변이 여부, 위치 |
+| `stats.csv` | 주기별 개체 수, 출생, 사망 원인, 평균 energy·inventory G, 배아 상태, 변이 사건, 고유 genome 수, 최대 세대, 장부 잔차, 서식지 W·C. 마지막 열 `provisioned`는 부모가 배아 저장소에 넣은 물질 단위다(출생 때 자식 inventory로 감). 어떤 조상도 하지 않는 행동이라, 진화로 생기는지 보는 표지다 |
+| `births.csv` | tick, 자식, 부모, 세대, genome hash, 길이, 변이 여부, 위치, 태어날 때 든 G(`inv_g`) |
 | `deaths.csv` | tick, uid, 원인, 나이, 자식 수 |
 | `map_<tick>.png` | 고도, 물, 개체(계통 색) |
 | `summary.json` | 실행 설정, 최종 상태, hash, 성능 |
