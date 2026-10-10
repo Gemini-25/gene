@@ -544,6 +544,32 @@ Founder-7(`assets/founder7.asm`)은 Founder-6에서 G가 모자랄 때의 행동
 
 소규모 점검(128², 개체 64, 100,000 tick, seed 1..4, `docs/results/E1.md`): 마지막 개체 수가 Founder-6은 58..213, Founder-7은 187..425였다. 21일째 loose G 중앙값은 Founder-6이 7.7만, Founder-7이 3.0만이었다.
 
+### 16e. E2 공개 조상 Founder-8, -9, -10 (사용자 결정 2)
+
+E2는 기록·신호·구조물을 하나씩 쓰는 조상들을 한 세계에 둔다. 셋 다 Founder-7에 습관 하나만 더했다. 더한 습관은 기존 primitive만 쓰고, 조상에게 준 행동이므로 성과로 세지 않는다(§17f의 새로움 규칙).
+
+| 조상 | 쓰는 기능 | 더한 습관 | 크기 |
+| --- | --- | --- | --- |
+| Founder-8 (`founder8.asm`) | 신호(EMIT, Signal READ) | G가 17 이상 있던 tile에서 G를 가져오면 channel 0에 진폭 48로 먹이 신호를 낸다. S나 G를 못 찾아 돌아다니거나 잘 때가 되면, 먼저 앞·오른쪽·뒤·왼쪽 2칸의 channel 0을 듣고 가장 큰 신호 쪽으로 한 칸 간다 | 349 word, 722 cell |
+| Founder-9 (`founder9.asm`) | 공개 기록, 초안, DraftCommit | 부유하고(energy 50000 이상, G·S 충분) 오전이 아닐 때 쉬는 8번에 한 번, 자기 tile과 앞 tile의 공개 기록 앞 두 개를 본다. 256 cell 이상이고 자기 genome과 길이가 다른 첫 기록을 초안에 복사해 commit한다. 그 코드가 learned로 실행된다. 일생에 한 번만 시도한다. 자식은 Founder-9 code를 물려받는다 | 397 word, 818 cell |
+| Founder-10 (`founder10.asm`) | parcel(TRANSFER Matrix, WORK Compress) | energy 60000 이상(50000은 자식 몫)이고 오전이 아닐 때 쉬면서, 들고 있는 S 가운데 2개를 등 뒤 tile의 matrix에 넣고(없으면 parcel이 생김) 512q로 압축한다. 그 조각이 S 16을 담으면 멈춘다. S가 4보다 적으면 자기 tile의 loose S만 줍고, 재료를 찾아 걷지 않는다 | 340 word, 704 cell |
+
+설계 중 고친 것:
+- Founder-10의 첫 판은 S를 모으러 걸었다. 걷는 동안 광합성이 줄어 밤을 넘기지 못했고, 소규모 점검에서 개체가 18까지 줄었다. 그래서 걷지 않게 바꿨다.
+- Founder-9의 첫 판은 자기 tile의 기록 하나만 봤다. 그래서 거의 배우지 못했다.
+
+**소규모 점검**(128², 개체 64, 100,000 tick, `gene-m2-1`, seed 1..4)
+
+| 조상 | 마지막 개체 수 | 출생 | 습관 사용(seed별) |
+| --- | --- | --- | --- |
+| Founder-7 | 272, 462, 322, 424 | 4,246..6,768 | 변이체가 EMIT를 쓴 seed 2개, parcel을 만든 seed 1개 |
+| Founder-8 | 218, 423, 337, 342 | 3,052..5,091 | EMIT 11만..20만 |
+| Founder-9 | 133, 365, 208, 273 | 2,183..4,342 | 채택 551..1,070 |
+| Founder-10 | 241, 391, 316, 363 | 3,735..5,549 | 마지막 parcel 60..73 |
+| 넷을 섞음 | 261, 387, 289, 365 | 3,843..5,721 | 24일째 Founder-9는 seed 2개에서 사라지고, Founder-10은 seed 1에서 2개체만 남음 |
+
+세 조상 모두 혼자 살아남는다. 코드가 길수록 번식 복사와 유지비가 커서 Founder-7보다 조금 약하다. Founder-9가 가장 약하다(채택 비용 약 2만 q와 learned 페이지 유지비). E2 본 실험은 Founder-7 없이 Founder-8, -9, -10만 섞는다(`--founder founder8+founder9+founder10`).
+
 ## 17. 관찰과 출력
 
 관찰은 세계를 바꾸지 않는다. 헤드리스 실행이 내는 파일:

@@ -19,6 +19,7 @@
 | E1-b: Founder-5(개정판) | 20/20 seed가 49일 생존. 그러나 계속 줄어 마지막 개체 수 중앙값 66 ([`docs/results/E1.md`](docs/results/E1.md)) |
 | E1-c: Founder-6(오전에만 번식) | 20/20 seed가 49일 생존. 9일째 약 5,300까지 늘었다가 감소(마지막 중앙값 663). 원인은 신생아 사망: 물과 탄소가 죽은 유기물에 갇혀 39일째 땅의 81%에 물이 없음 |
 | E1-d: Founder-7(죽은 G 수거) | 진행 중. 중간까지 같은 날 Founder-6의 약 3배. 다음 함정은 죽은 개체의 코드 기록 |
+| E2 조상: Founder-8(신호), -9(기록 학습), -10(구조물) | Founder-7에 습관 하나씩. 소규모 4 seed에서 셋 다 혼자 살아남음. `--founder founder8+founder9+founder10`으로 한 세계에 섞음 (SPEC §16e) |
 | P1: M1 기능의 자연 발견 | 소규모 4 seed에서 없음. m0와 m1d 결과가 완전히 같음 ([`docs/results/P1_M1_pilot.md`](docs/results/P1_M1_pilot.md)) |
 | 속도(512², 개체 약 1,700) | 약 190 TPS, 단일 thread. 명세 목표 S1(500+) 미달, 병목은 환경 수송. Think·수송·환경은 `--sim-threads N`으로 병렬(결과 동일) |
 | M1a(신호·공개 기록·초안) | ruleset `gene-m1-1`(`--ruleset m1a`) |
@@ -66,7 +67,7 @@ python3 scripts/e1_summary.py runs/E1d
 python3 scripts/e1_newborns.py runs/E1d   # 신생아 생존
 ```
 
-`--founder`에는 `founder4`..`founder7` 또는 어셈블리 파일 경로를 줄 수 있다. `--ruleset`은 `m0`(기본), `m1a`..`m1f`, `m0b`, `m2`다. `m2`가 지금 있는 모든 기능이다(SPEC §20h). 실행마다 다음 파일이 생긴다.
+`--founder`에는 `founder4`..`founder10` 또는 어셈블리 파일 경로를 줄 수 있고, `+`로 이어 여러 조상을 한 세계에 둘 수 있다(조상 i는 i mod n번째 프로그램). `--ruleset`은 `m0`(기본), `m1a`..`m1f`, `m0b`, `m2`다. `m2`가 지금 있는 모든 기능이다(SPEC §20h). 실행마다 다음 파일이 생긴다.
 
 | 파일 | 내용 |
 | --- | --- |
@@ -77,6 +78,8 @@ python3 scripts/e1_newborns.py runs/E1d   # 신생아 생존
 | `summary.json` | 설정, 결과, 상태 hash, 속도, 효과 결과별 횟수, M1 계수, 행동 family 요약 |
 | `genomes.txt` | 마지막 시점의 많은 genome과 founder 대비 차이 |
 | `behaviors.csv` | 반복되는 행동 family(원본 §58 A1.4): 처음 나타난 tick, 개체 수, 대표 효과 순서 |
+| `judge.csv` | 반복 family마다 고수준 판정의 거르기(SPEC §17f B): 성공률, 성과 비, 조상 유형 수, 조상 code 창 수, 통과 |
+| `highlevel.csv` | 반복 family가 이어진 연쇄(SPEC §17f C): 판정(pass 또는 걸린 규칙), 새로움, 개체 수, 하루 중 때, 결과물, 단계별 행동 |
 | `groups.csv` | 4096 tick 창마다 관계 graph의 집단(원본 §29): 개체 수, 관계 종류, 지속 창 수, 문명 후보 여부 |
 | `artifacts.csv` | 두 곳 이상에서 나타난 구조물 모양(원본 §58): 독립 occurrence 수, 만든 개체 수, 반복 확정 tick |
 | `lineage.csv` | 다른 개체가 쓴 코드가 기록을 거쳐 채택·출생으로 들어와 실행된 사건(원본 §58 전달 증거): 저자, kin/non-kin, cell 수 |
