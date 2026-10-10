@@ -54,6 +54,10 @@ canvas.chart { width: 100%; height: 120px; display: block; }
   padding: 4px 6px; border-radius: 6px; cursor: pointer; }
 .census li:hover, .census li.sel { background: var(--btn); }
 .sw { width: 12px; height: 12px; border-radius: 3px; }
+.behav { list-style: none; padding: 0; margin: 6px 0 0; }
+.behav li { padding: 5px 6px; border-bottom: 1px solid var(--border); }
+.behav code { display: block; font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink2);
+  white-space: normal; overflow-wrap: anywhere; margin-top: 2px; }
 .small { color: var(--muted); font-size: 11px; }
 pre { font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--page);
   border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow-x: auto; white-space: pre; margin: 6px 0; }
@@ -111,6 +115,9 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
     <canvas class="chart" id="c-dead"></canvas>
     <h2>많은 genome <span class="small" id="g-distinct"></span></h2>
     <ul class="census" id="census"></ul>
+    <h2>새로 반복되는 행동 <span class="small" id="b-count"></span></h2>
+    <div class="small">같은 효과 순서가 서로 다른 개체 2 이상, 창 3개 이상에서 나타난 것(원본 §58 A1.4). 최근 확정 순.</div>
+    <ul class="behav" id="behav"></ul>
     <h2>선택한 개체</h2>
     <div id="agent" class="empty">지도에서 개체를 클릭하세요.</div>
   </aside>
@@ -396,6 +403,19 @@ async function loadCensus() {
   }
 }
 
+async function loadBehaviors() {
+  const b = await getJSON("/api/behaviors");
+  if (!b.recent) return;
+  $("b-count").textContent = `(반복 ${b.repeated} · family ${fmt(b.families)} · 창 ${fmt(b.windows)})`;
+  const ul = $("behav"); ul.innerHTML = "";
+  for (const f of b.recent) {
+    const li = document.createElement("li");
+    li.innerHTML = `<span>#${f.id} · ${(f.repeated / 4096).toFixed(1)}일째 확정 <span class="small">· 처음 ${(f.first / 4096).toFixed(1)}일 · 개체 ${f.agents} · 창 ${f.windows}</span></span>
+      <code>${esc(f.example)}</code>`;
+    ul.appendChild(li);
+  }
+}
+
 // ---------------- controls
 async function control(q) { await fetch("/api/control?" + q); poll(); }
 $("play").onclick = () => control(state && state.paused ? "play=1" : "pause=1");
@@ -448,6 +468,7 @@ async function poll() {
 async function slowPoll() {
   try {
     hist = await getJSON("/api/history"); drawCharts();
+    loadBehaviors();
     water = await getBin("/api/water"); rebuildBase(); draw();
   } catch {}
 }

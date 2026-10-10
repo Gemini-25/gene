@@ -29,6 +29,7 @@ struct Shared {
     control: Control,
     snapshot: Arc<String>,
     history: Arc<String>,
+    behaviors: Arc<String>,
 }
 
 enum Req {
@@ -50,6 +51,7 @@ pub fn serve(sim: Sim, o: ServeOpts) {
         control: Control { paused: true, tps: 10, step: 0 },
         snapshot: Arc::new(String::from("{}")),
         history: Arc::new(String::from("{}")),
+        behaviors: Arc::new(String::from("{}")),
     }));
     let (tx, rx) = mpsc::channel::<Req>();
     let listener = TcpListener::bind(("127.0.0.1", o.port)).unwrap_or_else(|e| die(format!("port {}: {e}", o.port)));
@@ -165,6 +167,8 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
     let mut cache = HashCache(BTreeMap::new());
     cache.refresh(&sim);
     hist.push(&sim, cache.distinct());
+    let mut behavior = gene_core::behavior::Analyzer::default();
+    sim.obs.facts = Some(Vec::new());
     let mut epoch = Instant::now();
     let mut epoch_ticks = 0u64;
     let mut last_ctl = (true, 10u32);
@@ -201,9 +205,13 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
             sim.step();
             ran += 1;
             epoch_ticks += 1;
+            for f in sim.obs.facts.as_mut().unwrap().drain(..) {
+                behavior.push(&f);
+            }
             if sim.st.tick % 256 == 0 {
                 cache.refresh(&sim);
                 hist.push(&sim, cache.distinct());
+                behavior.flush(sim.st.tick);
             }
             if slice.elapsed() > Duration::from_millis(40) {
                 break;
@@ -228,6 +236,7 @@ fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>,
             let mut sh = shared.lock().unwrap();
             sh.snapshot = Arc::new(snap);
             sh.history = Arc::new(hist.json());
+            sh.behaviors = Arc::new(behaviors_json(&behavior));
             dirty = ran > 0;
         }
         if ran == 0 {
@@ -298,6 +307,37 @@ fn json_str(s: &str) -> String {
     }
     o.push('"');
     o
+}
+
+/// The most recently confirmed repeated behaviours (original §58) and the analysis counts.
+fn behaviors_json(an: &gene_core::behavior::Analyzer) -> String {
+    let mut rep: Vec<&gene_core::behavior::Family> = an.families.iter().filter(|f| f.repeated_at.is_some()).collect();
+    rep.sort_by_key(|f| std::cmp::Reverse((f.repeated_at, f.id)));
+    let items: Vec<String> = rep
+        .iter()
+        .take(10)
+        .map(|f| {
+            let ex: Vec<String> = f.example.iter().map(gene_core::behavior::describe).collect();
+            format!(
+                "{{\"id\":{},\"first\":{},\"repeated\":{},\"windows\":{},\"agents\":{},\"example\":{}}}",
+                f.id,
+                f.first_tick,
+                f.repeated_at.unwrap(),
+                f.windows,
+                f.agents.len(),
+                json_str(&ex.join(" · "))
+            )
+        })
+        .collect();
+    let c = &an.counts;
+    format!(
+        "{{\"windows\":{},\"families\":{},\"repeated\":{},\"novel\":{},\"recent\":[{}]}}",
+        c.windows,
+        an.families.len(),
+        rep.len(),
+        c.novel,
+        items.join(",")
+    )
 }
 
 fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::genome::Program>, save_dir: &PathBuf) {
@@ -520,6 +560,10 @@ fn handle(mut stream: TcpStream, shared: &Arc<Mutex<Shared>>, tx: &mpsc::Sender<
         "/api/agent" => {
             let uid = query(q, "uid").and_then(|v| v.parse().ok()).unwrap_or(0);
             let s = ask(tx, |r| Req::Agent(uid, r)).unwrap_or_else(|| "{\"error\":\"timeout\"}".into());
+            respond(&mut stream, "200 OK", json, s.as_bytes())
+        }
+        "/api/behaviors" => {
+            let s = shared.lock().unwrap().behaviors.clone();
             respond(&mut stream, "200 OK", json, s.as_bytes())
         }
         "/api/genomes" => {
