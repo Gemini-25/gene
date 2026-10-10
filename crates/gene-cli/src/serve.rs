@@ -344,17 +344,20 @@ fn color_u32(h: &[u8; 32]) -> u32 {
 }
 
 /// Agents for the viewer, little endian, grouped by element size so typed arrays line up:
-/// u32 n; u32 uid[n]; u32 colour[n]; u16 x[n]; u16 y[n]; u16 energy[n]; u16 generation[n];
-/// u8 orientation[n]; u8 embryo state[n].
+/// u32 n; u32 uid[n]; u32 colour[n]; u32 root[n]; u16 x[n]; u16 y[n]; u16 energy[n];
+/// u16 generation[n]; u8 orientation[n]; u8 embryo state[n].
 fn agents_bin(sim: &Sim, cache: &HashCache) -> Vec<u8> {
     let ag = &sim.st.agents;
-    let mut out = Vec::with_capacity(4 + 18 * ag.len());
+    let mut out = Vec::with_capacity(4 + 22 * ag.len());
     out.extend_from_slice(&(ag.len() as u32).to_le_bytes());
     for a in ag {
         out.extend_from_slice(&(a.uid as u32).to_le_bytes());
     }
     for a in ag {
         out.extend_from_slice(&cache.0.get(&a.uid).map_or(0, color_u32).to_le_bytes());
+    }
+    for a in ag {
+        out.extend_from_slice(&(a.root as u32).to_le_bytes());
     }
     type Field = fn(&gene_core::agent::Agent) -> u16;
     let fields: [Field; 4] = [|a| a.x, |a| a.y, |a| (a.energy >> 1) as u16, |a| a.generation.min(65535) as u16];

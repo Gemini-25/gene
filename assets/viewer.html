@@ -105,6 +105,7 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
     <button data-tps="0">MAX</button>
     <button id="save">저장</button>
     <button id="sig" title="M1 신호 장 표시">신호</button>
+    <button id="colour" title="개체 색 기준: genome · 계통 · 에너지 · 세대">색: genome</button>
     <button id="theme" title="자동 / 밝게 / 어둡게">테마: 자동</button>
   </div>
 </header>
@@ -726,7 +727,7 @@ function setAgentTexture() {
   for (let i = 0; i < c.uid.length; i++) {
     const t = c.y[i] * W + c.x[i], col = c.c[i];
     agentBuf[4 * t] = col >> 16 & 255; agentBuf[4 * t + 1] = col >> 8 & 255; agentBuf[4 * t + 2] = col & 255;
-    agentBuf[4 * t + 3] = 1 + ((c.emb[i] > 0 ? 1 : 0) | (hl !== null && col !== hl ? 4 : 0));
+    agentBuf[4 * t + 3] = 1 + ((c.emb[i] > 0 ? 1 : 0) | (hl !== null && c.gc[i] !== hl ? 4 : 0));
     lastAgentTiles.push(t);
   }
   upload(agentTex, W, H, agentBuf);
@@ -788,7 +789,7 @@ function onSnapshot(s) {
     snap.born.delete(prev.uid[j]);
   }
   // where each agent is drawn right now: interpolation starts from there
-  const cur = { uid: a.uid, x: a.x, y: a.y, c: a.c, emb: a.emb, sx: px, sy: py, sa: pa,
+  const cur = { uid: a.uid, x: a.x, y: a.y, c: a.c, gc: a.gc || a.c, emb: a.emb, sx: px, sy: py, sa: pa,
     ix: Float32Array.from(a.x), iy: Float32Array.from(a.y), ia: Float32Array.from(a.o, (o) => o * Math.PI / 2) };
   snap.prev = prev; snap.cur = cur;
   snap.tPrev = snap.tCur || now; snap.tCur = now;
@@ -820,7 +821,7 @@ function agentInstances(now, dots, rect) {
     let flags = c.emb[i] > 0 ? 1 : 0;
     if (k < 1 && (c.x[i] !== c.sx[i] || c.y[i] !== c.sy[i])) flags |= 8;
     if (c.uid[i] === selected) flags |= 2;
-    if (hl !== null && col !== hl) flags |= 4;
+    if (hl !== null && c.gc[i] !== hl) flags |= 4;
     instData[w] = x; instData[w + 1] = y; instData[w + 2] = ang; instData[w + 3] = alpha;
     instData[w + 4] = (col >> 16 & 255) / 255; instData[w + 5] = (col >> 8 & 255) / 255; instData[w + 6] = (col & 255) / 255; instData[w + 7] = flags;
     w += 8;
@@ -1211,6 +1212,11 @@ $("play").onclick = () => control(state && state.paused ? "play=1" : "pause=1");
 $("step").onclick = () => control("step=1");
 $("sig").onclick = () => { showSignal = !showSignal; $("sig").classList.toggle("on", showSignal); draw(); };
 $("step100").onclick = () => control("step=100");
+$("colour").onclick = () => {
+  colourMode = COLOUR_MODES[(COLOUR_MODES.indexOf(colourMode) + 1) % COLOUR_MODES.length];
+  $("colour").textContent = "색: " + COLOUR_NAMES[colourMode];
+  if (state && state.agents) { recolour(state.agents); snap.tick = -1; onSnapshot(state); setOverlays(state); }
+};
 $("save").onclick = async () => { const r = await getJSON("/api/save"); alert(r.saved ? "저장: " + r.saved : "실패: " + r.error); };
 for (const b of document.querySelectorAll("button[data-tps]")) b.onclick = () => control("tps=" + b.dataset.tps);
 const THEMES = ["auto", "light", "dark"], THEME_NAMES = { auto: "자동", light: "밝게", dark: "어둡게" };
@@ -1240,21 +1246,48 @@ window.addEventListener("keyup", (e) => keys.delete(e.code));
 window.addEventListener("blur", () => keys.clear());
 
 // ---------------- polling
-// u32 n; u32 uid[n]; u32 colour[n]; u16 x, y, energy/2, generation [n]; u8 orientation, embryo [n]
+// u32 n; u32 uid[n]; u32 colour[n]; u32 root[n]; u16 x, y, energy/2, generation [n]; u8 orientation, embryo [n]
 function parseAgents(buf) {
   const n = new DataView(buf).getUint32(0, true);
   let off = 4;
   const take = (T, bytes) => { const a = new T(buf, off, n); off += n * bytes; return a; };
-  const uid = take(Uint32Array, 4), c = take(Uint32Array, 4);
+  const uid = take(Uint32Array, 4), c = take(Uint32Array, 4), root = take(Uint32Array, 4);
   const x = take(Uint16Array, 2), y = take(Uint16Array, 2), e = take(Uint16Array, 2), g = take(Uint16Array, 2);
   const o = take(Uint8Array, 1), emb = take(Uint8Array, 1);
-  return { uid, c, x, y, e, g, o, emb };
+  return { uid, c, root, x, y, e, g, o, emb, gc: c };
+}
+// --- agent colour: genome (default), founder lineage, energy, generation
+const COLOUR_MODES = ["genome", "lineage", "energy", "generation"], COLOUR_NAMES = { genome: "genome", lineage: "계통", energy: "에너지", generation: "세대" };
+let colourMode = "genome";
+function ramp(t) {
+  // sequential: purple -> red -> orange -> yellow (ordered by lightness, distinct from green ground and blue water)
+  const stops = [[90, 30, 140], [190, 45, 110], [245, 120, 45], [252, 232, 90]];
+  t = Math.max(0, Math.min(1, t)) * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(t)), f = t - i, a = stops[i], b = stops[i + 1];
+  return (Math.round(a[0] + (b[0] - a[0]) * f) << 16) | (Math.round(a[1] + (b[1] - a[1]) * f) << 8) | Math.round(a[2] + (b[2] - a[2]) * f);
+}
+function lineageColour(root) {
+  let h = Math.imul(root ^ 0x9e3779b9, 0x85ebca6b); h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35); h ^= h >>> 16;
+  const hue = (h >>> 0) % 360, s = 0.75, l = 0.55, k = (n) => (n + hue / 30) % 12, a = s * Math.min(l, 1 - l);
+  const f = (n) => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1))));
+  return (f(0) << 16) | (f(8) << 8) | f(4);
+}
+function recolour(a) {
+  if (colourMode === "genome") { a.c = a.gc; return; }
+  const c = new Uint32Array(a.uid.length);
+  let gmax = 1;
+  if (colourMode === "generation") for (let i = 0; i < a.g.length; i++) gmax = Math.max(gmax, a.g[i]);
+  for (let i = 0; i < c.length; i++) {
+    c[i] = colourMode === "lineage" ? lineageColour(a.root[i]) : colourMode === "energy" ? ramp(a.e[i] / 32767) : ramp(a.g[i] / gmax);
+  }
+  a.c = c;
 }
 async function poll() {
   try {
     const [s, ab] = await Promise.all([getJSON("/api/state"), fetch("/api/agents", { cache: "no-store" }).then((r) => r.arrayBuffer())]);
     state = s;
     state.agents = parseAgents(ab);
+    recolour(state.agents);
   } catch { $("meta").textContent = "연결 끊김"; return; }
   if (!state.tick && state.tick !== 0) return;
   W = state.w; H = state.h;
