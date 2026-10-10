@@ -137,6 +137,22 @@ pub const RX6: Reaction = Reaction {
 
 pub const CREDIT_REACTIONS: [&Reaction; 5] = [&RX2, &RX3, &RX4, &RX5, &RX6];
 
+/// Rate of a credit reaction at temperature theta. With faster decomposition (ruleset
+/// `gene-m0-2` and later, SPEC §20h) Rx2 runs at least 16 in the living bins 270..499 K.
+#[inline]
+pub fn rx_rate(rx: &Reaction, theta: u64, decomp: bool) -> u64 {
+    let bin = temp_bin(theta);
+    let r = rx.rates[bin] as u64;
+    if decomp && rx.id == 2 && (bin == 1 || bin == 2) {
+        r.max(DECOMP_RATE)
+    } else {
+        r
+    }
+}
+
+/// Rx2 rate floor at living temperatures under faster decomposition.
+pub const DECOMP_RATE: u64 = 16;
+
 pub fn temp_bin(theta: u64) -> usize {
     match theta {
         0..=269 => 0,

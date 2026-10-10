@@ -106,6 +106,9 @@ impl Sim {
             }
             f.push(fact);
         }
+        if self.caps.trace {
+            self.trace_effect(i, it, res);
+        }
     }
 
     fn store_tile(&self, i: usize, s: Store) -> Result<u32, Outcome> {

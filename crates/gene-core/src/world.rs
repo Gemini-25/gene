@@ -313,6 +313,11 @@ impl World {
     }
 
     pub fn rebuild_static_caches(&mut self) {
+        self.rebuild_static_caches_with(false);
+    }
+
+    /// Derived caches; `locality` picks the edge buckets of the locality order.
+    pub fn rebuild_static_caches_with(&mut self, locality: bool) {
         let n = self.n();
         self.perm = vec![P_OPEN as u16; n];
         self.metal = vec![0; n];
@@ -332,15 +337,54 @@ impl World {
                 let a = self.idx(x, y);
                 if x + 1 < self.w {
                     let b = self.idx(x + 1, y);
-                    edges[edge_bucket(a, b) as usize * 4 + (x & 1) as usize].push((a, b));
+                    let k = if locality { seg_hash(a / SEGMENT) as u8 & 7 } else { edge_bucket(a, b) };
+                    edges[k as usize * 4 + (x & 1) as usize].push((a, b));
                 }
                 if y + 1 < self.h {
                     let b = self.idx(x, y + 1);
-                    edges[edge_bucket(a, b) as usize * 4 + 2 + (y & 1) as usize].push((a, b));
+                    let k = if locality { seg_hash(a / SEGMENT) as u8 & 7 } else { edge_bucket(a, b) };
+                    edges[k as usize * 4 + 2 + (y & 1) as usize].push((a, b));
                 }
             }
         }
         self.edges = edges;
+    }
+}
+
+/// Locality order (ruleset `gene-m0-2` and later, SPEC §20h): the map is cut into runs of 64
+/// tiles in memory order; a run's hash picks the tick of its environment due and the transport
+/// bucket of the edges starting in it.
+pub const SEGMENT: u32 = 64;
+
+pub fn seg_hash(seg: u32) -> u32 {
+    let mut z = (seg as u64).wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    (z ^ (z >> 31)) as u32
+}
+
+/// Call f for every tile in [start, end) that is due for the environment stage on this tick:
+/// every 16th tile (gene-m0-1) or whole 64-tile runs whose hash matches the tick (locality).
+/// `start` is a row start, so it is a multiple of 64 under locality.
+#[inline]
+pub fn for_due_tiles(start: u32, end: u32, tick: u64, locality: bool, mut f: impl FnMut(u32)) {
+    let phase = (tick % 16) as u32;
+    if locality {
+        let mut seg = start / SEGMENT;
+        while seg * SEGMENT < end {
+            if seg_hash(seg) % 16 == phase {
+                for t in seg * SEGMENT..(seg * SEGMENT + SEGMENT).min(end) {
+                    f(t);
+                }
+            }
+            seg += 1;
+        }
+    } else {
+        let mut t = start + (phase + 16 - start % 16) % 16;
+        while t < end {
+            f(t);
+            t += 16;
+        }
     }
 }
 

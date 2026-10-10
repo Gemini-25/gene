@@ -63,10 +63,10 @@ impl Sim {
             }
             return;
         }
-        let mut t = tick % 16;
-        while t < n {
-            self.env_tile(t as u32, tick);
-            t += 16;
+        let mut due = Vec::with_capacity((n / 16) as usize + 64);
+        crate::world::for_due_tiles(0, n as u32, tick, self.caps.locality, |t| due.push(t));
+        for t in due {
+            self.env_tile(t, tick);
         }
     }
 
@@ -112,21 +112,19 @@ impl Sim {
             mask[*t as usize] = 1;
         }
         let mask = &*mask;
+        let (locality, decomp) = (self.caps.locality, self.caps.decomp);
         let pool = self.pool.as_ref().expect("pool");
         pool.scope(|sc| {
             for band in bands.iter_mut() {
                 sc.spawn(move |_| {
                     let end = band.base + band.heat_u.len() as u32;
-                    // first due tile of the band
-                    let mut t = band.base + ((tick % 16) as u32 + 16 - band.base % 16) % 16;
-                    while t < end {
+                    crate::world::for_due_tiles(band.base, end, tick, locality, |t| {
                         if occ[t as usize] != 0 || mask[t as usize] != 0 {
                             band.complex.push(t);
                         } else {
-                            env_simple(band, t, tick, lpeak[t as usize] as u64, expo[t as usize] as u64, &keys);
+                            env_simple(band, t, tick, lpeak[t as usize] as u64, expo[t as usize] as u64, &keys, decomp);
                         }
-                        t += 16;
-                    }
+                    });
                 });
             }
         });
@@ -256,7 +254,7 @@ impl Sim {
         // theta only changes when a reaction runs; recompute it then (same values as before)
         let mut theta = self.st.world.theta(t);
         for (k, rx) in CREDIT_REACTIONS.iter().enumerate() {
-            let rate = rx.rates[temp_bin(theta)] as u64;
+            let rate = rx_rate(rx, theta, self.caps.decomp);
             if rate == 0 {
                 continue;
             }
@@ -361,7 +359,7 @@ impl Sim {
     fn oxidize_one(&mut self, t: u32, m: &mut crate::media::Media, x: u64, tick: u64) {
         let ti = t as usize;
         let w = &self.st.world;
-        let rate = RX2.rates[temp_bin(w.theta(t))] as u64;
+        let rate = rx_rate(&RX2, w.theta(t), self.caps.decomp);
         let possible = |w: &crate::world::World, m: &crate::media::Media| {
             (m.present_pages() as u64)
                 .min(w.loose_total(t, O))
@@ -676,7 +674,8 @@ impl EnvBand<'_> {
 
 /// Stage 8 for a due tile with no actor and no records: light, sky exchange, loose chemistry,
 /// phase changes. Same arithmetic as `Sim::env_tile` for such tiles.
-fn env_simple(b: &mut EnvBand, t: u32, tick: u64, lpeak: u64, x: u64, keys: &[[u32; 2]; 5]) {
+#[allow(clippy::too_many_arguments)]
+fn env_simple(b: &mut EnvBand, t: u32, tick: u64, lpeak: u64, x: u64, keys: &[[u32; 2]; 5], decomp: bool) {
     let p = ((tick + 1024) % 4096) as i64;
     let f = (1024 - (p - 1024).abs()).max(0) as u64;
     let l = lpeak * f / 1024;
@@ -699,7 +698,7 @@ fn env_simple(b: &mut EnvBand, t: u32, tick: u64, lpeak: u64, x: u64, keys: &[[u
     }
     // loose-site chemistry
     for (ki, rx) in CREDIT_REACTIONS.iter().enumerate() {
-        let rate = rx.rates[temp_bin(b.theta(t))] as u64;
+        let rate = rx_rate(rx, b.theta(t), decomp);
         if rate == 0 {
             continue;
         }

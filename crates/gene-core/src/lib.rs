@@ -25,6 +25,7 @@ pub mod repro;
 pub mod rng;
 pub mod sim;
 pub mod species;
+pub mod traces;
 pub mod vm;
 pub mod world;
 

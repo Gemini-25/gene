@@ -12,7 +12,7 @@
 | --- | --- |
 | 엔진(`gene-core`) | M0와 M1(M1a..M1f) 구현 완료 |
 | 관찰층 | 행동 family와 사용 상태, 관계 graph·집단·영토, 반복 구조물, 복사 계보와 전달 증거(원본 §58, §29). 세계에는 영향 없음 |
-| 시험 | 111개 통과 (단위 38, 장부·결정론·병렬 5, VM·이동 10, M1a/b 9, parcel 6, 결합·조립체 15, 접촉 15, parcel 매체 10, 복사 계보 1, 조상 크기 1, CLI 1) |
+| 시험 | 119개 통과 (단위 38, 장부·결정론·병렬 5, VM·이동 10, M1a/b 9, parcel 6, 결합·조립체 15, 접촉 15, parcel 매체 10, 복사 계보 1, 새 물리판 8, 조상 크기 1, CLI 1) |
 | 에너지·원자 장부 | 시험에서는 매 tick 정확히 일치, 실행 중에는 4096 tick마다 검사 |
 | 결정론 | 같은 seed면 같은 hash. 저장 후 이어 간 결과도 같음 |
 | E1-a: Founder-4(원본 §57) | 20/20 seed가 첫 밤에 전멸 |
@@ -27,6 +27,7 @@
 | M1d(결합·조립체) | ruleset `gene-m1-4`(`--ruleset m1d`): LINK/UNLINK 면 결합·고정·grip, 최대 유량 하중 검사, 16칸까지 조립체 평행 이동·회전, 밀기 |
 | M1e(개체 접촉) | ruleset `gene-m1-5`(`--ruleset m1e`): 외피가 0인 개체의 inventory 인출, 외피·몸체 마모(실제 일, 몸체 8 미만이면 사망), 개체 밀기(PushActor) |
 | M1f(parcel 매체) | ruleset `gene-m1-6`(`--ruleset m1f`): parcel에 붙는 기록 매체(공개 selector 0, 8페이지). 조립체와 같이 움직이고, parcel이 부서지면 버려진 기록으로 남음. **M1 전체** |
+| 새 물리판 | `gene-m0-2`(`--ruleset m0b`): 생존 온도에서 분해가 빠름(Rx2 1 → 16), 처리 순서를 가까운 칸끼리(약 10~15% 빠름). `gene-m2-1`(`--ruleset m2`): 여기에 M1 전체 + 수동 신호 전도 + LocalTrace(tile에 남는 최근 동작 흔적). SPEC §20h |
 | 화면 | `gene serve`: 브라우저용 로컬 viewer. WebGL2로 그리며 60 FPS를 목표로 한다(지형 bake, 개체 point sprite, 해상도 자동 조절). 절차적 텍스처(풀·마른 땅·바위·젖은 흙, 물이 다 떨어진 땅은 바랜 흙색), 물결, 낮·밤, 생물 모양 개체와 보간 이동. 재생·속도·되감기(하루마다 저장점)와 되감기 전 시점까지 다시 보기·미니맵·개체 따라가기·마우스 정보·키보드(WASD, Q/E, F, 0)·색 기준(genome·계통·집단·에너지·세대)·개체 상세(최근 행동 포함)·genome 순위·탄소 그래프·새 행동 목록·집단 목록·영토(방문·물질·구조물 heatmap)·반복되는 구조물(13칸 썸네일)·기록이 새겨진 구조물 |
 
 진행 상황, 완성률, 결정이 필요한 것: [`docs/NEXT.md`](docs/NEXT.md)
@@ -65,7 +66,7 @@ python3 scripts/e1_summary.py runs/E1d
 python3 scripts/e1_newborns.py runs/E1d   # 신생아 생존
 ```
 
-`--founder`에는 `founder4`..`founder7` 또는 어셈블리 파일 경로를 줄 수 있다. `--ruleset`은 `m0`(기본), `m1a`, `m1b`, `m1c`, `m1d`, `m1e`, `m1f`다. `m1f`가 M1 기능 전체다. 실행마다 다음 파일이 생긴다.
+`--founder`에는 `founder4`..`founder7` 또는 어셈블리 파일 경로를 줄 수 있다. `--ruleset`은 `m0`(기본), `m1a`..`m1f`, `m0b`, `m2`다. `m2`가 지금 있는 모든 기능이다(SPEC §20h). 실행마다 다음 파일이 생긴다.
 
 | 파일 | 내용 |
 | --- | --- |
@@ -93,6 +94,7 @@ crates/gene-core   시뮬레이션 core (Bevy·관찰기에 의존하지 않음)
   parcels.rs       구조물 parcel: WORK, pore 교환, 내부 화학 (M1c)
   bonds.rs         결합·grip, 하중 graph, 조립체 이동 (M1d, stage 5)
   contact.rs       개체 마모, PushActor (M1e)
+  traces.rs        LocalTrace: tile에 남는 최근 외부 동작 4개 (gene-m2-1)
   behavior.rs      행동 token·sketch·family (관찰 전용, 원본 §58)
   relations.rs     관계 graph, 결정론적 LPA 집단 탐지와 ID 유지 (관찰 전용, 원본 §29)
   artifacts.rs     구조물 모양 hash, 독립 occurrence, 반복 구조물 (관찰 전용, 원본 §58)

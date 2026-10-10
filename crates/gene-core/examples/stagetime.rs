@@ -3,11 +3,13 @@ use std::time::Instant;
 fn main() {
     let threads: usize = std::env::args().nth(1).map_or(1, |t| t.parse().unwrap());
     // optional second argument: a saved state to time instead of the Founder-5 start
-    let mut sim = match std::env::args().nth(2) {
+    // optional third argument: the ruleset of the Founder-5 start ("-" as the second argument)
+    let mut sim = match std::env::args().nth(2).filter(|p| p != "-") {
         Some(path) => Sim::load(&std::fs::read(path).unwrap()).unwrap(),
         None => {
+            let ruleset = std::env::args().nth(3).unwrap_or_else(|| gene_core::sim::RULESET.to_string());
             let prog = gene_core::isa::assemble(gene_core::FOUNDER5_ASM).unwrap();
-            let mut sim = Sim::with_program(Config { seed: 1, width: 512, height: 512, agents: 1000 }, &prog).unwrap();
+            let mut sim = Sim::with_program_ruleset(Config { seed: 1, width: 512, height: 512, agents: 1000 }, &prog, &ruleset).unwrap();
             for _ in 0..512 { sim.step(); }
             sim
         }

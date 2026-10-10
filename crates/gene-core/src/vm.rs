@@ -37,6 +37,9 @@ pub struct Sense<'a> {
     /// M1e contact between agents.
     pub contact: bool,
     pub signal: &'a BTreeMap<u64, i16>,
+    /// LocalTrace records and whether the capability is on.
+    pub traces: &'a BTreeMap<u32, [crate::traces::Trace; 4]>,
+    pub trace: bool,
     pub dropped: &'a BTreeMap<u32, Vec<Media>>,
 }
 
@@ -179,6 +182,10 @@ fn read(a: &mut Agent, s: &Sense) -> Result<u16, Fault> {
             }
             a.s.signal_reads = a.s.signal_reads.saturating_add(1);
             Ok(s.signal.get(&crate::sim::signal_key(t, index)).copied().unwrap_or(0) as u16)
+        }
+        dom::LOCAL_TRACE if s.trace => {
+            let t = sense_tile(a, w, r[1] as i16, r[2] as i16, SENSE_RADIUS)?;
+            crate::traces::read(s.traces.get(&t), field, index, a.orient, s.tick).ok_or(Fault::BadAddress)
         }
         dom::PUBLIC_TAPE if s.m1 => {
             let t = sense_tile(a, w, r[1] as i16, r[2] as i16, SENSE_RADIUS)?;

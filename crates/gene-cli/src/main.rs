@@ -18,7 +18,7 @@ const USAGE: &str = "gene — Gene M0 headless runner
 USAGE:
   gene run    [--seed N] [--size S] [--agents A] [--ticks T] [--founder NAME|FILE]
               [--out DIR] [--stats-every K] [--map-every M] [--checkpoint-every C]
-              [--audit-every K] [--keep-going] [--save-final] [--quiet] [--ruleset m0|m1a..m1f] [--sim-threads N]
+              [--audit-every K] [--keep-going] [--save-final] [--quiet] [--ruleset m0|m0b|m1a..m1f|m2] [--sim-threads N]
   gene batch  --seeds A-B|A,B,C-D [--threads N] [same options as run]  (one directory per seed)
   gene resume --from CHECKPOINT [--ticks T] [--out DIR] [...]
   gene serve  [--port 8080] [--load SAVE.bin] [same world options as run]
@@ -111,7 +111,9 @@ fn parse_opts(args: &[String], o: &mut Opts) -> BTreeMap<String, String> {
                     "m1d" | "gene-m1-4" => gene_core::sim::RULESET_M1D.into(),
                     "m1e" | "gene-m1-5" => gene_core::sim::RULESET_M1E.into(),
                     "m1f" | "gene-m1-6" => gene_core::sim::RULESET_M1F.into(),
-                    other => die(format!("unknown ruleset {other} (m0, m1a, m1b, m1c, m1d, m1e, m1f)")),
+                    "m0b" | "gene-m0-2" => gene_core::sim::RULESET_M0B.into(),
+                    "m2" | "gene-m2-1" => gene_core::sim::RULESET_M2.into(),
+                    other => die(format!("unknown ruleset {other} (m0, m0b, m1a..m1f, m2)")),
                 }
             }
             "--seeds" | "--threads" | "--from" | "--port" | "--load" => {

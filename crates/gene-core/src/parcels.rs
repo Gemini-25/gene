@@ -244,7 +244,7 @@ impl Sim {
                     continue;
                 }
                 let theta = self.st.world.theta(t);
-                let rate = rx.rates[temp_bin(theta)] as u64;
+                let rate = crate::species::rx_rate(rx, theta, self.caps.decomp);
                 if rate == 0 {
                     continue;
                 }

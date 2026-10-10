@@ -23,8 +23,13 @@ pub const RULESET_M1C: &str = "gene-m1-3";
 pub const RULESET_M1D: &str = "gene-m1-4";
 /// M1e: M1d + contact between agents: theft from a bare inventory, abrasion, PushActor (SPEC §20f).
 pub const RULESET_M1E: &str = "gene-m1-5";
-/// M1f: M1e + record media attached to parcels (SPEC §20g). The whole of M1.
+/// M1f: M1e + record media attached to parcels (SPEC §20g). The whole of M1 (v1).
 pub const RULESET_M1F: &str = "gene-m1-6";
+/// M0 physics with faster decomposition at living temperatures and the locality order
+/// (SPEC §20h). For survival experiments after E1-d.
+pub const RULESET_M0B: &str = "gene-m0-2";
+/// Everything: M1f + passive signal conduction + LocalTrace, on the gene-m0-2 physics (SPEC §20h).
+pub const RULESET_M2: &str = "gene-m2-1";
 
 /// Capabilities switched on by the ruleset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -35,6 +40,14 @@ pub struct Caps {
     pub bonds: bool,
     pub contact: bool,
     pub parcel_media: bool,
+    /// Passive signal conduction along bonded metal parcels (original v1).
+    pub conduction: bool,
+    /// LocalTrace: tiles remember their last four external actions (original v2).
+    pub trace: bool,
+    /// Rx2 at least 16 at living temperatures (SPEC §20h).
+    pub decomp: bool,
+    /// Environment due and transport buckets by 64-tile runs (SPEC §20h).
+    pub locality: bool,
 }
 
 impl Caps {
@@ -45,9 +58,53 @@ impl Caps {
             RULESET_M1B => Some(Caps { m1: true, commit: true, ..Caps::default() }),
             RULESET_M1C => Some(Caps { m1: true, commit: true, parcels: true, ..Caps::default() }),
             RULESET_M1D => Some(Caps { m1: true, commit: true, parcels: true, bonds: true, ..Caps::default() }),
-            RULESET_M1E => Some(Caps { m1: true, commit: true, parcels: true, bonds: true, contact: true, parcel_media: false }),
-            RULESET_M1F => Some(Caps { m1: true, commit: true, parcels: true, bonds: true, contact: true, parcel_media: true }),
+            RULESET_M1E => Some(Caps { m1: true, commit: true, parcels: true, bonds: true, contact: true, ..Caps::default() }),
+            RULESET_M1F => {
+                Some(Caps { m1: true, commit: true, parcels: true, bonds: true, contact: true, parcel_media: true, ..Caps::default() })
+            }
+            RULESET_M0B => Some(Caps { decomp: true, locality: true, ..Caps::default() }),
+            RULESET_M2 => Some(Caps {
+                m1: true,
+                commit: true,
+                parcels: true,
+                bonds: true,
+                contact: true,
+                parcel_media: true,
+                conduction: true,
+                trace: true,
+                decomp: true,
+                locality: true,
+            }),
             _ => None,
+        }
+    }
+}
+
+impl Sim {
+    /// Passive conduction (original §22, v1): a tile whose metal parcel is bonded to a metal
+    /// neighbour keeps trunc(S/2) of its signal and receives trunc(S_n/8) from each such
+    /// neighbour, from the old field (synchronous). Other tiles keep only new emissions.
+    fn conduct_signals(&self, next: &mut BTreeMap<u64, i64>) {
+        let w = &self.st.world;
+        let old = |t: u32, ch: u16| self.st.signal.get(&signal_key(t, ch)).copied().unwrap_or(0) as i64;
+        for (&t, p) in &w.parcels {
+            if p.matrix[crate::species::M] == 0 {
+                continue;
+            }
+            let links: Vec<u32> = (0..4u8)
+                .filter(|&f| p.bond[f as usize] > 0)
+                .filter_map(|f| w.neighbor(t, f))
+                .filter(|nb| w.parcels.get(nb).is_some_and(|q| q.matrix[crate::species::M] > 0))
+                .collect();
+            if links.is_empty() {
+                continue;
+            }
+            for ch in 0..4u16 {
+                let v = old(t, ch) / 2 + links.iter().map(|&nb| old(nb, ch) / 8).sum::<i64>();
+                if v != 0 {
+                    *next.entry(signal_key(t, ch)).or_insert(0) += v;
+                }
+            }
         }
     }
 }
@@ -96,6 +153,8 @@ pub struct SimState {
     /// Current signal field (nonzero entries only), key = tile << 2 | channel.
     pub signal: BTreeMap<u64, i16>,
     pub next_parcel_uid: u64,
+    /// LocalTrace: the last four external actions per tile (v2 capability).
+    pub traces: BTreeMap<u32, [crate::traces::Trace; 4]>,
 }
 
 /// Cached FluxRng keys.
@@ -127,6 +186,8 @@ pub struct Sim {
     pub(crate) env_mask: Vec<u8>,
     /// Population from which Think runs on the pool (below it the split costs more than it saves).
     pub par_think_min: usize,
+    /// LocalTrace event order within the tick (reset every tick).
+    pub(crate) trace_seq: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -237,6 +298,7 @@ impl Sim {
             atoms0: [0; NELEM],
             signal: BTreeMap::new(),
             next_parcel_uid: 1,
+            traces: BTreeMap::new(),
         };
         let mut sim = Sim::from_state_unchecked(st);
         // Initial temperature 300 everywhere, after all matter is placed.
@@ -250,7 +312,7 @@ impl Sim {
     }
 
     fn from_state_unchecked(mut st: SimState) -> Sim {
-        st.world.rebuild_static_caches();
+        st.world.rebuild_static_caches_with(Caps::of(&st.ruleset).unwrap_or_default().locality);
         st.world.occ = vec![0; st.world.n()];
         for a in &mut st.agents {
             if a.prog.is_none() {
@@ -291,6 +353,7 @@ impl Sim {
             pool: None,
             env_mask: Vec::new(),
             par_think_min: 4096,
+            trace_seq: 0,
         };
         sim.rebuild_occ();
         sim.recompute_heat_cap();
@@ -556,6 +619,7 @@ impl Sim {
     }
 
     fn stage_maintenance(&mut self) {
+        self.trace_seq = 0;
         let w = &mut self.st.world;
         for a in &mut self.st.agents {
             a.s = Scratch::default();
@@ -590,6 +654,8 @@ impl Sim {
             bonds: self.caps.bonds,
             contact: self.caps.contact,
             signal: &self.st.signal,
+            traces: &self.st.traces,
+            trace: self.caps.trace,
             dropped: &self.st.dropped,
         };
         let before: Vec<u32> = self.st.agents.iter().map(|a| a.energy).collect();
@@ -897,8 +963,13 @@ impl Sim {
             a.s.intent = None;
         }
         self.reserved.clear();
-        // the field read next tick holds only this tick's emissions (no conduction in M1a)
-        let next = std::mem::take(&mut self.signal_next);
+        // the field read next tick holds this tick's emissions, plus passive conduction along bonded
+        // metal parcels where that capability is on (original §22)
+        let mut next = std::mem::take(&mut self.signal_next);
+        if self.caps.conduction && !self.st.signal.is_empty() {
+            self.conduct_signals(&mut next);
+        }
+        self.prune_traces();
         self.st.signal = next
             .into_iter()
             .filter(|(_, v)| *v != 0)
