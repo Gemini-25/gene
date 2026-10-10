@@ -646,13 +646,16 @@ Founder-7(`assets/founder7.asm`)은 Founder-6에서 G가 모자랄 때의 행동
 | D6 | Recombine: 부모 상속 genome의 module로 대상 module 내용을 덮어씀 | M0에 learned·draft 없음. 원본은 결과 형태 미정 |
 | D7 | 조상의 대기 잔여를 mem[7] 대신 r13에 둠 | 대기 비용 24q → 12q/tick. 원본 §57의 16q 예산 가정에 더 가까움 |
 | D8 | 유지비는 stage1에 직접 반영(VM 열만 stage3까지 보류) | 원본의 overlay 의미와 같은 READ 결과. host 실패 시 실행 전체 정지 |
-| D9 | 남의 inventory 인출 꺼짐, port를 통한 주기만 켬 | 원본 §13 "v1부터" |
+| D9 | 남의 inventory 인출 꺼짐, port를 통한 주기만 켬. M1e(§20f)에서 켬 | 원본 §13 "v1부터" |
 | D10 | ActorSurface.orientation은 절대 방위 | Self.orientation도 절대값이라 추가 정보 아님 |
 | D11 | Finish r5 > logical_len은 형식 실패 | 쓰지 않은 cell을 0으로 간주하지 않음(§55 취지) |
 | D12 | Step 최종 검사비가 모자라면 다음 Step이 검사만 수행 | 원본에 없음 |
 | D13 | CoreHash = BLAKE3(postcard(SimState)) | 원본의 필드별 LE 직렬화와 같은 목적. 형식이 하나라 단순 |
 | D14 | WORK는 Surface와 tile Heat만(parcel 없음) | D1 |
 | D15 | 화면은 Bevy 대신 로컬 웹 viewer(`gene serve`)로 먼저 제공 | 개인 사용, 컴파일·GPU 부담 없음. core는 화면과 독립이라 Bevy를 나중에 붙일 수 있음. 시뮬레이션 thread가 상태를 단독 소유하고 화면은 스냅샷만 읽음(원본 I07) |
+| D16 | DRIVE sub-op 2 = PushParcel, 3 = PushActor | 원본은 2 = PushActor, 3 = PushParcel. M1d가 먼저 2를 PushParcel로 썼다. 이후 ruleset이 이전 ruleset의 상위 집합이 되도록 번호를 유지한다 |
+| D17 | M1d의 PushParcel은 개체가 제자리에 남는다. M1e부터 원본대로 개체가 앞 tile로 따라간다 | M1d 결과를 바꾸지 않기 위해 새 ruleset에서만 바꾼다 |
+| D18 | 마모가 대상 층에 남은 양을 넘는 일은 하지도, 내지도 않는다 | 원본은 층이 바뀌면 남은 credit을 0으로 한다. 넘는 일을 받아 버리면 요청량이 큰 개체가 이유 없이 손해를 본다. 원본 §10 "cap 때문에 실행하지 못한 일은 지불하지 않는다"와 같은 원칙 |
 
 ## 20b. M1a: 신호·공개 기록·초안 (ruleset `gene-m1-1`)
 
@@ -782,7 +785,7 @@ M1c는 M1b에 parcel을 더한다(원본 §10, §11, §12, §16, §17, §18, §6
 
 ## 20e. M1d: 결합·고정·grip·조립체 이동 (ruleset `gene-m1-4`)
 
-M1d는 M1c에 결합과 조립체 이동을 더한다(원본 §11, §64). parcel 매체(parcel에 붙은 tape)와 개체 밀기(PushActor)는 아직 없다.
+M1d는 M1c에 결합과 조립체 이동을 더한다(원본 §11, §64). parcel 매체(parcel에 붙은 tape)는 아직 없다. 개체끼리의 접촉(PushActor 포함)은 §20f(M1e)다.
 
 **상태.** parcel마다 다음을 더한다.
 - bond[4]: 절대 방위 면(N, E, S, W)별 결합 강도(0..255). 결합은 대칭이다. A의 면 f와 그 이웃 B의 면 f+2가 항상 같은 값이다.
@@ -863,6 +866,55 @@ source → 기준 parcel의 용량은 위 표의 진입 용량이다. 결합된 
 
 **저장 호환.** Parcel 구조가 바뀌어 parcel이 있는 M1c 저장 파일은 읽을 수 없다. parcel이 없는 저장(M0..M1b)과 M0 물리 지문은 그대로다.
 
+## 20f. M1e: 개체끼리의 접촉 (ruleset `gene-m1-5`)
+
+M1e는 M1d에 원본 v1의 접촉 규칙 셋을 더한다(원본 §10, §13). 에너지 없이 피해를 주는 공격력·HP 명령은 없다. 모든 피해는 실제 일과 물질 이동이다.
+
+**상태.** 개체마다 abrasion(u32)을 더한다. 지금 층(외피, 외피가 없으면 몸체)에 쌓인, 아직 한 단위가 되지 않은 접촉 일이다. 에너지 총계에는 들어가지 않는다. 일은 투입할 때 이미 열이 됐다.
+
+**대상 캡처.** 다른 개체에 작용하는 효과는 Think 때 대상 UID를 캡처한다(원본 §59 ObjectKey). 실행 때 그 자리에 다른 개체가 있거나 아무도 없으면 Stale이다. Think 때 아무도 없었으면 WORK와 DRIVE 3은 InvalidTarget, TRANSFER는 M0 주기 규칙과 같이 Stale이다. 한 효과는 개체 하나만 캡처한다.
+
+| 효과 | 캡처 위치 |
+| --- | --- |
+| TRANSFER | ActorInventory인 끝점(출발 또는 도착). 둘 다 ActorInventory이면 InvalidTarget |
+| WORK 1, r0 = 3 | (r1, r2), 접촉 반경 1 |
+| DRIVE 3 | 앞 tile |
+
+**접촉 인출(TRANSFER 출발 = 3 ActorInventory).**
+- 대상의 외피 S가 0일 때만 대상 inventory에서 꺼낼 수 있다. 외피가 있으면 Blocked다.
+- port_mask는 입금 허가일 뿐 인출과 무관하다.
+- 가용 에너지(채널 15)는 꺼낼 수 없다(InvalidTarget).
+- 비용, 열, ΔUg는 다른 TRANSFER와 같다. 출발 tile은 대상의 tile이다.
+
+**접촉 마모(WORK 1 Abrade, r0 = 3 ActorSurface).** (r1, r2)는 상대 좌표(반경 1)이고 자기 tile(0, 0)은 InvalidTarget이다. r5는 요청한 최대 일(q)이다.
+
+| 층 | 한 단위 | 단위가 끝나면 |
+| --- | --- | --- |
+| 외피 S | 2048q | shell_s − 1, loose S + 1 |
+| 몸체 G(외피 0일 때) | 8192q | body_g − 1, loose G + 1 |
+
+- n = min(r5, 층에 남은 일, 봉인 잔량). 층에 남은 일 = 층의 단위 수 × 단위 일 − abrasion.
+- n q 전부가 즉시 대상 tile의 열이 된다. abrasion에 n을 더하고 완성된 단위를 떼어 낸다.
+- 떼어 낸 물질은 대상 tile의 loose가 된다(넘치면 residue). 같은 tile 안의 이동이라 열용량은 변하지 않는다.
+- 외피가 0이 되면 abrasion을 0으로 한다(층이 바뀌면 남은 credit은 0, 원본 §13).
+- body_g가 8 미만이 되면 단계 10에서 죽는다(기존 규칙, 사망 원인 Body).
+- r5 = 0이면 Noop, 층에 남은 일이 0이면(body_g 0) Capacity, 잔량이 없으면 Energy, n < r5이면 Partial이다. r15 = n.
+
+**PushActor(DRIVE 3).** 단계 5에서 다른 DRIVE와 같은 순서(prio6 우선순위, UID)로 처리한다.
+- 앞 tile의 개체(캡처한 대상)를 그 앞 tile로 밀고, 미는 개체는 앞 tile로 들어간다. 두 이동은 하나의 transaction이다. 연쇄 밀기는 없다.
+- 실패 조건(검사 순서): 앞 tile이 경계 밖(Boundary), 대상 없음(InvalidTarget)·바뀜(Stale), 그 앞 tile이 경계 밖(Boundary), 미는 개체가 grip을 쥠(Busy), 대상이 grip을 쥠(Blocked), 그 앞 tile에 개체·차단 parcel·출생 예약(Blocked), 봉인 잔량 부족(Energy).
+- 비용 = 256 + ceil(m_미는 개체 · μeff(앞) / 960) + ceil(m_대상 · μeff(그 앞) / 960) + 두 개체 각각의 max(0, ΔUg). 시도비와 256은 한 번만 낸다.
+- 내리막에서 풀린 Ug는 그 개체의 목적지 tile 열이 된다. 마찰과 256의 열은 각 개체의 출발 tile에 남는다.
+- 열용량과 그 몫의 열은 시작 상태에서 계산한 뒤 한꺼번에 옮긴다.
+- 밀린 개체에 아직 처리되지 않은 DRIVE intent가 있으면 그 receipt는 Stale이고 intent는 사라진다. 단계 6에서도 움직이지 않는다.
+- r15 = 1.
+
+**PushParcel(DRIVE 2).** M1e부터 원본대로 미는 개체도 앞 tile로 따라간다(D17). 검사와 비용은 grip 평행 이동과 같고 하중 진입 용량만 16 × b(앞 parcel)이다.
+
+**관찰.** `stats.csv`에 taken(인출한 단위), abrasion_q(마모에 쓴 일), shell_removed, body_removed, actor_pushes 열을 더한다.
+
+**저장 호환.** 개체 구조가 바뀌어 이전 버전의 저장 파일은 읽을 수 없다. M0..M1d의 결과는 그대로다(같은 seed의 stats·births·deaths CSV가 이전 binary와 byte 단위로 같음을 확인).
+
 ## 21. 확장 규칙과 로드맵
 
 ### 증거 규칙 (원본 §62를 강제 규칙으로 승격)
@@ -880,6 +932,6 @@ source → 기준 parcel의 용량은 위 표의 진입 용량이다. 결합된 
 | --- | --- | --- |
 | M0 | 이 명세 | — |
 | E1 | 조상 생존 실험 | M0 시험 통과 |
-| M1 | parcel, LINK, EMIT, 공개 tape, draft·learned(원본 v0..v1의 나머지). M1a..M1d로 구현함(§20b..§20e) | E1에서 지속 개체군 확인 |
+| M1 | parcel, LINK, EMIT, 공개 tape, draft·learned, 개체 접촉(원본 v0..v1의 나머지). M1a..M1e로 구현함(§20b..§20f) | E1에서 지속 개체군 확인 |
 | M2 | 병렬 Think, Bevy viewer, S2 성능 gate | M1 |
 | 연구 부록 | 원본 Matter-1, R7..R10(형상 역학, 일반 화학, 발생, 자기·광학, 파동장, 핵, 양자, LawField, 분산) | 위 증거 규칙을 항목별로 통과 |

@@ -11,7 +11,7 @@
 | 항목 | 상태 |
 | --- | --- |
 | M0 엔진(`gene-core`) | 구현 완료 |
-| 시험 | 71개 통과 (단위 24, 장부·결정론·병렬 5, VM·이동 10, M1a/b 9, parcel 6, 결합·조립체 15, 조상 크기 1, CLI 1) |
+| 시험 | 86개 통과 (단위 24, 장부·결정론·병렬 5, VM·이동 10, M1a/b 9, parcel 6, 결합·조립체 15, 접촉 15, 조상 크기 1, CLI 1) |
 | 에너지·원자 장부 | 시험에서는 매 tick 정확히 일치, 실행 중에는 4096 tick마다 검사 |
 | 결정론 | 같은 seed면 같은 hash. 저장 후 이어 간 결과도 같음 |
 | E1-a: Founder-4(원본 §57) | 20/20 seed가 첫 밤에 전멸 |
@@ -24,6 +24,7 @@
 | M1b(학습 채택) | ruleset `gene-m1-2`(`--ruleset m1b`): DraftCommit, learned binding, 실행 중 옛 코드 보존 |
 | M1c(구조물 parcel) | ruleset `gene-m1-3`(`--ruleset m1c`): 짓기·압축·내부 저장·차폐·통행 차단·내부 화학 |
 | M1d(결합·조립체) | ruleset `gene-m1-4`(`--ruleset m1d`): LINK/UNLINK 면 결합·고정·grip, 최대 유량 하중 검사, 16칸까지 조립체 평행 이동·회전, 밀기 |
+| M1e(개체 접촉) | ruleset `gene-m1-5`(`--ruleset m1e`): 외피가 0인 개체의 inventory 인출, 외피·몸체 마모(실제 일, 몸체 8 미만이면 사망), 개체 밀기(PushActor) |
 | 화면 | `gene serve`: 브라우저용 로컬 viewer. WebGL2로 그리며 60 FPS를 목표로 한다(지형 bake, 개체 point sprite, 해상도 자동 조절). 절차적 텍스처(풀·마른 땅·바위·젖은 흙), 물결, 낮·밤, 생물 모양 개체와 보간 이동. 재생·속도·되감기(하루마다 저장점)·미니맵·개체 따라가기·마우스 정보·키보드(WASD, Q/E, F, 0)·색 기준(genome·계통·에너지·세대)·개체 상세(최근 행동 포함)·genome 순위·탄소 그래프·새 행동 목록 |
 
 진행 상황, 완성률, 결정이 필요한 것: [`docs/NEXT.md`](docs/NEXT.md)
@@ -60,7 +61,7 @@ cargo build --release
 python3 scripts/e1_summary.py runs/E1b
 ```
 
-`--founder`에는 `founder4`..`founder7` 또는 어셈블리 파일 경로를 줄 수 있다. `--ruleset`은 `m0`(기본), `m1a`, `m1b`, `m1c`, `m1d`다. 실행마다 다음 파일이 생긴다.
+`--founder`에는 `founder4`..`founder7` 또는 어셈블리 파일 경로를 줄 수 있다. `--ruleset`은 `m0`(기본), `m1a`, `m1b`, `m1c`, `m1d`, `m1e`다. 실행마다 다음 파일이 생긴다.
 
 | 파일 | 내용 |
 | --- | --- |
@@ -84,6 +85,7 @@ crates/gene-core   시뮬레이션 core (Bevy·관찰기에 의존하지 않음)
   records.rs       신호·공개 기록·초안·학습 채택 (M1a, M1b)
   parcels.rs       구조물 parcel: WORK, pore 교환, 내부 화학 (M1c)
   bonds.rs         결합·grip, 하중 graph, 조립체 이동 (M1d, stage 5)
+  contact.rs       개체 마모, PushActor (M1e)
   behavior.rs      행동 token·sketch·family (관찰 전용, 원본 §58)
   repro.rs         배아 상태 기계
   mutation.rs      point·구조 변이 8종

@@ -21,6 +21,8 @@ pub const RULESET_M1B: &str = "gene-m1-2";
 pub const RULESET_M1C: &str = "gene-m1-3";
 /// M1d: M1c + bonds, anchors, grip and assembly motion (SPEC §20e).
 pub const RULESET_M1D: &str = "gene-m1-4";
+/// M1e: M1d + contact between agents: theft from a bare inventory, abrasion, PushActor (SPEC §20f).
+pub const RULESET_M1E: &str = "gene-m1-5";
 
 /// Capabilities switched on by the ruleset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -29,6 +31,7 @@ pub struct Caps {
     pub commit: bool,
     pub parcels: bool,
     pub bonds: bool,
+    pub contact: bool,
 }
 
 impl Caps {
@@ -37,8 +40,9 @@ impl Caps {
             RULESET => Some(Caps::default()),
             RULESET_M1 => Some(Caps { m1: true, ..Caps::default() }),
             RULESET_M1B => Some(Caps { m1: true, commit: true, ..Caps::default() }),
-            RULESET_M1C => Some(Caps { m1: true, commit: true, parcels: true, bonds: false }),
-            RULESET_M1D => Some(Caps { m1: true, commit: true, parcels: true, bonds: true }),
+            RULESET_M1C => Some(Caps { m1: true, commit: true, parcels: true, ..Caps::default() }),
+            RULESET_M1D => Some(Caps { m1: true, commit: true, parcels: true, bonds: true, contact: false }),
+            RULESET_M1E => Some(Caps { m1: true, commit: true, parcels: true, bonds: true, contact: true }),
             _ => None,
         }
     }
@@ -187,6 +191,7 @@ impl Sim {
                 energy: 32768,
                 body_g: BODY_G,
                 shell_s: BODY_S,
+                abrasion: 0,
                 inv,
                 photo_credit: 0,
                 port_mask: 0,
@@ -540,6 +545,7 @@ impl Sim {
             m1: self.caps.m1,
             parcels: self.caps.parcels,
             bonds: self.caps.bonds,
+            contact: self.caps.contact,
             signal: &self.st.signal,
             dropped: &self.st.dropped,
         };
@@ -797,6 +803,7 @@ impl Sim {
             energy: e.energy,
             body_g: e.body_g,
             shell_s: e.shell_s,
+            abrasion: 0,
             inv,
             photo_credit: 0,
             port_mask: 0,

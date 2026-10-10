@@ -114,6 +114,8 @@ pub struct Agent {
     pub energy: u32,
     pub body_g: u16,
     pub shell_s: u16,
+    /// Contact work put into the current layer (shell, then body) and not yet a whole unit (M1e).
+    pub abrasion: u32,
     pub inv: [u16; NSPEC],
     pub photo_credit: u32,
     pub port_mask: u16,

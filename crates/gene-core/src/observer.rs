@@ -107,6 +107,13 @@ pub struct M1Stats {
     pub parcels_moved: u64,
     pub pushes: u64,
     pub load_failures: u64,
+    /// M1e: units taken from bare inventories, contact work on agents, shell and body units it
+    /// removed, and agents pushed.
+    pub taken: u64,
+    pub abrasion_q: u64,
+    pub shell_removed: u64,
+    pub body_removed: u64,
+    pub actor_pushes: u64,
 }
 
 /// One resolved effect, as the behaviour analysis sees it (original §58). Observer only.
@@ -120,11 +127,14 @@ pub struct EffectFact {
     /// Actor-relative direction 0..3 (front, right, back, left), 255 when there is none.
     pub dir: u8,
     /// Species 0..9 / energy 15 / signal channel / bond target, 255 when there is none.
+    /// CONTACT is set when the effect acts on another agent's inventory or body (M1e).
     pub channel: u8,
     pub actual: u32,
 }
 
 impl EffectFact {
+    pub const CONTACT: u8 = 0x40;
+
     pub fn new(tick: u64, uid: u64, it: &crate::intent::Intent, outcome: u8, actual: u32) -> EffectFact {
         use crate::intent::{dom, sub, unpack};
         use crate::isa::op;

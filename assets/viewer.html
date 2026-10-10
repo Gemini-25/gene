@@ -1133,14 +1133,16 @@ function esc(s) { return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<"
 const EMB = ["없음", "기록 중", "변이 기록", "형식 오류", "준비됨"];
 // effect kind = (opcode - 0x20) << 3 | sub-op
 const ACT = { 8: "기록 쓰기", 9: "기록 크기", 10: "초안 확정", 11: "초안 취소", 12: "방향 쓰기", 13: "포트 쓰기",
-  16: "이동", 17: "회전", 18: "밀기", 24: "결합", 32: "결합 풀기", 40: "옮기기", 48: "압축", 49: "깎기", 50: "가열",
+  16: "이동", 17: "회전", 18: "밀기", 19: "개체 밀기", 24: "결합", 32: "결합 풀기", 40: "옮기기", 48: "압축", 49: "깎기", 50: "가열",
   56: "신호", 64: "배아 만들기", 65: "배아 크기", 66: "배아 완성", 67: "변이 적용", 68: "배아 다시 열기", 69: "출산", 70: "배아 취소", 72: "복사" };
 const OUTK = ["성공", "일부", "변화 없음", "경계", "막힘", "에너지 부족", "재료 부족", "공간 부족", "대상 없음", "바뀜", "한도", "형식", "가려짐", "질의 한도", "사용 중"];
 const SYM = ["W", "C", "O", "G", "H", "X", "M", "S", "V", "I"];
 const DIRK = ["앞", "오른쪽", "뒤", "왼쪽"];
 function describeAct(f) {
-  let s = ACT[f.kind] || `효과 ${f.kind}`;
-  if (f.kind === 40) s += f.ch === 15 ? " energy" : f.ch < 10 ? " " + SYM[f.ch] : "";
+  const contact = f.ch !== 255 && (f.ch & 0x40) !== 0; // on another agent's inventory or body
+  const ch = contact ? f.ch & 0x3f : f.ch;
+  let s = contact ? (f.kind === 40 ? "빼앗기" : f.kind === 49 ? "개체 깎기" : ACT[f.kind]) : ACT[f.kind] || `효과 ${f.kind}`;
+  if (f.kind === 40) s += ch === 15 ? " energy" : ch < 10 ? " " + SYM[ch] : "";
   if (f.dir < 4 && f.kind !== 17) s += " · " + DIRK[f.dir];
   const ok = f.out <= 1;
   s += ` · <span style="color:${ok ? "var(--ink)" : "var(--muted)"}">${OUTK[f.out] || f.out}</span>`;
@@ -1160,7 +1162,7 @@ async function loadAgent() {
     <tr><td>세대 · 나이</td><td>${a.generation} · ${a.age} tick (${(a.age / 4096).toFixed(2)}일)</td></tr>
     <tr><td>위치 · 방향</td><td>(${a.x}, ${a.y}) · ${"북동남서"[a.orient]}</td></tr>
     <tr><td>가용 energy</td><td>${a.energy} q (광합성 credit ${a.photo_credit})</td></tr>
-    <tr><td>몸체 · inventory</td><td>G${a.body_g} S${a.shell_s} · ${esc(inv)}</td></tr>
+    <tr><td>몸체 · inventory</td><td>G${a.body_g} S${a.shell_s}${a.abrasion ? ` (마모 ${a.abrasion} q)` : ""} · ${esc(inv)}</td></tr>
     <tr><td>유지비</td><td>${a.upkeep} q/tick</td></tr>
     <tr><td>배아</td><td>${emb}</td></tr>
     <tr><td>자식</td><td>${a.children}</td></tr>

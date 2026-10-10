@@ -100,7 +100,11 @@ impl Sim {
         a.receipt = Some((res.0 as u8, res.1.min(65535) as u16));
         self.obs.record_outcome(it.opc, it.sub, res.0 as u8);
         if let Some(f) = &mut self.obs.facts {
-            f.push(crate::observer::EffectFact::new(self.st.tick, a.uid, it, res.0 as u8, res.1));
+            let mut fact = crate::observer::EffectFact::new(self.st.tick, a.uid, it, res.0 as u8, res.1);
+            if self.caps.contact {
+                crate::contact::mark_fact(&mut fact, it);
+            }
+            f.push(fact);
         }
     }
 
@@ -131,6 +135,7 @@ impl Sim {
         let src = match (sd, so) {
             (dom::SELF, 0) => Store::Inv,
             (dom::LOOSE, o) => Store::Loose(o),
+            (dom::ACTOR, o) if o > 0 && self.caps.contact => Store::Actor(o),
             (dom::EMBRYO, 0) => Store::EmbryoRet,
             (dom::PARCEL, o) if parcels => Store::Matrix(o),
             (dom::PORE, o) if parcels => Store::Pore(o),
@@ -162,12 +167,25 @@ impl Sim {
         }
         let mut target = None;
         if let Store::Actor(_) = dst {
+            if let Store::Actor(_) = src {
+                return (Outcome::InvalidTarget, 0); // one captured agent per effect
+            }
             match (self.agent_at(dst_tile), it.target_uid) {
                 (Some(j), Some(uid)) if self.st.agents[j].uid == uid => target = Some(j),
                 _ => return (Outcome::Stale, 0),
             }
             if self.st.agents[target.unwrap()].port_mask & (1 << s) == 0 {
                 return (Outcome::InvalidTarget, 0);
+            }
+        }
+        // M1e: another agent's inventory is open to contact withdrawal only while its shell is 0
+        if let Store::Actor(_) = src {
+            match (self.agent_at(src_tile), it.target_uid) {
+                (Some(j), Some(uid)) if self.st.agents[j].uid == uid => target = Some(j),
+                _ => return (Outcome::Stale, 0),
+            }
+            if self.st.agents[target.unwrap()].shell_s > 0 {
+                return (Outcome::Blocked, 0);
             }
         }
         // parcel endpoints: object identity (Stale) and access (Blocked).
@@ -221,7 +239,7 @@ impl Sim {
             Store::EmbryoRet => a.embryo.as_ref().unwrap().ret[s] as u64,
             Store::Matrix(_) => w.parcels.get(&src_tile).map_or(0, |p| p.matrix[s] as u64),
             Store::Pore(_) => w.parcels[&src_tile].pore[s] as u64,
-            Store::Actor(_) => unreachable!(),
+            Store::Actor(_) => self.st.agents[target.unwrap()].inv[s] as u64,
         };
         let inv_space = |stock: &[u16; NSPEC]| (INV_VOLUME.saturating_sub(volume(stock)) / VOL[s]) as u64;
         let space: u64 = match dst {
@@ -269,7 +287,10 @@ impl Sim {
             Store::EmbryoRet => self.st.agents[i].embryo.as_mut().unwrap().ret[s] -= n as u16,
             Store::Matrix(_) => self.st.world.parcels.get_mut(&src_tile).unwrap().matrix[s] -= n as u16,
             Store::Pore(_) => self.st.world.parcels.get_mut(&src_tile).unwrap().pore[s] -= n as u16,
-            Store::Actor(_) => unreachable!(),
+            Store::Actor(_) => {
+                self.st.agents[target.unwrap()].inv[s] -= n as u16;
+                self.obs.m1.taken += n;
+            }
         }
         match dst {
             Store::Inv => self.st.agents[i].inv[s] += n as u16,
@@ -443,6 +464,9 @@ impl Sim {
         let r = it.r;
         if self.caps.parcels && r[0] == dom::PARCEL {
             return self.eff_work_parcel(i, it);
+        }
+        if self.caps.contact && crate::contact::is_actor_abrade(it) {
+            return self.eff_abrade_actor(i, it);
         }
         let req = r[5] as u32;
         match it.sub {

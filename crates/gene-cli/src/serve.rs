@@ -488,7 +488,7 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::ge
             let mem = a.mem[..32].iter().map(|r| r.to_string()).collect::<Vec<_>>().join(",");
             let s = format!(
                 "{{\"uid\":{},\"parent\":{},\"root\":{},\"generation\":{},\"age\":{},\"x\":{},\"y\":{},\"orient\":{},\
-\"energy\":{},\"photo_credit\":{},\"body_g\":{},\"shell_s\":{},\"inv\":{{{}}},\"children\":{},\"genome\":\"{}\",\
+\"energy\":{},\"photo_credit\":{},\"body_g\":{},\"shell_s\":{},\"abrasion\":{},\"inv\":{{{}}},\"children\":{},\"genome\":\"{}\",\
 \"cells\":{},\"pages\":{},\"upkeep\":{},\"theta\":{},\"tile_light_peak\":{},\"tile_elev\":{},\"tile_water\":{},\
 \"recent\":[{}],\"pc\":[{},{}],\"fault\":{},\"regs\":[{}],\"mem\":[{}],\"embryo\":{},\"draft\":{},\"learned\":{},\"retained\":{},\"diff\":{}}}",
                 a.uid,
@@ -503,6 +503,7 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::ge
                 a.photo_credit,
                 a.body_g,
                 a.shell_s,
+                a.abrasion,
                 inv.join(","),
                 a.children,
                 cache.0.get(&a.uid).map_or(String::new(), |h| hex(h)[..16].to_string()),

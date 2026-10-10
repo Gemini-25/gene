@@ -281,7 +281,8 @@ impl Sim {
         }
         order.sort_unstable();
         for (_, _, i) in order {
-            let it = self.st.agents[i].s.intent.clone().unwrap();
+            // an agent pushed earlier in this stage has no intent left
+            let Some(it) = self.st.agents[i].s.intent.clone() else { continue };
             let res = match it.sub {
                 sub::DRIVE_TRANSLATE => match self.grip_of(i) {
                     Some(g) => self.grip_translate(i, &it, g),
@@ -292,6 +293,7 @@ impl Sim {
                     _ => self.eff_rotate(i, &it),
                 },
                 DRIVE_PUSH => self.push_parcel(i),
+                crate::contact::DRIVE_PUSH_ACTOR if self.caps.contact => self.push_actor(i, &it),
                 _ => (Outcome::InvalidTarget, 0),
             };
             self.finish_effect(i, &it, res);
@@ -350,11 +352,13 @@ impl Sim {
     }
 
     /// DRIVE 2: push the assembly in front one tile forward. Contact support is limited by the
-    /// front parcel's own cohesion; the agent stays.
+    /// front parcel's own cohesion. The agent stays (M1d) or follows into the front tile (M1e,
+    /// original §10).
     fn push_parcel(&mut self, i: usize) -> Res {
         let abs = self.st.agents[i].orient;
         let w = &self.st.world;
-        let Some(front) = w.neighbor(self.tile_of(i), abs) else { return (Outcome::Boundary, 0) };
+        let me = self.tile_of(i);
+        let Some(front) = w.neighbor(me, abs) else { return (Outcome::Boundary, 0) };
         let Some(p) = w.parcels.get(&front) else { return (Outcome::InvalidTarget, 0) };
         let source_cap = LOAD_PER_STRENGTH * p.cohesion() as u64;
         let parts = match self.component(front) {
@@ -368,7 +372,8 @@ impl Sim {
                 None => return (Outcome::Boundary, 0),
             }
         }
-        let r = self.execute(i, Plan { parts, dst, actor: None, turn: 0, root: 0, source_cap, base: 256, push: true });
+        let actor = self.caps.contact.then_some((me, front));
+        let r = self.execute(i, Plan { parts, dst, actor, turn: 0, root: 0, source_cap, base: 256, push: true });
         if r.0 == Outcome::Ok {
             self.obs.m1.pushes += 1;
         }

@@ -6,6 +6,7 @@
 pub mod agent;
 pub mod behavior;
 pub mod bonds;
+pub mod contact;
 pub mod effects;
 pub mod env;
 pub mod genome;

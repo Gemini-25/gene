@@ -34,6 +34,8 @@ pub struct Sense<'a> {
     pub parcels: bool,
     /// M1d bonds, anchors and grip.
     pub bonds: bool,
+    /// M1e contact between agents.
+    pub contact: bool,
     pub signal: &'a BTreeMap<u64, i16>,
     pub dropped: &'a BTreeMap<u32, Vec<Media>>,
 }
@@ -293,15 +295,28 @@ fn capture_partner(a: &Agent, s: &Sense) -> Option<u64> {
     s.world.parcels.get(&nb).map(|p| p.uid)
 }
 
-fn capture_target(a: &Agent, s: &Sense) -> Option<u64> {
+/// The other agent an effect acts on, captured at Think (an object address: Stale if it changed).
+/// TRANSFER: the ActorInventory endpoint (destination; with M1e also the source). M1e: WORK on
+/// ActorSurface at (r1, r2), and PushActor's agent in front.
+fn capture_target(a: &Agent, s: &Sense, opc: u8, sub_op: u16) -> Option<u64> {
     let r = a.vm.regs;
-    let (dd, off) = unpack(r[1])?;
-    if dd != dom::ACTOR || off == 0 {
-        return None;
-    }
-    let (dx, dy) = OFFSETS[off as usize];
-    let (ax, ay) = rotate(a.orient, dx, dy);
-    let t = s.world.offset(s.world.idx(a.x as u32, a.y as u32), ax, ay)?;
+    let me = s.world.idx(a.x as u32, a.y as u32);
+    let t = match opc {
+        op::TRANSFER => {
+            let actor_off = |addr: u16| unpack(addr).filter(|&(d, o)| d == dom::ACTOR && o > 0).map(|(_, o)| o);
+            let off = match (actor_off(r[0]), actor_off(r[1])) {
+                (Some(o), None) if s.contact => o,
+                (None, Some(o)) => o,
+                _ => return None,
+            };
+            let (dx, dy) = OFFSETS[off as usize];
+            let (ax, ay) = rotate(a.orient, dx, dy);
+            s.world.offset(me, ax, ay)?
+        }
+        op::WORK if s.contact && r[0] == dom::ACTOR => sense_tile(a, s.world, r[1] as i16, r[2] as i16, 1).ok()?,
+        op::DRIVE if s.contact && sub_op == crate::contact::DRIVE_PUSH_ACTOR => s.world.neighbor(me, a.orient)?,
+        _ => return None,
+    };
     s.face_at(t).map(|f| f.uid)
 }
 
@@ -482,7 +497,7 @@ pub fn think(a: &mut Agent, s: &Sense, ctrl_key: [u32; 2]) {
                     r8.copy_from_slice(&a.vm.regs[..8]);
                     let copy = if opc == op::COPY { capture_copy(a, s) } else { None };
                     let target_uid = match opc {
-                        op::TRANSFER => capture_target(a, s),
+                        op::TRANSFER | op::WORK | op::DRIVE => capture_target(a, s, opc, imm),
                         op::LINK | op::UNLINK if s.bonds => capture_partner(a, s),
                         _ => None,
                     };
