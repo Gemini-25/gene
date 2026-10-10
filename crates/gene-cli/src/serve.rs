@@ -226,7 +226,7 @@ fn snapshot(sim: &Sim, cache: &HashCache, ctl: &Control, tps: f64) -> String {
     format!(
         "{{\"tick\":{tick},\"day\":{},\"phase\":{p},\"light\":{light:.3},\"pop\":{},\"births\":{},\"deaths\":{},\
 \"genomes\":{},\"tps\":{tps:.1},\"paused\":{},\"speed\":{},\"w\":{},\"h\":{},\"seed\":{},\"ruleset\":\"{}\",\
-\"agents\":{{\"uid\":[{}],\"x\":[{}],\"y\":[{}],\"c\":[{}],\"e\":[{}],\"g\":[{}],\"emb\":[{}]}}}}",
+\"signal\":[{}],\"agents\":{{\"uid\":[{}],\"x\":[{}],\"y\":[{}],\"c\":[{}],\"e\":[{}],\"g\":[{}],\"emb\":[{}]}}}}",
         tick / 4096,
         ag.len(),
         sim.obs.total_births,
@@ -238,6 +238,7 @@ fn snapshot(sim: &Sim, cache: &HashCache, ctl: &Control, tps: f64) -> String {
         w.h,
         sim.st.config.seed,
         sim.st.ruleset,
+        sim.st.signal.iter().take(20000).map(|(k, v)| format!("{},{},{}", k >> 2, k & 3, v)).collect::<Vec<_>>().join(","),
         list(&|a| a.uid.to_string()),
         list(&|a| a.x.to_string()),
         list(&|a| a.y.to_string()),
@@ -292,7 +293,7 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::ge
                 "{{\"uid\":{},\"parent\":{},\"root\":{},\"generation\":{},\"age\":{},\"x\":{},\"y\":{},\"orient\":{},\
 \"energy\":{},\"photo_credit\":{},\"body_g\":{},\"shell_s\":{},\"inv\":{{{}}},\"children\":{},\"genome\":\"{}\",\
 \"cells\":{},\"pages\":{},\"upkeep\":{},\"theta\":{},\"tile_light_peak\":{},\"tile_elev\":{},\"tile_water\":{},\
-\"pc\":[{},{}],\"fault\":{},\"regs\":[{}],\"mem\":[{}],\"embryo\":{},\"diff\":{}}}",
+\"pc\":[{},{}],\"fault\":{},\"regs\":[{}],\"mem\":[{}],\"embryo\":{},\"draft\":{},\"learned\":{},\"retained\":{},\"diff\":{}}}",
                 a.uid,
                 a.parent,
                 a.root,
@@ -321,6 +322,21 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founder: Option<&gene_core::ge
                 regs,
                 mem,
                 emb,
+                a.draft.as_ref().map_or("null".to_string(), |d| format!(
+                    "{{\"len\":{},\"capacity\":{},\"foreign\":{}}}",
+                    d.logical_len,
+                    d.capacity(),
+                    d.foreign
+                )),
+                a.learned.as_ref().map_or("null".to_string(), |b| format!(
+                    "{{\"len\":{},\"foreign\":{},\"diff\":{}}}",
+                    b.used_len,
+                    b.media.foreign,
+                    json_str(&a.bank_progs.iter().find(|p| p.0 == b.media.uid).map_or(String::new(), |p| {
+                        founder.map_or(String::new(), |f| program_diff(f, &p.1))
+                    }))
+                )),
+                a.retained.len(),
                 json_str(&diff)
             );
             let _ = tx.send(s);

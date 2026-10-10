@@ -83,6 +83,7 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
     <button data-tps="5000">500x</button>
     <button data-tps="0">MAX</button>
     <button id="save">저장</button>
+    <button id="sig" title="M1 신호 장 표시">신호</button>
     <button id="theme" title="자동 / 밝게 / 어둡게">테마: 자동</button>
   </div>
 </header>
@@ -115,7 +116,7 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
 const $ = (id) => document.getElementById(id);
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 let state = null, hist = null, terrain = null, water = null, W = 0, H = 0;
-let selected = 0, highlight = null;
+let selected = 0, highlight = null, showSignal = false;
 let view = { scale: 1, ox: 0, oy: 0, fitted: false };
 const base = document.createElement("canvas");
 const map = $("map"), ctx = map.getContext("2d");
@@ -177,6 +178,16 @@ function draw() {
   // night: the world is darker when light is low
   ctx.fillStyle = `rgba(5,10,40,${(0.45 * (1 - state.light)).toFixed(3)})`;
   ctx.fillRect(0, 0, W, H);
+  if (showSignal && state.signal && state.signal.length) {
+    const sg = state.signal;
+    for (let k = 0; k < sg.length; k += 3) {
+      const t = sg[k], v = sg[k + 2];
+      const x = t % W, y = Math.floor(t / W);
+      const al = Math.min(0.85, Math.abs(v) / 200);
+      ctx.fillStyle = v > 0 ? `rgba(255,190,40,${al})` : `rgba(120,200,255,${al})`;
+      ctx.fillRect(x - 0.5, y - 0.5, 2, 2);
+    }
+  }
   const a = state.agents, n = a.uid.length;
   const s = view.scale;
   const size = s >= 3 ? 1 : Math.min(3, 2 / s);
@@ -315,13 +326,15 @@ async function loadAgent() {
     <tr><td>유지비</td><td>${a.upkeep} q/tick</td></tr>
     <tr><td>배아</td><td>${emb}</td></tr>
     <tr><td>자식</td><td>${a.children}</td></tr>
+    <tr><td>초안 · 학습 코드</td><td>${a.draft ? `${a.draft.len}/${a.draft.capacity} cell${a.draft.foreign ? " (공개 기록 포함)" : ""}` : "없음"} · ${a.learned ? `${a.learned.len} cell 채택${a.learned.foreign ? " (공개 기록 출처)" : ""}` : "없음"}${a.retained ? ` · 보존 ${a.retained}` : ""}</td></tr>
     <tr><td>tile</td><td>θ ${a.theta} · 최대광 ${a.tile_light_peak} · 고도 ${a.tile_elev} · 물 ${a.tile_water}</td></tr>
     <tr><td>genome</td><td>${a.genome} · ${a.cells} cell · ${a.pages} 페이지</td></tr>
     <tr><td>VM</td><td>module ${a.pc[0]} pc ${a.pc[1]} · fault ${a.fault}</td></tr>
   </table>
   <div class="small" style="margin-top:6px">레지스터 r0..r15</div><pre>${a.regs.join(" ")}</pre>
   <div class="small">작업 기억 [0..31]</div><pre>${a.mem.join(" ")}</pre>
-  <div class="small">조상과의 명령어 차이</div><pre>${esc(a.diff)}</pre>`;
+  <div class="small">조상과의 명령어 차이 (상속 코드)</div><pre>${esc(a.diff)}</pre>
+  ${a.learned ? `<div class="small">조상과의 명령어 차이 (학습 코드)</div><pre>${esc(a.learned.diff)}</pre>` : ""}`;
 }
 async function loadCensus() {
   const g = await getJSON("/api/genomes");
@@ -344,6 +357,7 @@ async function loadCensus() {
 async function control(q) { await fetch("/api/control?" + q); poll(); }
 $("play").onclick = () => control(state && state.paused ? "play=1" : "pause=1");
 $("step").onclick = () => control("step=1");
+$("sig").onclick = () => { showSignal = !showSignal; $("sig").classList.toggle("on", showSignal); draw(); };
 $("step100").onclick = () => control("step=100");
 $("save").onclick = async () => { const r = await getJSON("/api/save"); alert(r.saved ? "저장: " + r.saved : "실패: " + r.error); };
 for (const b of document.querySelectorAll("button[data-tps]")) b.onclick = () => control("tps=" + b.dataset.tps);
