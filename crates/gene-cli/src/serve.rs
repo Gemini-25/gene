@@ -76,6 +76,9 @@ struct Hist {
     deaths: Vec<u64>,
     genomes: Vec<usize>,
     energy: Vec<u32>,
+    /// Carbon in the air (loose C) and in dead organic matter (loose G + dropped pages).
+    air_c: Vec<u64>,
+    dead_g: Vec<u64>,
 }
 
 impl Hist {
@@ -87,6 +90,15 @@ impl Hist {
         self.deaths.push(sim.obs.total_deaths_energy + sim.obs.total_deaths_body);
         self.genomes.push(genomes);
         self.energy.push((ag.iter().map(|a| a.energy as u64).sum::<u64>() / ag.len().max(1) as u64) as u32);
+        let w = &sim.st.world;
+        let (mut c, mut g) = (0u64, 0u64);
+        for t in 0..w.n() as u32 {
+            c += w.loose_total(t, gene_core::species::C);
+            g += w.loose_total(t, gene_core::species::G);
+        }
+        g += sim.st.dropped.values().flatten().map(|m| m.present_pages() as u64).sum::<u64>();
+        self.air_c.push(c);
+        self.dead_g.push(g);
         if self.tick.len() > 4000 {
             // keep every other point: bounded memory, full time range
             fn half<T: Copy>(v: &mut Vec<T>) {
@@ -98,6 +110,8 @@ impl Hist {
             half(&mut self.deaths);
             half(&mut self.genomes);
             half(&mut self.energy);
+            half(&mut self.air_c);
+            half(&mut self.dead_g);
         }
     }
 
@@ -106,13 +120,15 @@ impl Hist {
             v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
         }
         format!(
-            "{{\"tick\":[{}],\"pop\":[{}],\"births\":[{}],\"deaths\":[{}],\"genomes\":[{}],\"energy\":[{}]}}",
+            "{{\"tick\":[{}],\"pop\":[{}],\"births\":[{}],\"deaths\":[{}],\"genomes\":[{}],\"energy\":[{}],\"air_c\":[{}],\"dead_g\":[{}]}}",
             arr(&self.tick),
             arr(&self.pop),
             arr(&self.births),
             arr(&self.deaths),
             arr(&self.genomes),
-            arr(&self.energy)
+            arr(&self.energy),
+            arr(&self.air_c),
+            arr(&self.dead_g)
         )
     }
 }
@@ -136,7 +152,16 @@ impl HashCache {
 
 fn sim_thread(mut sim: Sim, shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Req>, save_dir: PathBuf, founder: String) {
     let founder_prog = isa::assemble(&founder_source(&founder)).ok();
-    let mut hist = Hist { tick: vec![], pop: vec![], births: vec![], deaths: vec![], genomes: vec![], energy: vec![] };
+    let mut hist = Hist {
+        tick: vec![],
+        pop: vec![],
+        births: vec![],
+        deaths: vec![],
+        genomes: vec![],
+        energy: vec![],
+        air_c: vec![],
+        dead_g: vec![],
+    };
     let mut cache = HashCache(BTreeMap::new());
     cache.refresh(&sim);
     hist.push(&sim, cache.distinct());

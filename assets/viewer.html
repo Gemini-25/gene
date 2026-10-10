@@ -105,6 +105,10 @@ table.kv td:first-child { color: var(--muted); width: 44%; }
     <canvas class="chart" id="c-pop"></canvas>
     <h2>고유 genome 수</h2>
     <canvas class="chart" id="c-gen"></canvas>
+    <h2>공기 중 탄소 (loose C)</h2>
+    <canvas class="chart" id="c-air"></canvas>
+    <h2>죽은 유기물 탄소 (loose G + 버려진 기록 페이지)</h2>
+    <canvas class="chart" id="c-dead"></canvas>
     <h2>많은 genome <span class="small" id="g-distinct"></span></h2>
     <ul class="census" id="census"></ul>
     <h2>선택한 개체</h2>
@@ -124,6 +128,8 @@ const map = $("map"), ctx = map.getContext("2d");
 async function getJSON(p) { const r = await fetch(p, { cache: "no-store" }); return r.json(); }
 async function getBin(p) { const r = await fetch(p, { cache: "no-store" }); return new Uint8Array(await r.arrayBuffer()); }
 const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? (n / 1e3).toFixed(1) + "K" : String(n);
+// axis ticks: drop a trailing ".0" so labels fit the 40 px gutter
+const fmtAxis = (n) => fmt(n).replace(".0K", "K").replace(".0M", "M");
 const hexColor = (c) => "#" + c.toString(16).padStart(6, "0");
 
 // ---------------- map
@@ -305,7 +311,7 @@ function lineChart(canvas, xs, ys, color, label) {
   for (const f of [0, 0.5, 1]) {
     const v = ymax * f, y = Math.round(Y(v)) + 0.5;
     c.beginPath(); c.moveTo(L, y); c.lineTo(L + pw, y); c.stroke();
-    c.textAlign = "right"; c.fillText(fmt(Math.round(v)), L - 6, y + 4);
+    c.textAlign = "right"; c.fillText(fmtAxis(Math.round(v)), L - 6, y + 4);
   }
   c.textAlign = "left"; c.fillText("day " + (xmin / 4096).toFixed(0), L, r.height - 4);
   c.textAlign = "right"; c.fillText("day " + (xmax / 4096).toFixed(1), L + pw, r.height - 4);
@@ -332,8 +338,12 @@ function drawCharts() {
   if (!hist || !hist.tick) return;
   lineChart($("c-pop"), hist.tick, hist.pop, css("--accent"), "개체");
   lineChart($("c-gen"), hist.tick, hist.genomes, css("--accent"), "genome");
+  if (hist.air_c) {
+    lineChart($("c-air"), hist.tick, hist.air_c, css("--accent"), "C");
+    lineChart($("c-dead"), hist.tick, hist.dead_g, css("--accent"), "G");
+  }
 }
-for (const id of ["c-pop", "c-gen"]) {
+for (const id of ["c-pop", "c-gen", "c-air", "c-dead"]) {
   const el = $(id);
   el.addEventListener("pointermove", (e) => { hover[id] = e.clientX - el.getBoundingClientRect().left; drawCharts(); });
   el.addEventListener("pointerleave", () => { delete hover[id]; drawCharts(); });
