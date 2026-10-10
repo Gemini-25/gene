@@ -668,17 +668,30 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     if o.map_every > 0 {
         write_map(&sim, &o.out.join(format!("map_{:07}.png", sim.st.tick)));
     }
-    let mut behavior = gene_core::behavior::Analyzer::default();
-    behavior.log = Some(Vec::new());
     sim.obs.facts = Some(Vec::new());
-    let mut judge = gene_core::judge::Judge::default();
     let founders = founder_programs(&o.founder);
-    for a in &sim.st.agents {
-        if a.generation == 0 {
-            let g = hash_cells(a.code.prefix(a.used_len).unwrap_or(&[]));
-            judge.founder(a.uid, founder_kind(&founders, &g), g);
+    // a resumed run continues the behaviour analysis and the judge saved with its checkpoint
+    let saved: Option<(gene_core::behavior::Analyzer, gene_core::judge::Judge)> = resumed
+        .and_then(|t| fs::read(o.out.join(format!("ckpt_{t:07}.ana"))).ok())
+        .and_then(|b| postcard::from_bytes(&b).ok());
+    let analysis_resumed = saved.is_some();
+    let (mut behavior, mut judge) = saved.unwrap_or_else(|| {
+        let mut j = gene_core::judge::Judge::default();
+        for p in &founders {
+            j.founder_genome(hash_cells(&p.to_cells()));
         }
-    }
+        for a in &sim.st.agents {
+            let g = hash_cells(a.code.prefix(a.used_len).unwrap_or(&[]));
+            if a.generation == 0 {
+                j.founder(a.uid, founder_kind(&founders, &g), g);
+            } else {
+                let kind = nearest(&founders, a.program()).and_then(|f| founders.iter().position(|x| std::ptr::eq(x, f))).unwrap_or(0);
+                j.known(a.uid, kind as u16, a.birth_tick, g);
+            }
+        }
+        (gene_core::behavior::Analyzer::default(), j)
+    });
+    behavior.log = Some(Vec::new());
     let mut graph = gene_core::relations::Graph::default();
     let mut artifacts = gene_core::artifacts::Artifacts::default();
     let mut lineage = gene_core::lineage::Lineage::default();
@@ -787,12 +800,14 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
                 fs::rename(&tmp, o.out.join(name)).unwrap();
             };
             write(format!("ckpt_{t:07}.obs"), postcard::to_allocvec(&sim.obs.counters()).unwrap());
+            write(format!("ckpt_{t:07}.ana"), postcard::to_allocvec(&(&behavior, &judge)).unwrap());
             write(format!("ckpt_{t:07}.bin"), sim.save());
             // keep the two newest checkpoints
             let old = t.saturating_sub(2 * o.checkpoint_every);
             if old > 0 {
                 let _ = fs::remove_file(o.out.join(format!("ckpt_{old:07}.bin")));
                 let _ = fs::remove_file(o.out.join(format!("ckpt_{old:07}.obs")));
+                let _ = fs::remove_file(o.out.join(format!("ckpt_{old:07}.ana")));
             }
         }
         if !o.quiet && t % 16_384 == 0 {
@@ -831,13 +846,15 @@ taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_med
     fs::write(o.out.join("judge.csv"), judge_csv(&judged)).unwrap();
     fs::write(o.out.join("highlevel.csv"), highlevel_csv(&candidates, &behavior)).unwrap();
     s.highlevel = format!(
-        "{{\"families_judged\": {}, \"families_pass\": {}, \"new_families_pass\": {}, \"chains_seen\": {}, \"chains_pass\": {}, \"new_chains_pass\": {}}}",
+        "{{\"families_judged\": {}, \"families_pass\": {}, \"new_families_pass\": {}, \"chains_seen\": {}, \"chains_pass\": {}, \"new_chains_pass\": {}, \"partial\": {}}}",
         judged.len(),
         judged.iter().filter(|f| f.pass).count(),
         judged.iter().filter(|f| f.pass && !f.founder).count(),
         candidates.len(),
         candidates.iter().filter(|c| c.pass()).count(),
-        candidates.iter().filter(|c| c.pass() && c.new).count()
+        candidates.iter().filter(|c| c.pass() && c.new).count(),
+        // resumed without the saved analysis: it covers only the resumed part
+        resumed.is_some() && !analysis_resumed
     );
     s.effects = effects_json(&sim, &behavior);
     if sim.st.tick % gene_core::relations::WINDOW != 0 {

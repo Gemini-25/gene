@@ -9,6 +9,7 @@
 //! in 3 windows from at least 2 agents is a RepeatedBehavior.
 
 use crate::observer::EffectFact;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub const WINDOW: u64 = 256;
@@ -82,7 +83,7 @@ pub fn jhat(a: &[u64], b: &[u64]) -> (usize, usize) {
     (both, u)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Family {
     pub id: u32,
     /// Sketch of the founding window (the family's representative; never replaced).
@@ -126,7 +127,7 @@ impl Family {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Counts {
     pub windows: u64,
     pub short: u64,
@@ -135,6 +136,7 @@ pub struct Counts {
     pub intermediate: u64,
 }
 
+#[derive(Serialize, Deserialize)]
 struct Open {
     window: u64,
     last_tick: Option<u64>,
@@ -143,7 +145,7 @@ struct Open {
 
 /// One closed window, for the high-level judge (SPEC §17f). Kept only when `Analyzer::log`
 /// is Some.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowRecord {
     pub uid: u64,
     pub window: u64,
@@ -229,7 +231,7 @@ pub fn is_output(t: &Token) -> bool {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Analyzer {
     open: BTreeMap<u64, Open>,
     pub families: Vec<Family>,

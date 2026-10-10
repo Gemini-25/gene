@@ -16,6 +16,7 @@
 //! is not a new behaviour. D (a person checking on screen) happens in the viewer.
 
 use crate::behavior::{action_grams, action_set, Family, WindowRecord, UNKNOWN_SITUATION, WINDOW};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// Share of windows from unchanged founder genomes at which a behaviour is the founders' own.
@@ -33,7 +34,7 @@ pub const CHAIN_CONTEXTS: u32 = 2;
 /// Agent ids kept per chain (enough to count CHAIN_AGENTS and to show a few on screen).
 const KEEP_AGENTS: usize = 32;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Chain {
     pub families: Vec<u32>,
     pub first_window: u64,
@@ -81,7 +82,7 @@ impl Candidate {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct Life {
     kind: u16,
     born: u64,
@@ -93,7 +94,7 @@ struct Life {
     classified: bool,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct FamilyStats {
     ok: u64,
     total: u64,
@@ -102,7 +103,7 @@ struct FamilyStats {
     carriers: BTreeSet<u64>,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Judge {
     stats: BTreeMap<u32, FamilyStats>,
     /// Per agent: the last two classified windows (window, family, output, situation).

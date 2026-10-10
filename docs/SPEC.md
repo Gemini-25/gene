@@ -782,7 +782,9 @@ bin = min(16, floor(log2(1 + n)))이다. parcel이 없는 tile의 parcel 필드�
 - 체크포인트(`ckpt_<tick>.bin`) 옆에 관찰 계수(`ckpt_<tick>.obs`: 누적 출생·사망, M1 계수, 효과 결과 수, 변이 통계)를 둔다. 둘 다 임시 파일에 쓴 뒤 이름을 바꾼다.
 - 가장 새 둘만 남긴다.
 - 이어 갈 때 `stats.csv`, `births.csv`, `deaths.csv`를 그 tick까지 잘라 이어 쓴다. 끊김 없는 실행과 byte 단위로 같고, core hash도 같다.
-- 행동·관계·계보·판정 분석은 이어 간 구간만 다룬다. `summary.json`의 `resumed_from`에 이어 간 tick을 적는다.
+- 행동 분석(§17b)과 고수준 판정(§17f)의 상태도 체크포인트 옆(`ckpt_<tick>.ana`)에 저장하고 이어 간다. 결과 파일이 끊김 없는 실행과 같다.
+- 관계·구조물·계보 분석은 이어 간 구간만 다룬다.
+- `summary.json`의 `resumed_from`에 이어 간 tick을 적는다. 분석 상태 없이 이어 갔으면 `highlevel.partial`이 true다.
 
 ## 18. 첫 실험 E1: 조상 생존 (§49 축소판)
 
