@@ -2,7 +2,7 @@
 """Static SVG charts for docs/results/E1.md (no third-party packages).
 
 usage: e1_charts.py RUNS_DIR OUT_DIR
-RUNS_DIR holds the batch directories E1a_founder4/, E1b_founder5/ and, when present, E1c_founder6/.
+RUNS_DIR holds the batch directories E1a_founder4/, E1b_founder5/ and, when present, E1c_founder6/, E1d_founder7/.
 Seeds still running are drawn up to where they are.
 """
 import csv, math, statistics as st, sys
@@ -43,7 +43,8 @@ def seeds(batch):
 
 
 # experiment directory, label, colour slot (colour follows the founder in every chart)
-EXPERIMENTS = [("E1a_founder4", "Founder-4", "s2"), ("E1b_founder5", "Founder-5", "s1"), ("E1c_founder6", "Founder-6", "s3")]
+EXPERIMENTS = [("E1a_founder4", "Founder-4", "s2"), ("E1b_founder5", "Founder-5", "s1"), ("E1c_founder6", "Founder-6", "s3"),
+               ("E1d_founder7", "Founder-7", "s4")]
 
 
 def present(runs):
@@ -252,6 +253,57 @@ def newborn_survival(batch):
     return [(name, (acc[name][0] / acc[name][1]) if acc[name][1] else 0.0, acc[name][1]) for _, _, name in bins]
 
 
+def carbon_chart(runs, out):
+    """Two panels sharing the day axis: CO2 in the air, and carbon held in dead organic matter."""
+    exps = [e for e in present(runs) if e[0] != "E1a_founder4"]
+    W, H = 760, 360
+    L, T, B, gap = 64, 108, 44, 56
+    pw = (W - L - 40 - gap) // 2
+    ph = H - T - B
+    max_day = 49
+    panels = [("CO2 in the air (loose C), millions", lambda r: int(r["loose_C"]) / 1e6),
+              ("dead organic carbon (loose G + dropped pages), millions", lambda r: (int(r["loose_G"]) + int(r["dropped_pages"])) / 1e6)]
+    meds = {}
+    for d, name, _ in exps:
+        per = []
+        for sd in seeds(Path(runs) / d):
+            rows = [r for r in load(sd / "stats.csv") if int(r["tick"]) % 4096 == 3072]
+            per.append({int(r["tick"]) // 4096: r for r in rows})
+        days = sorted(set.intersection(*[set(p) for p in per])) if per else []
+        meds[name] = [(day, [st.median(f(p[day]) for p in per) for _, f in panels]) for day in days]
+    body = [f'<text x="{L}" y="26" class="t">Carbon: air vs dead matter</text>',
+            f'<text x="{L}" y="44" class="m">median over seeds at dawn; 512×512 world</text>']
+    for k, (_, name, c) in enumerate(exps):
+        body.append(f'<line x1="{L+k*120}" x2="{L+k*120+18}" y1="62" y2="62" stroke="var(--{c})" stroke-width="2"/>')
+        body.append(f'<text x="{L+k*120+24}" y="66">{name}</text>')
+    for pi, (title, _) in enumerate(panels):
+        x0 = L + pi * (pw + gap)
+        vals = [v[pi] for m in meds.values() for _, v in m] or [1]
+        vmax = max(vals) * 1.1
+        vmin = 0
+        x = lambda dd: x0 + pw * dd / max_day
+        y = lambda v: T + ph * (1 - (v - vmin) / (vmax - vmin))
+        body.append(f'<text x="{x0}" y="{T-14}" class="m">{title}</text>')
+        step = 1 if vmax <= 6 else 2
+        v = 0.0
+        while v <= vmax:
+            body.append(f'<line x1="{x0}" x2="{x0+pw}" y1="{y(v):.1f}" y2="{y(v):.1f}" stroke="var(--grid)" stroke-width="1"/>')
+            body.append(f'<text x="{x0-6}" y="{y(v)+4:.1f}" text-anchor="end" class="m num">{v:g}</text>')
+            v += step
+        for dd in range(0, max_day + 1, 7):
+            body.append(f'<text x="{x(dd):.1f}" y="{T+ph+16}" text-anchor="middle" class="m num">{dd}</text>')
+        body.append(f'<line x1="{x0}" x2="{x0+pw}" y1="{T+ph}" y2="{T+ph}" stroke="var(--axis)" stroke-width="1"/>')
+        for _, name, c in exps:
+            pts = meds[name]
+            if not pts:
+                continue
+            path = " ".join(f"{'M' if i == 0 else 'L'}{x(dd):.1f},{y(v[pi]):.1f}" for i, (dd, v) in enumerate(pts))
+            body.append(f'<path d="{path}" fill="none" stroke="var(--{c})" stroke-width="2" stroke-linejoin="round"/>')
+    body.append(f'<text x="{W/2}" y="{H-8}" text-anchor="middle" class="m">day (4096 ticks)</text>')
+    Path(out, "carbon.svg").write_text(svg(W, H, "".join(body), "Carbon in the air and in dead matter by founder"))
+    return meds
+
+
 if __name__ == "__main__":
     runs, out = sys.argv[1], sys.argv[2]
     Path(out).mkdir(parents=True, exist_ok=True)
@@ -259,8 +311,11 @@ if __name__ == "__main__":
     bud = budget_chart(runs, out)
     groups = [(name, c, newborn_survival(Path(runs) / d)) for d, name, c in present(runs) if d != "E1a_founder4"]
     survival_chart(groups, out)
+    carbon = carbon_chart(runs, out)
     print("budget:", {n: {k: round(v, 1) for k, v in b.items()} for n, b in bud})
     for name, _, rows in groups:
         print(f"survival by phase, {name}:", [(n, f"{r:.1%}", c) for n, r, c in rows])
     for name, med in meds.items():
         print(f"{name} median dawn population by day:", [(round(d, 2), v) for d, v in med][::7])
+    for name, med in carbon.items():
+        print(f"{name} carbon (air C, dead G) millions by day:", [(d, [round(x, 2) for x in v]) for d, v in med][::7])
