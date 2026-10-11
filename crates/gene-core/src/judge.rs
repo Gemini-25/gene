@@ -32,6 +32,11 @@ pub const CHAIN_AGENTS: usize = 5;
 pub const SPREAD_CARRIERS: usize = 3;
 /// Carriers a family needs before its reproduction rate means anything.
 pub const FITNESS_CARRIERS: usize = 5;
+/// A verb makes a family new only when it is in at least this share of the family's windows,
+/// and in at least VERB_MIN_WINDOWS of them: one odd window inside a common founder routine
+/// (a register left over once) is not what the family does.
+pub const VERB_SHARE: (u64, u64) = (1, 10);
+pub const VERB_MIN_WINDOWS: u32 = 3;
 /// Distinct situations (time of day × energy band × wet tile) a chain must start in.
 pub const CHAIN_CONTEXTS: u32 = 2;
 /// Agent ids kept per chain (enough to count CHAIN_AGENTS and to show a few on screen).
@@ -111,8 +116,8 @@ struct FamilyStats {
     windows: u64,
     founder_windows: u64,
     carriers: BTreeSet<u64>,
-    /// Verbs of the family's windows (`behavior::verb`).
-    verbs: BTreeSet<u32>,
+    /// Verbs of the family's windows (`behavior::verb`) and in how many windows each was seen.
+    verbs: BTreeMap<u32, u32>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -205,7 +210,9 @@ impl Judge {
         s.windows += 1;
         s.founder_windows += founder_code as u64;
         s.carriers.insert(r.uid);
-        s.verbs.extend(r.verbs.iter().copied().filter(|&v| v != 0));
+        for &v in r.verbs.iter().filter(|&&v| v != 0) {
+            *s.verbs.entry(v).or_default() += 1;
+        }
         let prev = self.last.get(&r.uid).copied();
         let here = r.output || self.outputs.contains(&(r.uid, r.window));
         let cur = (r.window, fam, here, r.ctx);
@@ -289,8 +296,12 @@ impl Judge {
             let known_actions = !self.founder_grams.is_empty() && grams.iter().all(|g| self.founder_grams.contains(g));
             // a verb founder code never used (G into the embryo, matter to another agent, a new
             // signal channel) is new even when the action kinds come in a known order
-            let new_verbs: Vec<u32> =
-                if self.founder_verbs.is_empty() { Vec::new() } else { st.verbs.iter().copied().filter(|v| !self.founder_verbs.contains(v)).collect() };
+            let common = |n: u32| n >= VERB_MIN_WINDOWS && n as u64 * VERB_SHARE.1 >= st.windows * VERB_SHARE.0;
+            let new_verbs: Vec<u32> = if self.founder_verbs.is_empty() {
+                Vec::new()
+            } else {
+                st.verbs.iter().filter(|(v, n)| common(**n) && !self.founder_verbs.contains(v)).map(|(v, _)| *v).collect()
+            };
             let is_founder = founders_own(st.founder_windows, st.windows) || (known_actions && new_verbs.is_empty());
             pass.insert(f.id, success && linked);
             founder.insert(f.id, is_founder);
@@ -460,7 +471,11 @@ mod tests {
         let verb = |channel| crate::behavior::verb(&EffectFact { tick: 0, uid: 0, kind: 40, outcome: 0, dir: 255, channel, actual: 1, src: 0, dst: 8 }).unwrap();
         let (energy_in, g_in) = (verb(15), verb(3));
         j.window(&WindowRecord { uid: 101, window: 5, family: Some(99), ok: 3, total: 3, output: false, ctx: 2, grams: [gram, 0, 0, 0, 0, 0, 0, 0], verbs: [energy_in, 0, 0, 0, 0, 0, 0, 0] });
-        j.window(&WindowRecord { uid: 1, window: 70, family: Some(7), ok: 3, total: 3, output: false, ctx: 2, grams: [gram, 0, 0, 0, 0, 0, 0, 0], verbs: [g_in, 0, 0, 0, 0, 0, 0, 0] });
+        for u in 1..=3 {
+            j.window(&WindowRecord { uid: u, window: 70, family: Some(7), ok: 3, total: 3, output: false, ctx: 2, grams: [gram, 0, 0, 0, 0, 0, 0, 0], verbs: [g_in, 0, 0, 0, 0, 0, 0, 0] });
+        }
+        // the same verb once in family 8: an odd window, not what the family does
+        j.window(&WindowRecord { uid: 4, window: 71, family: Some(8), ok: 3, total: 3, output: false, ctx: 2, grams: [gram, 0, 0, 0, 0, 0, 0, 0], verbs: [g_in, 0, 0, 0, 0, 0, 0, 0] });
         let mut f7 = fam(7, 40 * WINDOW);
         f7.example = vec![put; 3];
         let mut f8 = fam(8, 41 * WINDOW);
@@ -472,7 +487,7 @@ mod tests {
         assert!(by(7).new_targets.is_empty(), "same action and stores as the energy investment: a channel variant");
         let give = crate::behavior::verb(&EffectFact { tick: 0, uid: 0, kind: 40, outcome: 0, dir: 0, channel: 3, actual: 1, src: 0, dst: 3 }).unwrap();
         assert!(j.new_target(give), "G to another agent: no founder verb moves matter self>actor");
-        assert!(by(8).founder, "same moves with the founders' verbs");
+        assert!(by(8).founder, "same moves with the founders' verbs (the new verb in one window of many)");
         assert_eq!(crate::behavior::describe_verb(g_in), "TRANSFER G self>embryo");
         assert_eq!(crate::behavior::describe_verb(energy_in), "TRANSFER energy self>embryo");
     }

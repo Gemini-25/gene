@@ -788,7 +788,7 @@ bin = min(16, floor(log2(1 + n)))이다. parcel이 없는 tile의 parcel 필드�
 - 동작 순서로도 본다. 창의 성공한 효과 3개가 잇달아 일어난 것을 동작 3-gram이라 한다. 효과 종류(opcode, sub-op)만 보고 방향, 양, 시간 간격은 무시한다. sub-op를 쓰지 않는 효과(LINK, UNLINK, TRANSFER, EMIT, COPY)는 sub-op를 0으로 본다. 변이로 바뀐 쓰이지 않는 즉시값은 새 동작이 아니다(장기 실행에서 COPY 4로 표시된 계통이 새 family로 잡혔다). family 예시의 동작 3-gram이 모두 조상 code 창에서 본 것이면 그 family는 조상의 것이다. 조상의 먹이 줍기를 다른 방향과 간격으로 하는 변이체가 새 family로 잡히는 것을 막는다(E2 예비 실험에서 새 family 후보 대부분이 이런 것이었다).
 - 동사로도 본다. 동사는 성공한 효과가 "무엇을 어디서 어디로" 했는지다: 효과 종류(sub-op를 쓰지 않으면 0), channel(물질 종, energy, 신호 channel, 결합 대상), 원천과 목적지 주소의 domain(TRANSFER·COPY는 r0·r1, READ·WRITE·WORK는 r0). 예를 들어 "TRANSFER G self>embryo"(배아에 G 넣기)는 "TRANSFER energy self>embryo"(조상의 에너지 투자)나 "TRANSFER G loose>self"(먹이 줍기)와 다른 동사다. 동작 종류와 순서만 보면 셋을 구분하지 못한다. 동사는 A1.4 token에 넣지 않고 따로 기록하므로 family 분류는 그대로다.
   - 조상 code 개체의 창(family가 없는 창 포함)에서 본 동사가 조상 동사다.
-  - family의 창에 조상 동사가 아닌 동사가 있으면, 동작 3-gram이 모두 조상의 것이어도 그 family는 조상의 것이 아니다(조상 code 창 비율 규칙은 그대로).
+  - family의 창에 조상 동사가 아닌 동사가 있으면, 동작 3-gram이 모두 조상의 것이어도 그 family는 조상의 것이 아니다(조상 code 창 비율 규칙은 그대로). 단, 그 동사가 family 창의 10분의 1 이상, 그리고 3개 이상의 창에 있어야 한다. E2 본 실험 seed 3에서 운반자 3,123의 먹이 줍기 family가 "G를 땅에서 parcel로" 동사 때문에 새것으로 잡혔는데, 끝 4일 동안 그 동사는 한 번도 나오지 않았다. 흔한 조상 루틴 안의 드문 한 창은 그 family가 하는 일이 아니다.
   - `judge.csv`, `highlevel.csv`의 `new_verbs` 열과 화면의 "새 동사"에 그런 동사를 적는다. 순서만 새로운 후보와 새 동사를 쓰는 후보를 사람이 구분해 볼 수 있다.
   - 새 동사 가운데 효과의 명령과 원천·목적지 domain 조합을 조상 동사가 한 번도 쓰지 않은 것은 "새 대상"이라 하고 `*`를 붙인다(예: 다른 개체에게 물질 주기 `TRANSFER G self>actor`). 표시가 없으면 조상 동사의 channel이나 sub-op만 다른 변형이다(예: 먹이 신호를 channel 0 대신 3에 냄, 배아에 energy 대신 G 넣기).
 - 연쇄 안의 family 하나라도 조상의 것이 아니면 새 고수준 후보다.
