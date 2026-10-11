@@ -22,6 +22,7 @@
 | E1-f: Founder-7 + 흙이 물을 붙잡는 후보 물리(`gene-m0-3`) | 2 seed 완료(나머지 실행 중). 21일째 약 1.2만에서 멈춰 49일까지 거의 일정. 마지막 개체 수는 같은 seed E1-d의 약 6배, 마른 땅 0 |
 | E2 조상: Founder-8(신호), -9(기록 학습), -10(구조물) | Founder-7에 습관 하나씩. 소규모 4 seed에서 셋 다 혼자 살아남음. `--founder founder8+founder9+founder10`으로 한 세계에 섞음 (SPEC §16e) |
 | E2 본 실험: module형 조상 셋, `gene-m2-4`, 256², 488일 | 4/4 seed 완주. 이긴 계통은 조상의 습관을 버리고 변이를 피했다(경쟁 시험 +47, +50, +18%p). 습관 조합·새 고수준 행동은 없음. 코드 한 쪽이 −12%p로 비싸고 습관은 보상받지 못한다 ([`docs/results/E2.md`](docs/results/E2.md)) |
+| E3 본 실험: 옮겨 다니는 이끼 꽃, `gene-m2-7`, 256², 200일 | 4/4 seed 완주. 판정 후보는 E2와 같은 종류. 더 걷고 변이된 배아를 버리는 계통이 E2보다 일찍 이겼다(+38%p). 먹이 신호는 꽃 세계에서도 손해 ([`docs/results/E3.md`](docs/results/E3.md)) |
 | P1: M1 기능의 자연 발견 | 소규모 4 seed에서 없음. m0와 m1d 결과가 완전히 같음 ([`docs/results/P1_M1_pilot.md`](docs/results/P1_M1_pilot.md)) |
 | 속도(512², 개체 약 1,700) | 약 190 TPS, 단일 thread. 명세 목표 S1(500+) 미달, 병목은 환경 수송. Think·수송·환경은 `--sim-threads N`으로 병렬(결과 동일) |
 | M1a(신호·공개 기록·초안) | ruleset `gene-m1-1`(`--ruleset m1a`) |
