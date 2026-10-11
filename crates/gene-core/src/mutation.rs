@@ -170,6 +170,29 @@ fn structural(e: &mut Edit, opn: u8, st: &mut Stream, donor: &Program, extra: Op
     }
 }
 
+/// Mating (SPEC §20n): 1 finished embryo in MATE_ODDS that has a neighbour takes one module.
+pub const MATE_ODDS: u32 = 8;
+
+/// Mating (SPEC §20n): one module of `partner` (uniform) overwrites one module of the embryo's
+/// validated prefix (uniform, tag kept), as Recombine does with the parent's own modules. Returns
+/// the prefix unchanged when the result would break the limits.
+pub fn mate(prefix: &[u16], partner: &Program, st: &mut Stream) -> Vec<u16> {
+    let Ok(p) = genome::parse(prefix) else { return prefix.to_vec() };
+    if partner.modules.is_empty() || p.modules.is_empty() {
+        return prefix.to_vec();
+    }
+    let mut e = Edit::from(&p);
+    let m = partner.modules[st.below(partner.modules.len() as u32) as usize];
+    let tj = st.below(e.mods.len() as u32) as usize;
+    e.mods[tj].1 = partner.words[m.start as usize..(m.start + m.len) as usize].to_vec();
+    let np = e.to_program();
+    if np.within_limits() {
+        np.to_cells()
+    } else {
+        prefix.to_vec()
+    }
+}
+
 /// Draw the mutation plan for a validated prefix.
 /// `parent` supplies the rates (its inherited header) and the Recombine donor modules.
 pub fn mutate(prefix: &[u16], parent: &Program, st: &mut Stream) -> (Vec<u16>, MutationRecord) {
@@ -227,6 +250,35 @@ pub fn mutate_with(
 mod tests {
     use super::*;
     use crate::rng::{stream_key, Domain};
+
+    #[test]
+    fn mating_puts_one_partner_module_in_place_of_one_module() {
+        let me = crate::isa::assemble(crate::FOUNDER8M_ASM).unwrap();
+        let partner = crate::isa::assemble(crate::FOUNDER10M_ASM).unwrap();
+        let cells = me.to_cells();
+        let partner_mods: Vec<Vec<u32>> =
+            partner.modules.iter().map(|m| partner.words[m.start as usize..(m.start + m.len) as usize].to_vec()).collect();
+        let mut changed = 0;
+        for o in 0..40 {
+            let mut st = Stream::new(stream_key(4, Domain::Mutation, 1, o), 1);
+            let out = mate(&cells, &partner, &mut st);
+            let p = genome::parse(&out).expect("valid");
+            assert_eq!(p.modules.len(), me.modules.len(), "tags kept, no module added");
+            let differs: Vec<usize> = (0..p.modules.len())
+                .filter(|&k| {
+                    let (a, b) = (p.modules[k], me.modules[k]);
+                    p.words[a.start as usize..(a.start + a.len) as usize] != me.words[b.start as usize..(b.start + b.len) as usize]
+                })
+                .collect();
+            assert!(differs.len() <= 1, "at most one module replaced");
+            for &k in &differs {
+                let m = p.modules[k];
+                assert!(partner_mods.contains(&p.words[m.start as usize..(m.start + m.len) as usize].to_vec()), "it is a partner module");
+                changed += 1;
+            }
+        }
+        assert!(changed > 10, "mating usually changes the embryo ({changed} of 40)");
+    }
 
     #[test]
     fn zero_rates_never_mutate() {

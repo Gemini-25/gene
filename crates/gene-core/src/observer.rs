@@ -104,6 +104,9 @@ pub struct MutationStats {
     pub step_valid: u64,
     pub step_invalid: u64,
     pub finish_invalid: u64,
+    /// Embryos that took a neighbour's module at Finish (SPEC §20n). Not saved.
+    #[serde(skip)]
+    pub mated: u64,
 }
 
 /// M1a counters (SPEC §20b).

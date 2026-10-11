@@ -51,6 +51,9 @@ pub const RULESET_M2F: &str = "gene-m2-6";
 pub const RULESET_M2G: &str = "gene-m2-7";
 /// gene-m2-7 + air conduction of signals (SPEC §20l, §20m, candidate for decision 8).
 pub const RULESET_M2H: &str = "gene-m2-8";
+/// gene-m2-4 + mating: a finished embryo may take a module from a neighbour's code (SPEC §20n,
+/// candidate for decision 8).
+pub const RULESET_M2I: &str = "gene-m2-9";
 
 /// Capabilities switched on by the ruleset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -80,6 +83,9 @@ pub struct Caps {
     /// Moss ground is a set of 16×16 blocks drawn afresh every 4 days instead of the wettest
     /// substrate (SPEC §20m; needs `moss`).
     pub bloom: bool,
+    /// Mating: at Finish, 1 embryo in MATE_ODDS with a neighbour takes one of its modules
+    /// (SPEC §20n).
+    pub mate: bool,
 }
 
 impl Caps {
@@ -104,6 +110,7 @@ impl Caps {
             RULESET_M2F => Some(Caps { air_signal: true, ..Caps::of(RULESET_M2E)? }),
             RULESET_M2G => Some(Caps { bloom: true, ..Caps::of(RULESET_M2E)? }),
             RULESET_M2H => Some(Caps { air_signal: true, ..Caps::of(RULESET_M2G)? }),
+            RULESET_M2I => Some(Caps { mate: true, ..Caps::of(RULESET_M2D)? }),
             RULESET_M2 => Some(Caps {
                 m1: true,
                 commit: true,
@@ -120,6 +127,7 @@ impl Caps {
                 moss: false,
                 air_signal: false,
                 bloom: false,
+                mate: false,
             }),
             _ => None,
         }

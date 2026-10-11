@@ -124,7 +124,23 @@ impl Sim {
         } else {
             None
         };
-        let (result, rec) = crate::mutation::mutate_with(&prefix, a.program(), learned.as_deref(), &mut st);
+        // mating (SPEC §20n): the first neighbour north, east, south, west, 1 time in MATE_ODDS
+        let mut prefix_m = None;
+        if self.caps.mate {
+            let t = self.tile_of(i);
+            let partner = (0..4u8).filter_map(|d| self.st.world.neighbor(t, d)).find_map(|u| self.agent_at(u));
+            if let Some(j) = partner {
+                if st.below(crate::mutation::MATE_ODDS) == 0 {
+                    prefix_m = Some(crate::mutation::mate(&prefix, self.st.agents[j].program(), &mut st));
+                }
+            }
+        }
+        let a = &self.st.agents[i];
+        let mated = prefix_m.as_ref().is_some_and(|m| *m != prefix);
+        let (result, rec) = crate::mutation::mutate_with(prefix_m.as_deref().unwrap_or(&prefix), a.program(), learned.as_deref(), &mut st);
+        if mated {
+            self.obs.mutation.mated += 1;
+        }
         if let Some(op) = rec.structural_op {
             if rec.structural_applied {
                 self.obs.mutation.structural[op as usize] += 1;
