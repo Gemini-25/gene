@@ -148,7 +148,8 @@ pub struct M1Stats {
 pub struct EffectFact {
     pub tick: u64,
     pub uid: u64,
-    /// (opcode - 0x20) << 3 | sub-op; 255 when the sub-op does not fit.
+    /// (opcode - 0x20) << 3 | sub-op; 255 when the sub-op does not fit, except for effects that
+    /// ignore their sub-op, which keep sub-op 0.
     pub kind: u8,
     pub outcome: u8,
     /// Actor-relative direction 0..3 (front, right, back, left), 255 when there is none.
@@ -171,7 +172,18 @@ impl EffectFact {
         use crate::intent::{dom, sub, unpack};
         use crate::isa::op;
         let r = it.r;
-        let kind = if (op::READ..=op::COPY).contains(&it.opc) && it.sub < 8 { (it.opc - op::READ) << 3 | it.sub as u8 } else { 255 };
+        // effects that ignore their sub-op (LINK, UNLINK, TRANSFER, EMIT, COPY) keep their kind
+        // whatever the immediate: a mutated, unused immediate of 8 or more is the same action
+        let ignores_sub = matches!(it.opc, op::LINK | op::UNLINK | op::TRANSFER | op::EMIT | op::COPY);
+        let kind = if !(op::READ..=op::COPY).contains(&it.opc) {
+            255
+        } else if it.sub < 8 {
+            (it.opc - op::READ) << 3 | it.sub as u8
+        } else if ignores_sub {
+            (it.opc - op::READ) << 3
+        } else {
+            255
+        };
         let vec_dir = |dx: u16, dy: u16| match (dx as i16, dy as i16) {
             (0, -1) => 0,
             (1, 0) => 1,

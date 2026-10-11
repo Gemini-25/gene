@@ -703,6 +703,17 @@ mod tests {
     }
 
     #[test]
+    fn an_unused_immediate_does_not_hide_the_action() {
+        use crate::intent::Intent;
+        use crate::isa::op;
+        let it = |opc, sub| Intent { opc, sub, r: [0; 8], copy: None, target_uid: None, parcel_uid: None };
+        let f = |i: &Intent| EffectFact::new(0, 1, i, 0, 1).kind;
+        assert_eq!(f(&it(op::TRANSFER, 16)), f(&it(op::TRANSFER, 0)), "TRANSFER ignores its sub-op");
+        assert_eq!(f(&it(op::COPY, 9)), f(&it(op::COPY, 0)));
+        assert_eq!(f(&it(op::REPRO, 9)), 255, "REPRO uses its sub-op: 9 is no action it knows");
+    }
+
+    #[test]
     fn short_windows_found_nothing() {
         let mut an = Analyzer::default();
         an.push(&fact(0, 1, 5 << 3, 0));

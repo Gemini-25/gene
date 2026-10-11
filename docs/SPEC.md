@@ -621,7 +621,7 @@ E2는 기록·신호·구조물을 하나씩 쓰는 조상들을 한 세계에 �
 
 | byte | 내용 |
 | --- | --- |
-| 0 | 종류 = (opcode − 0x20) << 3 \| sub-op |
+| 0 | 종류 = (opcode − 0x20) << 3 \| sub-op. sub-op가 8 이상이면 255. 단 sub-op를 쓰지 않는 효과(LINK, UNLINK, TRANSFER, EMIT, COPY)는 sub-op 0으로 적는다. 변이로 바뀐 쓰이지 않는 즉시값 때문에 같은 동작이 알 수 없는 종류가 되지 않게 한다(E2 본 실험 seed 1의 우세 계통은 `TRANSFER 16`, 번식 복사 연쇄는 COPY 즉시값이 8 이상이었다) |
 | 1 | 결과(Outcome) |
 | 2 | 행위자 기준 방향 0..3(앞, 오른쪽, 뒤, 왼쪽). 없으면 255 |
 | 3 | channel: TRANSFER 종(0..9, energy 15), EMIT 신호 channel, LINK 대상(면 0..3, anchor 4, grip 5). 없으면 255 |
