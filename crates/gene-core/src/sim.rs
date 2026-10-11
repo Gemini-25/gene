@@ -43,6 +43,9 @@ pub const RULESET_M2D: &str = "gene-m2-4";
 /// gene-m2-4 + moss: Rx0 at the loose site of the wettest ground, driven by light (SPEC §20k,
 /// candidate for decision 8).
 pub const RULESET_M2E: &str = "gene-m2-5";
+/// gene-m2-5 + signals spread through the air as through bonded metal (SPEC §20l, candidate for
+/// decision 8).
+pub const RULESET_M2F: &str = "gene-m2-6";
 
 /// Capabilities switched on by the ruleset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -67,6 +70,8 @@ pub struct Caps {
     pub aging: u64,
     /// Moss: fertile ground makes G from C and W with the light it absorbs (SPEC §20k).
     pub moss: bool,
+    /// Every tile conducts signals to its four neighbours, as bonded metal does (SPEC §20l).
+    pub air_signal: bool,
 }
 
 impl Caps {
@@ -88,6 +93,7 @@ impl Caps {
             RULESET_M2C => Some(Caps { aging: AGING_PERIOD, ..Caps::of(RULESET_M2B)? }),
             RULESET_M2D => Some(Caps { aging: 2 * AGING_PERIOD, ..Caps::of(RULESET_M2B)? }),
             RULESET_M2E => Some(Caps { moss: true, ..Caps::of(RULESET_M2D)? }),
+            RULESET_M2F => Some(Caps { air_signal: true, ..Caps::of(RULESET_M2E)? }),
             RULESET_M2 => Some(Caps {
                 m1: true,
                 commit: true,
@@ -102,6 +108,7 @@ impl Caps {
                 retain: false,
                 aging: 0,
                 moss: false,
+                air_signal: false,
             }),
             _ => None,
         }
@@ -112,6 +119,28 @@ impl Sim {
     /// Passive conduction (original §22, v1): a tile whose metal parcel is bonded to a metal
     /// neighbour keeps trunc(S/2) of its signal and receives trunc(S_n/8) from each such
     /// neighbour, from the old field (synchronous). Other tiles keep only new emissions.
+    /// Air conduction (SPEC §20l): every tile keeps trunc(S/2) of its signal and receives
+    /// trunc(S_n/8) from each of its four neighbours, from the old field (synchronous) - the metal
+    /// rule on every tile. Written as each nonzero old value scattering to itself and its
+    /// neighbours, which gives the same truncated terms.
+    fn spread_signals(&self, next: &mut BTreeMap<u64, i64>) {
+        let w = &self.st.world;
+        for (&k, &v) in &self.st.signal {
+            let (t, ch) = ((k >> 2) as u32, (k & 3) as u16);
+            let v = v as i64;
+            if v / 2 != 0 {
+                *next.entry(signal_key(t, ch)).or_insert(0) += v / 2;
+            }
+            if v / 8 != 0 {
+                for d in 0..4u8 {
+                    if let Some(nb) = w.neighbor(t, d) {
+                        *next.entry(signal_key(nb, ch)).or_insert(0) += v / 8;
+                    }
+                }
+            }
+        }
+    }
+
     fn conduct_signals(&self, next: &mut BTreeMap<u64, i64>) {
         let w = &self.st.world;
         let old = |t: u32, ch: u16| self.st.signal.get(&signal_key(t, ch)).copied().unwrap_or(0) as i64;
@@ -1011,7 +1040,9 @@ impl Sim {
         // the field read next tick holds this tick's emissions, plus passive conduction along bonded
         // metal parcels where that capability is on (original §22)
         let mut next = std::mem::take(&mut self.signal_next);
-        if self.caps.conduction && !self.st.signal.is_empty() {
+        if self.caps.air_signal {
+            self.spread_signals(&mut next);
+        } else if self.caps.conduction && !self.st.signal.is_empty() {
             self.conduct_signals(&mut next);
         }
         self.prune_traces();

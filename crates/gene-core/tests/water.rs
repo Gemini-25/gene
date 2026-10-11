@@ -112,3 +112,28 @@ fn moss_grows_on_fertile_ground_in_daylight_and_the_ledger_balances() {
         }
     }
 }
+
+// ---------------------------------------------------------------- SPEC §20l air signal (candidate)
+
+#[test]
+fn signals_spread_through_the_air_only_in_gene_m2_6() {
+    use gene_core::sim::{signal_key, RULESET_M2E, RULESET_M2F};
+    for (ruleset, spreads) in [(RULESET_M2E, false), (RULESET_M2F, true)] {
+        let mut s = idle_world(ruleset);
+        let t = s.st.world.idx(10, 10);
+        s.st.signal.insert(signal_key(t, 1), 64);
+        s.step();
+        let at = |s: &Sim, u: u32| s.st.signal.get(&signal_key(u, 1)).copied().unwrap_or(0);
+        let east = s.st.world.idx(11, 10);
+        if spreads {
+            assert_eq!(at(&s, t), 32, "keeps half");
+            assert_eq!(at(&s, east), 8, "each neighbour gets an eighth");
+            s.step();
+            assert_eq!(at(&s, t), 16 + 4 * 1, "half of 32 plus an eighth of each neighbour's 8");
+        } else {
+            assert_eq!(at(&s, t), 0, "without conduction the field holds only new emissions");
+            assert_eq!(at(&s, east), 0);
+        }
+        assert!(s.audit_ok());
+    }
+}
