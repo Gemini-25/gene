@@ -1103,7 +1103,7 @@ map.addEventListener("pointermove", (e) => {
   const tip = $("tip");
   if (best < 0 || !a || a.uid[best] !== c.uid[best]) { tip.style.display = "none"; return; }
   const EMBS = ["", " · 배아 기록 중", " · 배아 변이 중", " · 배아 오류", " · 배아 준비됨"];
-  tip.innerHTML = `<span class="sw" style="background:${hexColor(c.c[best])}"></span>#${c.uid[best]} · ${a.g[best]}세대 · 에너지 ${(a.e[best] * 2).toLocaleString()}${EMBS[a.emb[best]] || ""}`;
+  tip.innerHTML = `<span class="sw" style="background:${hexColor(c.c[best])}"></span>#${c.uid[best]} · ${a.g[best]}세대 · ${a.age ? a.age[best] : 0}일 · 에너지 ${(a.e[best] * 2).toLocaleString()}${EMBS[a.emb[best]] || ""}`;
   tip.style.display = "block";
   tip.style.left = Math.min(r.width - tip.offsetWidth - 8, hoverAt.x + 14) + "px";
   tip.style.top = Math.max(8, hoverAt.y - 30) + "px";
@@ -1667,10 +1667,11 @@ function parseAgents(buf) {
   const uid = take(Uint32Array, 4), c = take(Uint32Array, 4), root = take(Uint32Array, 4);
   const x = take(Uint16Array, 2), y = take(Uint16Array, 2), e = take(Uint16Array, 2), g = take(Uint16Array, 2);
   const o = take(Uint8Array, 1), emb = take(Uint8Array, 1);
-  return { uid, c, root, x, y, e, g, o, emb, gc: c };
+  const age = off + n * 2 <= buf.byteLength ? take(Uint16Array, 2) : new Uint16Array(n); // days
+  return { uid, c, root, x, y, e, g, o, emb, age, gc: c };
 }
 // --- agent colour: genome (default), founder lineage, energy, generation
-const COLOUR_MODES = ["genome", "kind", "lineage", "group", "energy", "generation"], COLOUR_NAMES = { genome: "genome", kind: "조상 종류", lineage: "계통", group: "집단", energy: "에너지", generation: "세대" };
+const COLOUR_MODES = ["genome", "kind", "lineage", "group", "energy", "generation", "age"], COLOUR_NAMES = { genome: "genome", kind: "조상 종류", lineage: "계통", group: "집단", energy: "에너지", generation: "세대", age: "나이" };
 // founder kinds (E2 mixed worlds): founder i runs program i mod n, so kind = (root - 1) mod n.
 // Fixed order of hues that stand out on green land, blue water and tan ground.
 const KIND_COLOURS = [0xff8a3d, 0xa597ff, 0xffd84a, 0x6fb6ff, 0x5fe0b0, 0xff9cc4];
@@ -1704,11 +1705,13 @@ function recolour(a) {
   const c = new Uint32Array(a.uid.length);
   let gmax = 1;
   if (colourMode === "generation") for (let i = 0; i < a.g.length; i++) gmax = Math.max(gmax, a.g[i]);
+  if (colourMode === "age") { gmax = 30; for (let i = 0; i < a.age.length; i++) gmax = Math.max(gmax, a.age[i]); } // days; aging ends lives near 57
   for (let i = 0; i < c.length; i++) {
     c[i] = colourMode === "kind" ? KIND_COLOURS[kindOf(a.root[i]) % KIND_COLOURS.length]
       : colourMode === "lineage" ? lineageColour(a.root[i])
       : colourMode === "group" ? (groupOf.has(a.uid[i]) ? lineageColour(groupOf.get(a.uid[i]) * 7919) : NO_GROUP)
-      : colourMode === "energy" ? ramp(a.e[i] / 32767) : ramp(a.g[i] / gmax);
+      : colourMode === "energy" ? ramp(a.e[i] / 32767)
+      : colourMode === "age" ? ramp(a.age[i] / gmax) : ramp(a.g[i] / gmax);
   }
   a.c = c;
 }

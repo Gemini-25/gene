@@ -470,7 +470,7 @@ fn color_u32(h: &[u8; 32]) -> u32 {
 /// u16 generation[n]; u8 orientation[n]; u8 embryo state[n].
 fn agents_bin(sim: &Sim, cache: &HashCache) -> Vec<u8> {
     let ag = &sim.st.agents;
-    let mut out = Vec::with_capacity(4 + 22 * ag.len());
+    let mut out = Vec::with_capacity(4 + 24 * ag.len());
     out.extend_from_slice(&(ag.len() as u32).to_le_bytes());
     for a in ag {
         out.extend_from_slice(&(a.uid as u32).to_le_bytes());
@@ -490,6 +490,10 @@ fn agents_bin(sim: &Sim, cache: &HashCache) -> Vec<u8> {
     }
     out.extend(ag.iter().map(|a| a.orient));
     out.extend(ag.iter().map(|a| a.embryo_state_code().min(255) as u8));
+    // age in days, last so the earlier arrays keep their offsets (4 + 22n is even)
+    for a in ag {
+        out.extend_from_slice(&((a.age / 4096).min(65535) as u16).to_le_bytes());
+    }
     out
 }
 
