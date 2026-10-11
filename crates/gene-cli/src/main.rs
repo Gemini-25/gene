@@ -1222,17 +1222,21 @@ fn genome_report(sim: &Sim, founder: &str, top: usize) -> String {
         v.len(),
         founder
     );
+    let names: Vec<&str> = founder.split('+').collect();
     for (h, (count, len, roots, gen, idx)) in v.iter().take(top) {
+        let p = sim.st.agents[*idx].program();
+        let near = nearest(&founders, p);
+        let near_name = near.and_then(|fp| founders.iter().position(|f| std::ptr::eq(f, fp))).and_then(|i| names.get(i)).copied().unwrap_or("?");
         out.push_str(&format!(
-            "genome {}  carriers {}  cells {}  founder lineages {}  max generation {}\n",
+            "genome {}  carriers {}  cells {}  founder lineages {}  max generation {}  nearest {}\n",
             &hex(h)[..16],
             count,
             len,
             roots.len(),
-            gen
+            gen,
+            near_name
         ));
-        let p = sim.st.agents[*idx].program();
-        if let Some(fp) = nearest(&founders, p) {
+        if let Some(fp) = near {
             out.push_str(&program_diff(fp, p));
         }
         out.push('\n');
