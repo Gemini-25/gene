@@ -12,7 +12,8 @@ pub const MEM_CELLS: usize = 64;
 pub const INV_VOLUME: u32 = 64;
 pub const ENERGY_MAX: u32 = 65_535;
 pub const BASE_UPKEEP: u32 = 32;
-/// With aging (SPEC §20j), upkeep grows by 1q/tick for every this many ticks of age.
+/// With aging (SPEC §20j), upkeep grows by 1q/tick for every this many ticks of age
+/// (`gene-m2-3`; `gene-m2-4` uses twice this).
 pub const AGING_PERIOD: u64 = 4096;
 pub const MIN_CHILD_ENERGY: u32 = 16_384;
 
@@ -212,9 +213,9 @@ impl Agent {
             + self.embryo.as_ref().map_or(0, |e| e.pages())
     }
 
-    /// Extra upkeep of an agent this old when the ruleset has aging.
-    pub fn aging_upkeep(&self) -> u32 {
-        (self.age / AGING_PERIOD).min(u32::MAX as u64) as u32
+    /// Extra upkeep of an agent this old when the ruleset ages agents by 1q/tick per `period`.
+    pub fn aging_upkeep(&self, period: u64) -> u32 {
+        (self.age / period).min(u32::MAX as u64) as u32
     }
 
     pub fn inv_volume(&self) -> u32 {

@@ -38,6 +38,8 @@ pub const RULESET_M2B: &str = "gene-m2-2";
 pub const RULESET_M0D: &str = "gene-m0-4";
 /// gene-m2-2 + aging (SPEC §20j, candidate).
 pub const RULESET_M2C: &str = "gene-m2-3";
+/// gene-m2-2 + milder aging: 1q/tick more per two days of age (SPEC §20j, candidate).
+pub const RULESET_M2D: &str = "gene-m2-4";
 
 /// Capabilities switched on by the ruleset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -58,8 +60,8 @@ pub struct Caps {
     pub locality: bool,
     /// Soil keeps water from running downhill (SPEC §20i).
     pub retain: bool,
-    /// Upkeep grows with age (SPEC §20j).
-    pub aging: bool,
+    /// Upkeep grows by 1q/tick for every this many ticks of age; 0 is no aging (SPEC §20j).
+    pub aging: u64,
 }
 
 impl Caps {
@@ -77,8 +79,9 @@ impl Caps {
             RULESET_M0B => Some(Caps { decomp: true, locality: true, ..Caps::default() }),
             RULESET_M0C => Some(Caps { decomp: true, locality: true, retain: true, ..Caps::default() }),
             RULESET_M2B => Some(Caps { retain: true, ..Caps::of(RULESET_M2)? }),
-            RULESET_M0D => Some(Caps { aging: true, ..Caps::of(RULESET_M0C)? }),
-            RULESET_M2C => Some(Caps { aging: true, ..Caps::of(RULESET_M2B)? }),
+            RULESET_M0D => Some(Caps { aging: AGING_PERIOD, ..Caps::of(RULESET_M0C)? }),
+            RULESET_M2C => Some(Caps { aging: AGING_PERIOD, ..Caps::of(RULESET_M2B)? }),
+            RULESET_M2D => Some(Caps { aging: 2 * AGING_PERIOD, ..Caps::of(RULESET_M2B)? }),
             RULESET_M2 => Some(Caps {
                 m1: true,
                 commit: true,
@@ -91,7 +94,7 @@ impl Caps {
                 decomp: true,
                 locality: true,
                 retain: false,
-                aging: false,
+                aging: 0,
             }),
             _ => None,
         }
@@ -656,7 +659,7 @@ impl Sim {
         for a in &mut self.st.agents {
             a.s = Scratch::default();
             let t = w.idx(a.x as u32, a.y as u32) as usize;
-            let m = a.upkeep() + if aging { a.aging_upkeep() } else { 0 };
+            let m = a.upkeep() + if aging > 0 { a.aging_upkeep(aging) } else { 0 };
             let paid = m.min(a.energy);
             a.energy -= paid;
             w.heat_u[t] += paid as u64;

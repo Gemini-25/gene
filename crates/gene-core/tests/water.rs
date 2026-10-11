@@ -59,7 +59,7 @@ fn only_water_above_the_retained_amount_runs_off() {
 
 #[test]
 fn aging_raises_upkeep_by_one_per_day_of_age_and_keeps_the_ledger() {
-    use gene_core::sim::RULESET_M2C;
+    use gene_core::sim::{RULESET_M2C, RULESET_M2D};
     let prog = assemble(".module 0\nspin:\n    YIELD\n    JUMP spin\n").unwrap();
     let drain = |ruleset: &str, age: u64| {
         let mut s = Sim::with_program_ruleset(Config { seed: 3, width: 64, height: 64, agents: 1 }, &prog, ruleset).unwrap();
@@ -74,4 +74,5 @@ fn aging_raises_upkeep_by_one_per_day_of_age_and_keeps_the_ledger() {
     let young = drain(RULESET_M2C, 0);
     assert_eq!(drain(RULESET_M2B, 40 * 4096), young, "no aging without the capability");
     assert_eq!(drain(RULESET_M2C, 40 * 4096) - young, 40, "40 days old: 40q more per tick");
+    assert_eq!(drain(RULESET_M2D, 40 * 4096) - young, 20, "the milder candidate: 1q per two days");
 }
