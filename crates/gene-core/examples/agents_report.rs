@@ -1,5 +1,6 @@
 //! Who is alive in a saved state: age, generation, energy, inventory G, embryo state, children,
-//! where the VM is (module, pc), and the most common (module, pc) spots.
+//! where the VM is (module, pc), the most common (module, pc) spots, and agents with short code
+//! (under 400 cells: a main module overwritten by a hook, e.g. by mating, SPEC §20n).
 //! usage: agents_report SAVE.bin
 use std::collections::BTreeMap;
 fn main() {
@@ -34,4 +35,10 @@ fn main() {
     let mut top: Vec<_> = spots.into_iter().collect();
     top.sort_by_key(|x| std::cmp::Reverse(x.1));
     println!("most common VM spots (module, pc): {:?}", &top[..top.len().min(8)]);
+    let short: Vec<_> = st.agents.iter().filter(|a| a.used_len < 400).collect();
+    let kids_short: u64 = short.iter().map(|a| a.children as u64).sum();
+    let mut sa: Vec<u64> = short.iter().map(|a| a.age).collect();
+    sa.sort_unstable();
+    let med = if sa.is_empty() { 0.0 } else { q(&sa, 0.5) as f64 / 4096.0 };
+    println!("code under 400 cells: {} agents, children so far {}, median age {:.1} days", short.len(), kids_short, med);
 }
