@@ -1524,9 +1524,10 @@ async function loadHighlevel() {
     const rv = hlReviews[c.key];
     const verdict = pass ? '<span class="badge civ">통과</span>' : `<span class="badge" title="처음 걸린 규칙">${HL_REASON[c.verdict] || c.verdict}</span>`;
     const origin = c.new ? '<span class="badge civ" title="조상 genome 그대로인 개체에서는 거의 안 나옴">새것</span>' : `<span class="badge" title="조상 code 발생 ${c.founder_occ}/${c.occ}">조상</span>`;
+    const verbs = c.verbs ? `<div class="small" title="조상 code가 한 번도 쓰지 않은 동작(무엇을 어디서 어디로)">새 동사: <code>${esc(c.verbs)}</code></div>` : "";
     li.innerHTML = `<span>${c.families.map((f) => "#" + f).join(" → ")} ${verdict}${origin}
       <span class="small">· 개체 ${c.agents} · ${c.occ}번 · 상황 ${c.situations} · 결과물 ${c.outputs} · 처음 ${(c.first / 4096).toFixed(1)}일</span></span>
-      <div class="steps">${c.steps.map((x) => `<code title="${esc(x.raw)}">${esc(stepWords(x))}</code>`).join("")}</div>`;
+      <div class="steps">${c.steps.map((x) => `<code title="${esc(x.raw)}">${esc(stepWords(x))}</code>`).join("")}</div>${verbs}`;
     li.appendChild(hlRow(c.key, c.alive, rv));
     ul.appendChild(li);
   }
@@ -1539,7 +1540,7 @@ async function loadHighlevel() {
     for (const f of h.new_families) {
       const li = document.createElement("li");
       li.innerHTML = `<span>#${f.id} <span class="small">· 개체 ${f.carriers} · 창 ${f.windows} · 성과 ×${(f.fitness / 1000).toFixed(2)} · 처음 ${(f.first / 4096).toFixed(1)}일</span></span>
-        <div class="steps"><code title="${esc(f.example.raw)}">${esc(stepWords(f.example))}</code></div>`;
+        <div class="steps"><code title="${esc(f.example.raw)}">${esc(stepWords(f.example))}</code></div>${f.verbs ? `<div class="small" title="조상 code가 한 번도 쓰지 않은 동작(무엇을 어디서 어디로)">새 동사: <code>${esc(f.verbs)}</code></div>` : ""}`;
       li.appendChild(hlRow(f.key, f.alive || [], hlReviews[f.key]));
       fl.appendChild(li);
     }

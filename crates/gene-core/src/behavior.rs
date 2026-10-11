@@ -216,6 +216,8 @@ struct Open {
     window: u64,
     last_tick: Option<u64>,
     tokens: Vec<Token>,
+    /// Distinct verbs of the window's successful effects (`verb`).
+    verbs: Vec<u32>,
 }
 
 /// One closed window, for the high-level judge (SPEC §17f). Kept only when `Analyzer::log`
@@ -236,6 +238,48 @@ pub struct WindowRecord {
     pub ctx: u8,
     /// Up to 8 distinct action 3-grams of the window (`action_grams`), 0 for unused slots.
     pub grams: [u32; 8],
+    /// Up to 8 distinct verbs of the window's successful effects (`verb`), sorted, 0 unused.
+    pub verbs: [u32; 8],
+}
+
+/// What a successful effect did and to what (SPEC §17f): the action kind (sub-op 0 where it is
+/// unused), the channel (species, energy 15, signal channel, bond target) and the address
+/// domains of its source and destination. TRANSFER of G from the agent's inventory into its
+/// embryo is a different verb from TRANSFER of energy into the embryo or of G from the ground,
+/// though all three are the same action kind. None for failures.
+pub fn verb(f: &EffectFact) -> Option<u32> {
+    if f.outcome > 1 || f.kind == 255 {
+        return None;
+    }
+    Some((norm_kind(f.kind) as u32) << 24 | (f.channel as u32) << 16 | (f.src as u32) << 8 | f.dst as u32)
+}
+
+/// Readable form of a verb: "TRANSFER G self>embryo".
+pub fn describe_verb(v: u32) -> String {
+    const OPS: [&str; 10] = ["READ", "WRITE", "DRIVE", "LINK", "UNLINK", "TRANSFER", "WORK", "EMIT", "REPRO", "COPY"];
+    const SPECIES: [&str; 10] = ["W", "C", "O", "G", "H", "X", "M", "S", "V", "I"];
+    const DOMS: [&str; 12] = ["self", "loose", "parcel", "actor", "signal", "tape", "code", "draft", "embryo", "trace", "pore", "surface"];
+    let (k, ch, src, dst) = ((v >> 24) as u8, (v >> 16) as u8, (v >> 8) as u8, v as u8);
+    let op = OPS.get((k >> 3) as usize).copied().unwrap_or("?");
+    let mut s = if matches!(op, "LINK" | "UNLINK" | "TRANSFER" | "EMIT" | "COPY") { op.to_string() } else { format!("{op}.{}", k & 7) };
+    if ch != 255 {
+        let c = ch & !EffectFact::CONTACT;
+        s += &match (op, c) {
+            ("TRANSFER", 15) => " energy".to_string(),
+            ("TRANSFER", c) if (c as usize) < SPECIES.len() => format!(" {}", SPECIES[c as usize]),
+            (_, c) => format!(" c{c}"),
+        };
+        if ch & EffectFact::CONTACT != 0 {
+            s += " contact";
+        }
+    }
+    let dom = |d: u8| DOMS.get(d as usize).copied().unwrap_or("?");
+    match (src, dst) {
+        (255, 255) => {}
+        (a, 255) => s += &format!(" {}", dom(a)),
+        (a, b) => s += &format!(" {}>{}", dom(a), dom(b)),
+    }
+    s
 }
 
 /// Ordered triples of successful actions, ignoring direction, amount and timing: each gram is
@@ -333,11 +377,16 @@ impl Analyzer {
             let o = self.open.remove(&f.uid).unwrap();
             self.close(f.uid, o, None);
         }
-        let o = self.open.entry(f.uid).or_insert(Open { window: w, last_tick: None, tokens: Vec::new() });
+        let o = self.open.entry(f.uid).or_insert(Open { window: w, last_tick: None, tokens: Vec::new(), verbs: Vec::new() });
         let first = o.tokens.is_empty();
         let delay = if first { 0 } else { delay_bin(f.tick - o.last_tick.unwrap()) };
         o.tokens.push(token(f, delay, first));
         o.last_tick = Some(f.tick);
+        if let Some(v) = verb(f) {
+            if !o.verbs.contains(&v) {
+                o.verbs.push(v);
+            }
+        }
     }
 
     /// Close every window that ended before `tick` (call at window boundaries and at the end).
@@ -383,6 +432,12 @@ impl Analyzer {
             for (k, g) in action_grams(&o.tokens).into_iter().take(8).enumerate() {
                 grams[k] = g;
             }
+            let mut vs = o.verbs.clone();
+            vs.sort_unstable();
+            let mut verbs = [0u32; 8];
+            for (k, v) in vs.into_iter().take(8).enumerate() {
+                verbs[k] = v;
+            }
             log.push(WindowRecord {
                 uid,
                 window: o.window,
@@ -392,6 +447,7 @@ impl Analyzer {
                 output,
                 ctx: UNKNOWN_SITUATION,
                 grams,
+                verbs,
             });
         }
     }
@@ -523,7 +579,7 @@ mod tests {
     use super::*;
 
     fn fact(tick: u64, uid: u64, kind: u8, outcome: u8) -> EffectFact {
-        EffectFact { tick, uid, kind, outcome, dir: 255, channel: 255, actual: 1 }
+        EffectFact { tick, uid, kind, outcome, dir: 255, channel: 255, actual: 1, src: 255, dst: 255 }
     }
 
     #[test]
@@ -628,6 +684,22 @@ mod tests {
         assert!(cands.contains(&1000), "the context sample is compared");
         assert!(cands.len() <= 1 + SAMPLE);
         assert_eq!(an.families[1000].contexts, BTreeSet::from([ctx]));
+    }
+
+    #[test]
+    fn windows_record_their_verbs() {
+        let mut an = Analyzer { log: Some(Vec::new()), ..Analyzer::default() };
+        let mut f = fact(10, 4, 5 << 3, 0); // TRANSFER, Ok
+        (f.channel, f.src, f.dst) = (3, 1, 0); // G from the ground into the inventory
+        an.push(&f);
+        an.push(&f);
+        let mut failed = f;
+        (failed.outcome, failed.dst) = (6, 8); // failed: no verb
+        an.push(&failed);
+        an.finish();
+        let r = an.log.unwrap()[0];
+        assert_eq!(r.verbs.iter().filter(|&&v| v != 0).count(), 1);
+        assert_eq!(describe_verb(r.verbs[0]), "TRANSFER G loose>self");
     }
 
     #[test]

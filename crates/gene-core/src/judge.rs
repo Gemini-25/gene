@@ -68,6 +68,8 @@ pub struct FamilyJudgement {
     pub windows: u64,
     pub founder: bool,
     pub pass: bool,
+    /// Verbs of its windows that founder code never used.
+    pub new_verbs: Vec<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -77,6 +79,8 @@ pub struct Candidate {
     pub new: bool,
     /// None when the chain passes C; otherwise the first rule it fails.
     pub reject: Option<&'static str>,
+    /// Verbs of its families that founder code never used.
+    pub new_verbs: Vec<u32>,
 }
 
 impl Candidate {
@@ -104,6 +108,8 @@ struct FamilyStats {
     windows: u64,
     founder_windows: u64,
     carriers: BTreeSet<u64>,
+    /// Verbs of the family's windows (`behavior::verb`).
+    verbs: BTreeSet<u32>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -118,6 +124,8 @@ pub struct Judge {
     founder_genomes: BTreeSet<[u8; 32]>,
     /// Action 3-grams seen in windows of founder code.
     founder_grams: HashSet<u32>,
+    /// Verbs seen in any window of founder code, classified or not.
+    founder_verbs: HashSet<u32>,
 }
 
 fn phase(window: u64) -> u8 {
@@ -174,6 +182,9 @@ impl Judge {
                 self.last.retain(|_, s| s[1].0 >= keep);
             }
         }
+        if self.life.get(&r.uid).is_some_and(|l| l.founder_code) {
+            self.founder_verbs.extend(r.verbs.iter().copied().filter(|&v| v != 0));
+        }
         let Some(fam) = r.family else { return };
         let founder_code = match self.life.get_mut(&r.uid) {
             Some(l) => {
@@ -191,6 +202,7 @@ impl Judge {
         s.windows += 1;
         s.founder_windows += founder_code as u64;
         s.carriers.insert(r.uid);
+        s.verbs.extend(r.verbs.iter().copied().filter(|&v| v != 0));
         let prev = self.last.get(&r.uid).copied();
         let here = r.output || self.outputs.contains(&(r.uid, r.window));
         let cur = (r.window, fam, here, r.ctx);
@@ -244,6 +256,7 @@ impl Judge {
         let mut out = Vec::new();
         let mut pass: BTreeMap<u32, bool> = BTreeMap::new();
         let mut founder: BTreeMap<u32, bool> = BTreeMap::new();
+        let mut verbs_of: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
         for f in families.iter().filter(|f| f.repeated_at.is_some()) {
             let Some(st) = self.stats.get(&f.id) else { continue };
             let (ok, total, carriers) = (&st.ok, &st.total, &st.carriers);
@@ -264,7 +277,11 @@ impl Judge {
             let linked = fit || spread;
             let grams = action_grams(&f.example);
             let known_actions = !self.founder_grams.is_empty() && grams.iter().all(|g| self.founder_grams.contains(g));
-            let is_founder = founders_own(st.founder_windows, st.windows) || known_actions;
+            // a verb founder code never used (G into the embryo, matter to another agent, a new
+            // signal channel) is new even when the action kinds come in a known order
+            let new_verbs: Vec<u32> =
+                if self.founder_verbs.is_empty() { Vec::new() } else { st.verbs.iter().copied().filter(|v| !self.founder_verbs.contains(v)).collect() };
+            let is_founder = founders_own(st.founder_windows, st.windows) || (known_actions && new_verbs.is_empty());
             pass.insert(f.id, success && linked);
             founder.insert(f.id, is_founder);
             out.push(FamilyJudgement {
@@ -278,7 +295,9 @@ impl Judge {
                 windows: st.windows,
                 founder: is_founder,
                 pass: success && linked,
+                new_verbs: new_verbs.clone(),
             });
+            verbs_of.insert(f.id, new_verbs);
         }
         // what each step of a chain does (successful action kinds), and the step sequences of
         // chains founder code runs: a chain whose steps do the same is a founder chain with
@@ -304,7 +323,10 @@ impl Judge {
             };
             let new_family = c.families.iter().any(|f| founder.get(f) == Some(&false));
             let new = new_family || (!founders_own(c.founder_occurrences, c.occurrences) && !founder_steps.contains(&steps(c)));
-            cands.push(Candidate { chain: c.clone(), new, reject });
+            let mut new_verbs: Vec<u32> = c.families.iter().flat_map(|f| verbs_of.get(f).cloned().unwrap_or_default()).collect();
+            new_verbs.sort_unstable();
+            new_verbs.dedup();
+            cands.push(Candidate { chain: c.clone(), new, reject, new_verbs });
         }
         cands.sort_by_key(|c| (c.reject.is_some(), std::cmp::Reverse(c.new), std::cmp::Reverse(c.chain.agent_count), c.chain.families.clone()));
         (out, cands)
@@ -316,7 +338,7 @@ mod tests {
     use super::*;
 
     fn rec(uid: u64, window: u64, family: u32, ok: u16) -> WindowRecord {
-        WindowRecord { uid, window, family: Some(family), ok, total: 10, output: false, ctx: 2, grams: [0; 8] }
+        WindowRecord { uid, window, family: Some(family), ok, total: 10, output: false, ctx: 2, grams: [0; 8], verbs: [0; 8] }
     }
 
     fn fam(id: u32, first_tick: u64) -> Family {
@@ -405,7 +427,7 @@ mod tests {
         // founder code (agent 101) once ran TRANSFER, TRANSFER, TRANSFER in a row
         let take: crate::behavior::Token = [40, 0, 255, 3, 2, 0, 0, 0];
         let gram = action_grams(&[take, take, take])[0];
-        j.window(&WindowRecord { uid: 101, window: 5, family: Some(99), ok: 3, total: 3, output: true, ctx: 2, grams: [gram, 0, 0, 0, 0, 0, 0, 0] });
+        j.window(&WindowRecord { uid: 101, window: 5, family: Some(99), ok: 3, total: 3, output: true, ctx: 2, grams: [gram, 0, 0, 0, 0, 0, 0, 0], verbs: [0; 8] });
         let mut f7 = fam(7, 40 * WINDOW);
         f7.example = vec![take, [40, 0, 1, 3, 2, 3, 0, 0], [40, 1, 2, 3, 1, 5, 0, 0]]; // other directions and timings
         let mut f8 = fam(8, 41 * WINDOW);
@@ -414,6 +436,31 @@ mod tests {
         let by = |id| judged.iter().find(|f| f.id == id).unwrap();
         assert!(by(7).founder, "same actions in the same order as founder code");
         assert!(!by(8).founder, "a new order of successful actions");
+    }
+
+    #[test]
+    fn a_known_order_with_a_new_verb_is_new() {
+        // founder code puts energy into its embryo; a lineage does the same moves with G: the
+        // action kinds and their order are the founders', the verb is not (feeding the child)
+        use crate::observer::EffectFact;
+        let mut j = world(6, 40, true);
+        let put: crate::behavior::Token = [40, 0, 255, 15, 2, 0, 0, 0];
+        let gram = action_grams(&[put, put, put])[0];
+        let verb = |channel| crate::behavior::verb(&EffectFact { tick: 0, uid: 0, kind: 40, outcome: 0, dir: 255, channel, actual: 1, src: 0, dst: 8 }).unwrap();
+        let (energy_in, g_in) = (verb(15), verb(3));
+        j.window(&WindowRecord { uid: 101, window: 5, family: Some(99), ok: 3, total: 3, output: false, ctx: 2, grams: [gram, 0, 0, 0, 0, 0, 0, 0], verbs: [energy_in, 0, 0, 0, 0, 0, 0, 0] });
+        j.window(&WindowRecord { uid: 1, window: 70, family: Some(7), ok: 3, total: 3, output: false, ctx: 2, grams: [gram, 0, 0, 0, 0, 0, 0, 0], verbs: [g_in, 0, 0, 0, 0, 0, 0, 0] });
+        let mut f7 = fam(7, 40 * WINDOW);
+        f7.example = vec![put; 3];
+        let mut f8 = fam(8, 41 * WINDOW);
+        f8.example = vec![put; 3];
+        let (judged, _) = j.finish(&[f7, f8], 100 * WINDOW);
+        let by = |id| judged.iter().find(|f| f.id == id).unwrap();
+        assert!(!by(7).founder);
+        assert_eq!(by(7).new_verbs, vec![g_in]);
+        assert!(by(8).founder, "same moves with the founders' verbs");
+        assert_eq!(crate::behavior::describe_verb(g_in), "TRANSFER G self>embryo");
+        assert_eq!(crate::behavior::describe_verb(energy_in), "TRANSFER energy self>embryo");
     }
 
     #[test]
@@ -446,7 +493,7 @@ mod tests {
         }
         // founder windows have shown these action triples
         let g = action_grams(&[alloc, grow, grow])[0];
-        j.window(&WindowRecord { uid: 101, window: 90, family: Some(7), ok: 4, total: 4, output: true, ctx: 2, grams: [g, 0, 0, 0, 0, 0, 0, 0] });
+        j.window(&WindowRecord { uid: 101, window: 90, family: Some(7), ok: 4, total: 4, output: true, ctx: 2, grams: [g, 0, 0, 0, 0, 0, 0, 0], verbs: [0; 8] });
         let mut f7 = fam(7, 10 * WINDOW);
         f7.example = vec![alloc, grow, grow, grow];
         let mut f17 = fam(17, 50 * WINDOW);

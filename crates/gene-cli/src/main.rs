@@ -415,11 +415,21 @@ pub(crate) fn situated(sim: &Sim, log: &mut Vec<gene_core::behavior::WindowRecor
 
 /// Repeated families with the judge's filter (SPEC §17f B).
 fn judge_csv(j: &[gene_core::judge::FamilyJudgement]) -> String {
-    let mut out = String::from("family,ok_tokens,tokens,carriers,fitness_x1000,founder_types,windows,founder_code_windows,founder_repertoire,pass\n");
+    let mut out = String::from("family,ok_tokens,tokens,carriers,fitness_x1000,founder_types,windows,founder_code_windows,founder_repertoire,pass,new_verbs\n");
     for f in j {
         out += &format!(
-            "{},{},{},{},{},{},{},{},{},{}\n",
-            f.id, f.ok, f.total, f.carriers, f.fitness_milli, f.types, f.windows, f.founder_windows, f.founder as u8, f.pass as u8
+            "{},{},{},{},{},{},{},{},{},{},\"{}\"\n",
+            f.id,
+            f.ok,
+            f.total,
+            f.carriers,
+            f.fitness_milli,
+            f.types,
+            f.windows,
+            f.founder_windows,
+            f.founder as u8,
+            f.pass as u8,
+            verbs_text(&f.new_verbs)
         );
     }
     out
@@ -428,7 +438,7 @@ fn judge_csv(j: &[gene_core::judge::FamilyJudgement]) -> String {
 /// Chains of families used by two or more agents (SPEC §17f C), passing ones first, with what
 /// each step does.
 fn highlevel_csv(c: &[gene_core::judge::Candidate], an: &gene_core::behavior::Analyzer) -> String {
-    let mut out = String::from("chain,verdict,new,first_tick,occurrences,founder_code_occurrences,agents,phases,situations,outputs,example_agents,steps\n");
+    let mut out = String::from("chain,verdict,new,first_tick,occurrences,founder_code_occurrences,agents,phases,situations,outputs,example_agents,new_verbs,steps\n");
     for k in c {
         let ch = &k.chain;
         let steps: Vec<String> = ch
@@ -437,7 +447,7 @@ fn highlevel_csv(c: &[gene_core::judge::Candidate], an: &gene_core::behavior::An
             .map(|f| an.families[*f as usize].example.iter().take(4).map(gene_core::behavior::describe).collect::<Vec<_>>().join(" · "))
             .collect();
         out += &format!(
-            "{},{},{},{},{},{},{},{},{},{},{},\"{}\"\n",
+            "{},{},{},{},{},{},{},{},{},{},{},\"{}\",\"{}\"\n",
             ch.families.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(">"),
             k.reject.unwrap_or("pass"),
             k.new as u8,
@@ -449,10 +459,16 @@ fn highlevel_csv(c: &[gene_core::judge::Candidate], an: &gene_core::behavior::An
             ch.contexts.count_ones(),
             ch.outputs,
             ch.agents.iter().take(5).map(|a| a.to_string()).collect::<Vec<_>>().join(" "),
+            verbs_text(&k.new_verbs),
             steps.join(" => ")
         );
     }
     out
+}
+
+/// Verbs founder code never used, readable and joined by "; ".
+pub(crate) fn verbs_text(v: &[u32]) -> String {
+    v.iter().map(|&x| gene_core::behavior::describe_verb(x)).collect::<Vec<_>>().join("; ")
 }
 
 /// A public record lies on tile t (dropped, or on the parcel there).

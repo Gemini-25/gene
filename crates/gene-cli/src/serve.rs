@@ -740,11 +740,12 @@ fn highlevel_json(j: &gene_core::judge::Judge, an: &gene_core::behavior::Analyze
             let ch = &c.chain;
             let live: Vec<String> = ch.agents.iter().filter(|u| alive.contains(u)).take(6).map(|u| u.to_string()).collect();
             format!(
-                "{{\"key\":\"{}\",\"families\":[{}],\"verdict\":\"{}\",\"new\":{},\"first\":{},\"occ\":{},\"founder_occ\":{},\"agents\":{},\"phases\":{},\"situations\":{},\"outputs\":{},\"alive\":[{}],\"steps\":[{}]}}",
+                "{{\"key\":\"{}\",\"families\":[{}],\"verdict\":\"{}\",\"new\":{},\"verbs\":{},\"first\":{},\"occ\":{},\"founder_occ\":{},\"agents\":{},\"phases\":{},\"situations\":{},\"outputs\":{},\"alive\":[{}],\"steps\":[{}]}}",
                 ch.families.iter().map(|f| f.to_string()).collect::<Vec<_>>().join("-"),
                 ch.families.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(","),
                 c.reject.unwrap_or("pass"),
                 c.new,
+                json_str(&crate::verbs_text(&c.new_verbs)),
                 ch.first_window * gene_core::behavior::WINDOW,
                 ch.occurrences,
                 ch.founder_occurrences,
@@ -765,9 +766,10 @@ fn highlevel_json(j: &gene_core::judge::Judge, an: &gene_core::behavior::Analyze
             let fam = &an.families[f.id as usize];
             let live: Vec<String> = fam.agents.iter().filter(|u| alive.contains(u)).take(6).map(|u| u.to_string()).collect();
             format!(
-                "{{\"id\":{},\"key\":\"f{}\",\"first\":{},\"carriers\":{},\"windows\":{},\"fitness\":{},\"alive\":[{}],\"example\":{}}}",
+                "{{\"id\":{},\"key\":\"f{}\",\"verbs\":{},\"first\":{},\"carriers\":{},\"windows\":{},\"fitness\":{},\"alive\":[{}],\"example\":{}}}",
                 f.id,
                 f.id,
+                json_str(&crate::verbs_text(&f.new_verbs)),
                 fam.first_tick,
                 f.carriers,
                 f.windows,

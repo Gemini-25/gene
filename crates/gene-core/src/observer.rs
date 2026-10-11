@@ -157,6 +157,11 @@ pub struct EffectFact {
     /// CONTACT is set when the effect acts on another agent's inventory or body (M1e).
     pub channel: u8,
     pub actual: u32,
+    /// Address domains (`intent::dom`) of the source (r0) and destination (r1) for TRANSFER and
+    /// COPY, and of the target (r0) for READ, WRITE and WORK; 255 when there is none. Not part of
+    /// the A1.4 token: the judge uses them to tell what an action was done to (SPEC §17f verbs).
+    pub src: u8,
+    pub dst: u8,
 }
 
 impl EffectFact {
@@ -186,7 +191,13 @@ impl EffectFact {
             op::REPRO if it.sub == sub::REPRO_RELEASE => ((r[5] & 3) as u8, 255),
             _ => (255, 255),
         };
-        EffectFact { tick, uid, kind, outcome, dir, channel, actual }
+        let domain = |a: u16| unpack(a).map_or(255, |(d, _)| d as u8);
+        let (src, dst) = match it.opc {
+            op::TRANSFER | op::COPY => (domain(r[0]), domain(r[1])),
+            op::READ | op::WRITE | op::WORK => (domain(r[0]), 255),
+            _ => (255, 255),
+        };
+        EffectFact { tick, uid, kind, outcome, dir, channel, actual, src, dst }
     }
 }
 

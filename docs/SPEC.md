@@ -786,12 +786,16 @@ bin = min(16, floor(log2(1 + n)))이다. parcel이 없는 tile의 parcel 필드�
 - 조상 genome과 bytes가 정확히 같은 개체를 "조상 code"라 한다.
 - family나 연쇄의 창(발생) 가운데 10분의 1 이상이 조상 code 개체에서 나오면 조상의 것이다. 조상 code가 어떤 상황에서든 하는 행동은 새것이 아니다. 처음 나타난 날로 정하면 조상 행동의 다른 상황판을 새것으로 잡는다.
 - 동작 순서로도 본다. 창의 성공한 효과 3개가 잇달아 일어난 것을 동작 3-gram이라 한다. 효과 종류(opcode, sub-op)만 보고 방향, 양, 시간 간격은 무시한다. sub-op를 쓰지 않는 효과(LINK, UNLINK, TRANSFER, EMIT, COPY)는 sub-op를 0으로 본다. 변이로 바뀐 쓰이지 않는 즉시값은 새 동작이 아니다(장기 실행에서 COPY 4로 표시된 계통이 새 family로 잡혔다). family 예시의 동작 3-gram이 모두 조상 code 창에서 본 것이면 그 family는 조상의 것이다. 조상의 먹이 줍기를 다른 방향과 간격으로 하는 변이체가 새 family로 잡히는 것을 막는다(E2 예비 실험에서 새 family 후보 대부분이 이런 것이었다).
+- 동사로도 본다. 동사는 성공한 효과가 "무엇을 어디서 어디로" 했는지다: 효과 종류(sub-op를 쓰지 않으면 0), channel(물질 종, energy, 신호 channel, 결합 대상), 원천과 목적지 주소의 domain(TRANSFER·COPY는 r0·r1, READ·WRITE·WORK는 r0). 예를 들어 "TRANSFER G self>embryo"(배아에 G 넣기)는 "TRANSFER energy self>embryo"(조상의 에너지 투자)나 "TRANSFER G loose>self"(먹이 줍기)와 다른 동사다. 동작 종류와 순서만 보면 셋을 구분하지 못한다. 동사는 A1.4 token에 넣지 않고 따로 기록하므로 family 분류는 그대로다.
+  - 조상 code 개체의 창(family가 없는 창 포함)에서 본 동사가 조상 동사다.
+  - family의 창에 조상 동사가 아닌 동사가 있으면, 동작 3-gram이 모두 조상의 것이어도 그 family는 조상의 것이 아니다(조상 code 창 비율 규칙은 그대로).
+  - `judge.csv`, `highlevel.csv`의 `new_verbs` 열과 화면의 "새 동사"에 그런 동사를 적는다. 순서만 새로운 후보와 새 동사를 쓰는 후보를 사람이 구분해 볼 수 있다.
 - 연쇄 안의 family 하나라도 조상의 것이 아니면 새 고수준 후보다.
 - 모든 family가 조상의 것이면, 연쇄가 조상 code에서 거의 나오지 않을 때만 새것이다. 그리고 단계마다 하는 일이 조상 code의 어떤 연쇄와도 달라야 한다. 단계가 하는 일은 그 family 예시의 성공한 동작 종류 집합이고, 순서·간격·실패·반복은 뺀다. 조상의 번식 연쇄에 실패한 명령 하나가 끼어든 변이체는 새것이 아니다.
 
 **출력.**
-- `judge.csv`: 반복 family마다 성공·전체 token, 운반자 수, 성과 비(×1000), 조상 유형 수, 창 수, 조상 code 창 수, 조상의 것인지, 통과.
-- `highlevel.csv`: 개체 2 이상이 한 연쇄마다 판정(pass 또는 처음 걸린 규칙), 새로움, 처음 시각, 발생 수, 조상 code 발생 수, 개체 수, 때 수, 상황 수, 결과물 발생 수, 개체 예, 각 단계 family의 예시 token. 통과한 것이 먼저 온다.
+- `judge.csv`: 반복 family마다 성공·전체 token, 운반자 수, 성과 비(×1000), 조상 유형 수, 창 수, 조상 code 창 수, 조상의 것인지, 통과, 새 동사.
+- `highlevel.csv`: 개체 2 이상이 한 연쇄마다 판정(pass 또는 처음 걸린 규칙), 새로움, 처음 시각, 발생 수, 조상 code 발생 수, 개체 수, 때 수, 상황 수, 결과물 발생 수, 개체 예, 새 동사, 각 단계 family의 예시 token. 통과한 것이 먼저 온다.
 - `summary.json`의 `highlevel`: families_judged, families_pass, new_families_pass, chains_seen, chains_pass, new_chains_pass.
 
 **한계.** 창 하나(256 tick) 안에서 끝나는 묶음은 연쇄가 아니라 family 하나로 잡힌다. 그런 새 행동은 B를 통과한 새 family로 센다. 상황은 위 세 가지로만 본다.
