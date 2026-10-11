@@ -163,6 +163,7 @@ fn founder_source(name: &str) -> String {
         "founder8m" => gene_core::FOUNDER8M_ASM.to_string(),
         "founder9m" => gene_core::FOUNDER9M_ASM.to_string(),
         "founder10m" => gene_core::FOUNDER10M_ASM.to_string(),
+        "founder11m" => gene_core::FOUNDER11M_ASM.to_string(),
         path => fs::read_to_string(path).unwrap_or_else(|e| die(format!("cannot read founder {path}: {e}"))),
     }
 }
@@ -302,7 +303,7 @@ fn main() {
             print!("{}", genome_report(&sim, &o.founder, 5));
         }
         "founders" => {
-            for name in ["founder4", "founder5", "founder6", "founder7", "founder8", "founder9", "founder10", "founder8m", "founder9m", "founder10m"] {
+            for name in ["founder4", "founder5", "founder6", "founder7", "founder8", "founder9", "founder10", "founder8m", "founder9m", "founder10m", "founder11m"] {
                 let p = isa::assemble(&founder_source(name)).unwrap();
                 let cells = p.to_cells();
                 let mods: Vec<String> = gene_core::observer::module_hashes(&p).iter().map(|(t, h)| format!("{t}:{h:08x}")).collect();

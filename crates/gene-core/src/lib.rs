@@ -47,3 +47,5 @@ pub const FOUNDER10_ASM: &str = include_str!("../../../assets/founder10.asm");
 pub const FOUNDER8M_ASM: &str = include_str!("../../../assets/founder8m.asm");
 pub const FOUNDER9M_ASM: &str = include_str!("../../../assets/founder9m.asm");
 pub const FOUNDER10M_ASM: &str = include_str!("../../../assets/founder10m.asm");
+/// Candidate (SPEC §16g): a thief that strips a neighbour's shell and takes its G when lost.
+pub const FOUNDER11M_ASM: &str = include_str!("../../../assets/founder11m.asm");
