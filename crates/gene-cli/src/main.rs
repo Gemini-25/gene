@@ -18,7 +18,7 @@ const USAGE: &str = "gene — Gene M0 headless runner
 USAGE:
   gene run    [--seed N] [--size S] [--agents A] [--ticks T] [--founder NAME|FILE[+NAME|FILE...]]
               [--out DIR] [--stats-every K] [--map-every M] [--checkpoint-every C]
-              [--audit-every K] [--keep-going] [--save-final] [--quiet] [--ruleset m0|m0b|m0c|m0d|m1a..m1f|m2|m2b|m2c|m2d] [--sim-threads N]
+              [--audit-every K] [--keep-going] [--save-final] [--quiet] [--ruleset m0|m0b|m0c|m0d|m1a..m1f|m2|m2b|m2c|m2d|current] [--sim-threads N]
   gene batch  --seeds A-B|A,B,C-D [--threads N] [same options as run]  (one directory per seed)
   gene resume --from CHECKPOINT [--ticks T] [--out DIR] [...]
   gene serve  [--port 8080] [--load SAVE.bin] [same world options as run]
@@ -30,6 +30,7 @@ USAGE:
 Defaults follow SPEC §3: size 512, agents 1000, founder founder4.
 Several founders joined with + share one world (E2): founder i runs program i mod n.
 A founder may be SAVE.bin@HASH: an agent's genome from a saved state (hash prefix in hex).
+--ruleset current is the standard ruleset (gene-m2-4, decisions 5..7); the default stays m0.
 Runs stop early at extinction unless --keep-going is given.";
 
 #[derive(Clone, Debug)]
@@ -123,7 +124,7 @@ fn parse_opts(args: &[String], o: &mut Opts) -> BTreeMap<String, String> {
                     "m2b" | "gene-m2-2" => gene_core::sim::RULESET_M2B.into(),
                     "m0d" | "gene-m0-4" => gene_core::sim::RULESET_M0D.into(),
                     "m2c" | "gene-m2-3" => gene_core::sim::RULESET_M2C.into(),
-                    "m2d" | "gene-m2-4" => gene_core::sim::RULESET_M2D.into(),
+                    "m2d" | "gene-m2-4" | "current" => gene_core::sim::RULESET_M2D.into(),
                     other => die(format!("unknown ruleset {other} (m0, m0b, m0c, m0d, m1a..m1f, m2, m2b, m2c, m2d)")),
                 }
             }
