@@ -467,7 +467,8 @@ fn color_u32(h: &[u8; 32]) -> u32 {
 
 /// Agents for the viewer, little endian, grouped by element size so typed arrays line up:
 /// u32 n; u32 uid[n]; u32 colour[n]; u32 root[n]; u16 x[n]; u16 y[n]; u16 energy[n];
-/// u16 generation[n]; u8 orientation[n]; u8 embryo state[n].
+/// u16 generation[n]; u8 orientation[n]; u8 embryo state[n]; u16 age in days[n]; u8 shell[n] (1 while
+/// the shell is on; contact can strip it, SPEC §20f).
 fn agents_bin(sim: &Sim, cache: &HashCache) -> Vec<u8> {
     let ag = &sim.st.agents;
     let mut out = Vec::with_capacity(4 + 24 * ag.len());
@@ -494,6 +495,7 @@ fn agents_bin(sim: &Sim, cache: &HashCache) -> Vec<u8> {
     for a in ag {
         out.extend_from_slice(&((a.age / 4096).min(65535) as u16).to_le_bytes());
     }
+    out.extend(ag.iter().map(|a| (a.shell_s > 0) as u8));
     out
 }
 

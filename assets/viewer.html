@@ -604,7 +604,7 @@ void main() {
 // local creature coordinates (tile half-size = 1, with a margin for the shadow and the ring).
 const VS_AGENT = `#version 300 es
 in vec4 a_i0;   // x, y, angle, alpha
-in vec4 a_i1;   // r, g, b, flags (1 embryo, 2 selected, 4 dimmed, 8 walking)
+in vec4 a_i1;   // r, g, b, flags (1 embryo, 2 selected, 4 dimmed, 8 walking, 16 shell stripped)
 uniform vec3 u_view; uniform vec2 u_vp; uniform float u_maxPoint;
 out vec2 v_fwd; out vec3 v_col; out float v_flags; out float v_alpha; out float v_px;
 void main() {
@@ -634,6 +634,7 @@ void main() {
     vec3 col = v_col * (0.85 + 0.35 * clamp(0.5 - 0.35 * (v_d.x + v_d.y), 0.0, 1.0));
     col = mix(col, v_col * 0.4, smoothstep(-0.3, -0.05, sd));
     float a = smoothstep(aa, -aa, sd);
+    if ((fl & 16) != 0) col = mix(col, vec3(0.96, 0.62, 0.6), 0.6);
     if ((fl & 2) != 0) { float ring = abs(length(v_d) - 1.15) - 0.1; col = mix(col, vec3(1.0), smoothstep(aa, -aa, ring)); a = max(a, smoothstep(aa, -aa, ring)); }
     if ((fl & 4) != 0) { col = mix(col, vec3(dot(col, vec3(0.3, 0.59, 0.11))), 0.8); a *= 0.45; }
     a *= v_alpha;
@@ -669,8 +670,15 @@ void main() {
     float lightDir = clamp(0.5 - 0.35 * (v_d.x + v_d.y), 0.0, 1.0);
     vec3 col = v_col * (0.78 + 0.45 * lightDir);
     float stripe = smoothstep(0.05, 0.0, abs(q.x + 0.18) - 0.06) * step(body, 0.0);
-    col = mix(col, v_col * 0.62, stripe * 0.6);
-    col = mix(col, dark, smoothstep(-0.09, -0.02, sd));
+    vec3 rim = dark;
+    if ((fl & 16) != 0) {
+      // shell stripped (SPEC §20f): bare pink skin with scratches and a raw rim instead of the plated stripe
+      col = mix(col, vec3(0.97, 0.68, 0.64) * (0.8 + 0.3 * lightDir), 0.62);
+      float scr = abs(fract((q.x * 0.8 + q.y) * 5.0) - 0.5);
+      col = mix(col, vec3(0.62, 0.22, 0.24), smoothstep(0.07, 0.0, scr) * step(body, -0.06) * 0.55);
+      rim = vec3(0.72, 0.3, 0.32);
+    } else col = mix(col, v_col * 0.62, stripe * 0.6);
+    col = mix(col, rim, smoothstep(-0.09, -0.02, sd));
     col += vec3(0.25) * smoothstep(0.22, 0.0, length(v_d - vec2(-0.22, -0.26))) * step(sd, -0.05);
     if (v_px > 9.0) {
       for (int s = -1; s <= 1; s += 2) {
@@ -915,7 +923,7 @@ function onSnapshot(s) {
     snap.born.delete(prev.uid[j]);
   }
   // where each agent is drawn right now: interpolation starts from there
-  const cur = { uid: a.uid, x: a.x, y: a.y, c: a.c, gc: a.gc || a.c, emb: a.emb, sx: px, sy: py, sa: pa,
+  const cur = { uid: a.uid, x: a.x, y: a.y, c: a.c, gc: a.gc || a.c, emb: a.emb, shell: a.shell, sx: px, sy: py, sa: pa,
     ix: Float32Array.from(a.x), iy: Float32Array.from(a.y), ia: Float32Array.from(a.o, (o) => o * Math.PI / 2) };
   snap.prev = prev; snap.cur = cur;
   snap.tPrev = snap.tCur || now; snap.tCur = now;
@@ -948,6 +956,7 @@ function agentInstances(now, dots, rect) {
     if (k < 1 && (c.x[i] !== c.sx[i] || c.y[i] !== c.sy[i])) flags |= 8;
     if (c.uid[i] === selected) flags |= 2;
     if (hl !== null && c.gc[i] !== hl) flags |= 4;
+    if (c.shell && c.shell[i] === 0) flags |= 16;
     instData[w] = x; instData[w + 1] = y; instData[w + 2] = ang; instData[w + 3] = alpha;
     instData[w + 4] = (col >> 16 & 255) / 255; instData[w + 5] = (col >> 8 & 255) / 255; instData[w + 6] = (col & 255) / 255; instData[w + 7] = flags;
     w += 8;
@@ -1141,7 +1150,7 @@ map.addEventListener("pointermove", (e) => {
   const tip = $("tip");
   if (best < 0 || !a || a.uid[best] !== c.uid[best]) { tip.style.display = "none"; return; }
   const EMBS = ["", " · 배아 기록 중", " · 배아 변이 중", " · 배아 오류", " · 배아 준비됨"];
-  tip.innerHTML = `<span class="sw" style="background:${hexColor(c.c[best])}"></span>#${c.uid[best]} · ${a.g[best]}세대 · ${a.age ? a.age[best] : 0}일 · 에너지 ${(a.e[best] * 2).toLocaleString()}${EMBS[a.emb[best]] || ""}`;
+  tip.innerHTML = `<span class="sw" style="background:${hexColor(c.c[best])}"></span>#${c.uid[best]} · ${a.g[best]}세대 · ${a.age ? a.age[best] : 0}일 · 에너지 ${(a.e[best] * 2).toLocaleString()}${EMBS[a.emb[best]] || ""}${a.shell && a.shell[best] === 0 ? " · 외피 벗겨짐" : ""}`;
   tip.style.display = "block";
   tip.style.left = Math.min(r.width - tip.offsetWidth - 8, hoverAt.x + 14) + "px";
   tip.style.top = Math.max(8, hoverAt.y - 30) + "px";
@@ -1697,7 +1706,8 @@ window.addEventListener("keyup", (e) => keys.delete(e.code));
 window.addEventListener("blur", () => keys.clear());
 
 // ---------------- polling
-// u32 n; u32 uid[n]; u32 colour[n]; u32 root[n]; u16 x, y, energy/2, generation [n]; u8 orientation, embryo [n]
+// u32 n; u32 uid[n]; u32 colour[n]; u32 root[n]; u16 x, y, energy/2, generation [n]; u8 orientation, embryo [n];
+// u16 age [n]; u8 shell [n]
 function parseAgents(buf) {
   const n = new DataView(buf).getUint32(0, true);
   let off = 4;
@@ -1706,7 +1716,8 @@ function parseAgents(buf) {
   const x = take(Uint16Array, 2), y = take(Uint16Array, 2), e = take(Uint16Array, 2), g = take(Uint16Array, 2);
   const o = take(Uint8Array, 1), emb = take(Uint8Array, 1);
   const age = off + n * 2 <= buf.byteLength ? take(Uint16Array, 2) : new Uint16Array(n); // days
-  return { uid, c, root, x, y, e, g, o, emb, age, gc: c };
+  const shell = off + n <= buf.byteLength ? take(Uint8Array, 1) : null; // 1 while the shell is on
+  return { uid, c, root, x, y, e, g, o, emb, age, shell, gc: c };
 }
 // --- agent colour: genome (default), founder lineage, energy, generation
 const COLOUR_MODES = ["genome", "kind", "lineage", "group", "energy", "generation", "age"], COLOUR_NAMES = { genome: "genome", kind: "조상 종류", lineage: "계통", group: "집단", energy: "에너지", generation: "세대", age: "나이" };
