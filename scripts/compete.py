@@ -9,6 +9,8 @@ slots in the neutral run (paired by seed, so where the founders happened to star
 
 usage: compete.py SAVE.bin HASH[,HASH...] [--founder founder7] [--ruleset m2c] [--seeds 1-4]
                   [--size 128] [--agents 64] [--ticks 100000] [--jobs 4] [--out DIR] [--bin PATH]
+       compete.py VARIANT.asm[,VARIANT.asm...] LABEL[,LABEL...] [same options]
+                  (hand-made variants of the founder instead of saved genomes)
 """
 import argparse, csv, os, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
@@ -58,11 +60,15 @@ def main():
     out = Path(a.out)
     ss = seeds(a.seeds)
     hashes = a.hashes.split(",")
+    if a.save.endswith(".asm"):
+        specs = dict(zip(hashes, a.save.split(",")))
+    else:
+        specs = {h: f"{a.save}@{h}" for h in hashes}
     jobs = []  # (label, seed, founder spec, dir)
     for s in ss:
         jobs.append(("neutral", s, f"{a.founder}+{a.founder}", out / f"neutral_{a.founder}_{a.ruleset}_s{s}"))
         for h in hashes:
-            jobs.append((h, s, f"{a.founder}+{a.save}@{h}", out / f"{h}_{a.ruleset}_s{s}"))
+            jobs.append((h, s, f"{a.founder}+{specs[h]}", out / f"{h}_{a.ruleset}_s{s}"))
 
     def run(job):
         _, s, spec, d = job
