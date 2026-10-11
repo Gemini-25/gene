@@ -19,17 +19,20 @@ pub const MOSS_W_MIN: u64 = 4;
 /// Chance of one Rx0 extent per environment visit = absorbed light × MOSS_RATE / 2^24.
 pub const MOSS_RATE: u64 = 64;
 
-/// Moving moss blooms (SPEC §20m): block side in tiles, epoch length in ticks, and the odds (1 in
-/// BLOOM_ODDS) that a block is moss ground for an epoch.
+/// Moving moss blooms (SPEC §20m): block side in tiles, epoch length in ticks, the odds (1 in
+/// BLOOM_ODDS) that a block blooms in an epoch, and the radius of the bloom (a disc at the block
+/// centre).
 pub const BLOOM_BLOCK: u32 = 16;
 pub const BLOOM_EPOCH: u64 = 16384;
-pub const BLOOM_ODDS: u32 = 16;
+pub const BLOOM_ODDS: u32 = 10;
+pub const BLOOM_RADIUS: i64 = 7;
 /// Blooms are short-lived but rich: moss stops at this much loose G (above the 17 G at which
 /// Founder-8m calls).
 pub const BLOOM_CAP: u64 = 32;
 
-/// Moss ground per tile (SPEC §20k, §20m): the wettest substrate class, or with blooms the blocks
-/// drawn for the epoch of `tick` (Environment stream, object = block, ordinal = 3 << 56 | epoch).
+/// Moss ground per tile (SPEC §20k, §20m): the wettest substrate class, or with blooms a disc in
+/// each block drawn for the epoch of `tick` (Environment stream, object = block, ordinal =
+/// 3 << 56 | epoch).
 pub fn moss_ground(world: &crate::world::World, seed: u64, bloom: bool, tick: u64) -> Vec<u8> {
     let n = (world.w * world.h) as usize;
     if !bloom {
@@ -42,7 +45,9 @@ pub fn moss_ground(world: &crate::world::World, seed: u64, bloom: bool, tick: u6
     (0..n as u32)
         .map(|t| {
             let (x, y) = (t % world.w, t / world.w);
-            on[((y / BLOOM_BLOCK) * bw + x / BLOOM_BLOCK) as usize] as u8
+            let (dx, dy) = ((x % BLOOM_BLOCK) as i64 * 2 + 1 - BLOOM_BLOCK as i64, (y % BLOOM_BLOCK) as i64 * 2 + 1 - BLOOM_BLOCK as i64);
+            let inside = dx * dx + dy * dy <= 4 * BLOOM_RADIUS * BLOOM_RADIUS;
+            (inside && on[((y / BLOOM_BLOCK) * bw + x / BLOOM_BLOCK) as usize]) as u8
         })
         .collect()
 }

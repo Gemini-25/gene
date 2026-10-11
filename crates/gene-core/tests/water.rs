@@ -141,7 +141,7 @@ fn signals_spread_through_the_air_only_in_gene_m2_6() {
 // ---------------------------------------------------------------- SPEC §20m moving moss blooms
 
 #[test]
-fn moss_blooms_move_every_epoch_and_cover_about_one_block_in_sixteen() {
+fn moss_blooms_move_every_epoch_and_cover_a_few_percent_in_discs() {
     use gene_core::env::{moss_ground, BLOOM_EPOCH};
     let s = idle_world(gene_core::sim::RULESET_M2G);
     let w = &s.st.world;
@@ -154,10 +154,11 @@ fn moss_blooms_move_every_epoch_and_cover_about_one_block_in_sixteen() {
     let total: usize = (0..64).map(|e| moss_ground(w, 3, true, e * BLOOM_EPOCH).iter().filter(|&&m| m != 0).count()).sum();
     let share = total as f64 / (64.0 * w.n() as f64);
     assert!((0.03..0.10).contains(&share), "share {share}");
-    // whole 16x16 blocks
+    // discs at block centres: the centre of a blooming block is moss, its corners are not
     let t = (0..w.n()).find(|&t| c[t] != 0).unwrap() as u32;
-    let (x, y) = (t % w.w, t / w.w);
-    assert_eq!(c[((y | 15) * w.w + (x | 15)) as usize], 1, "the block's far corner is moss too");
+    let (bx, by) = (t % w.w / 16 * 16, t / w.w / 16 * 16);
+    assert_eq!(c[((by + 8) * w.w + bx + 8) as usize], 1, "the bloom's centre");
+    assert_eq!(c[(by * w.w + bx) as usize], 0, "the block's corner");
 }
 
 #[test]
