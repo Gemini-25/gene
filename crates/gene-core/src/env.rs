@@ -25,6 +25,16 @@ impl Sim {
             self.pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().ok();
         }
         let w = &mut self.st.world;
+        // tiles holding residue, as a dense mask so that the others skip the map lookup
+        // (transport only takes residue, never adds it, so the mask stays a superset)
+        let marked: Vec<u32> = w.residue.keys().copied().collect();
+        let rmask = &mut self.env_mask;
+        if !marked.is_empty() {
+            rmask.resize(w.n(), 0);
+            for t in &marked {
+                rmask[*t as usize] = 1;
+            }
+        }
         for color in perm {
             let slot = bucket * 4 + color;
             // Edges of one colour never share an endpoint (SPEC §5.2), so any order — and any
@@ -41,6 +51,7 @@ impl Sim {
                     heat_c: &mut w.heat_c,
                     residue: Some(&mut w.residue),
                     plain,
+                    rmask: if plain { &[] } else { rmask.as_slice() },
                 };
                 for &(a, b) in &list {
                     edge_flux(&mut band, &w.elev, &w.perm, &w.metal, &keys, retain, a, b, tick);
@@ -48,33 +59,31 @@ impl Sim {
                 w.edges[slot] = list;
             }
         }
+        for t in &marked {
+            rmask[*t as usize] = 0;
+        }
     }
 
     pub(crate) fn stage_environment(&mut self) {
         let tick = self.st.tick;
-        let n = self.st.world.n() as u64;
         let threads = self.threads.max(1);
-        if threads > 1 && self.st.world.residue.is_empty() && self.st.world.h as usize >= 8 * threads {
-            if self.pool.is_none() {
-                self.pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().ok();
-            }
-            // Due tiles are independent (SPEC §5.1). Tiles with an actor or records go through the
-            // full serial path; the rest run in parallel row bands with the same arithmetic.
-            let complex = self.env_parallel_simple(tick, threads);
-            for t in complex {
-                self.env_tile(t, tick);
-            }
-            return;
+        let parallel = threads > 1 && self.st.world.h as usize >= 8 * threads;
+        if parallel && self.pool.is_none() {
+            self.pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().ok();
         }
-        let mut due = Vec::with_capacity((n / 16) as usize + 64);
-        crate::world::for_due_tiles(0, n as u32, tick, self.caps.locality, |t| due.push(t));
-        for t in due {
+        // Due tiles are independent (SPEC §5.1). Tiles with an actor, records, a parcel or
+        // overflow residue go through the full path; the rest take the simple path with the same
+        // arithmetic (in parallel row bands when there are threads), which skips the map lookups.
+        let bands = if parallel && self.pool.is_some() { threads } else { 1 };
+        let complex = self.env_simple_bands(tick, bands);
+        for t in complex {
             self.env_tile(t, tick);
         }
     }
 
-    /// Process due tiles without an actor or records in parallel; return the others.
-    fn env_parallel_simple(&mut self, tick: u64, threads: usize) -> Vec<u32> {
+    /// Process due tiles without an actor, records, a parcel or residue in `threads` row bands
+    /// (in parallel when more than one); return the others in due order per band.
+    fn env_simple_bands(&mut self, tick: u64, threads: usize) -> Vec<u32> {
         let w = &mut self.st.world;
         let width = w.w;
         let rows = (w.h as usize).div_ceil(threads) as u32;
@@ -108,30 +117,37 @@ impl Sim {
             });
             y0 = y1;
         }
-        // tiles with records or a parcel, as a dense mask (map lookups per tile cost more than the work)
+        // tiles with records, a parcel or residue, as a dense mask (map lookups per tile cost
+        // more than the work)
+        let residue = &w.residue;
         let mask = &mut self.env_mask;
         mask.resize(occ.len(), 0);
-        for t in dropped.keys().chain(parcels.keys()) {
+        for t in dropped.keys().chain(parcels.keys()).chain(residue.keys()) {
             mask[*t as usize] = 1;
         }
         let mask = &*mask;
         let (locality, decomp) = (self.caps.locality, self.caps.decomp);
-        let pool = self.pool.as_ref().expect("pool");
-        pool.scope(|sc| {
-            for band in bands.iter_mut() {
-                sc.spawn(move |_| {
-                    let end = band.base + band.heat_u.len() as u32;
-                    crate::world::for_due_tiles(band.base, end, tick, locality, |t| {
-                        if occ[t as usize] != 0 || mask[t as usize] != 0 {
-                            band.complex.push(t);
-                        } else {
-                            env_simple(band, t, tick, lpeak[t as usize] as u64, expo[t as usize] as u64, &keys, decomp);
-                        }
-                    });
-                });
-            }
-        });
-        for t in dropped.keys().chain(parcels.keys()) {
+        let run = |band: &mut EnvBand| {
+            let end = band.base + band.heat_u.len() as u32;
+            crate::world::for_due_tiles(band.base, end, tick, locality, |t| {
+                if occ[t as usize] != 0 || mask[t as usize] != 0 {
+                    band.complex.push(t);
+                } else {
+                    env_simple(band, t, tick, lpeak[t as usize] as u64, expo[t as usize] as u64, &keys, decomp);
+                }
+            });
+        };
+        if bands.len() == 1 {
+            run(&mut bands[0]);
+        } else {
+            let pool = self.pool.as_ref().expect("pool");
+            pool.scope(|sc| {
+                for band in bands.iter_mut() {
+                    sc.spawn(move |_| run(band));
+                }
+            });
+        }
+        for t in dropped.keys().chain(parcels.keys()).chain(residue.keys()) {
             self.env_mask[*t as usize] = 0;
         }
         let mut complex = Vec::new();
@@ -406,13 +422,15 @@ struct Band<'a> {
     /// No overflow anywhere when the stage started: totals are the loose stock alone. Transport
     /// only moves loose stock within u16 bounds, so this cannot change during the stage.
     plain: bool,
+    /// Otherwise, 1 for the tiles that held residue when the stage started (global index).
+    rmask: &'a [u8],
 }
 
 impl Band<'_> {
     #[inline]
     fn total(&self, t: u32, s: usize) -> u64 {
         let base = self.loose[(t - self.base) as usize][s] as u64;
-        if self.plain {
+        if self.plain || self.rmask[t as usize] == 0 {
             return base;
         }
         match &self.residue {
@@ -625,7 +643,7 @@ fn transport_parallel(
         loose = lr;
         heat_u = ur;
         heat_c = cr;
-        bands.push(Band { base: cuts[k - 1] * width, loose: l, heat_u: u, heat_c: c, residue: None, plain: true });
+        bands.push(Band { base: cuts[k - 1] * width, loose: l, heat_u: u, heat_c: c, residue: None, plain: true, rmask: &[] });
     }
     pool.scope(|sc| {
         for (mut band, edges) in bands.into_iter().zip(parts) {

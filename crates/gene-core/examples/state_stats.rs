@@ -7,7 +7,7 @@ fn main() {
     let media: usize = st.dropped.values().map(|v| v.len()).sum();
     let occ = st.agents.len();
     println!(
-        "tick {} agents {} | tiles with records {} ({:.1}% of {}) media {} pages {} | parcels {}",
+        "tick {} agents {} | tiles with records {} ({:.1}% of {}) media {} pages {} | parcels {} | residue tiles {}",
         st.tick,
         occ,
         st.dropped.len(),
@@ -15,6 +15,7 @@ fn main() {
         st.world.n(),
         media,
         pages,
-        st.world.parcels.len()
+        st.world.parcels.len(),
+        st.world.residue.len()
     );
 }
