@@ -3,7 +3,10 @@
 //! B (filter): a repeated behaviour family counts only when its effects mostly succeed and it is
 //! tied to success: its carriers have more children per day of life than all agents with a
 //! classified window (so that short-lived newborns do not flatter every family), or it spread to
-//! another founder type (at least SPREAD_CARRIERS carriers in each of two types).
+//! another founder type (at least SPREAD_CARRIERS carriers in each of two types) without its
+//! carriers reproducing less than the population. Founders that share code can each fall into
+//! the same failure (a broken reproduction loop in carriers with no children); that is not
+//! spread.
 //! C (hierarchy): a high-level behaviour is an ordered chain of 2 or 3 families that follow each
 //! other in one agent's consecutive windows, all passing B, used by several agents, in several
 //! situations (time of day, the agent's energy band, a wet or dry tile), and leaving an output
@@ -256,7 +259,9 @@ impl Judge {
             let types: BTreeSet<u16> = per_type.iter().filter(|(_, n)| **n >= SPREAD_CARRIERS).map(|(k, _)| *k).collect();
             let success = ok * MIN_SUCCESS.1 >= total * MIN_SUCCESS.0;
             let fit = carriers.len() >= FITNESS_CARRIERS && fitness_milli * FITNESS.1 >= 1000 * FITNESS.0;
-            let linked = fit || types.len() >= 2;
+            // spread counts only when the carriers do not do worse than everyone else
+            let spread = types.len() >= 2 && fitness_milli >= 1000;
+            let linked = fit || spread;
             let grams = action_grams(&f.example);
             let known_actions = !self.founder_grams.is_empty() && grams.iter().all(|g| self.founder_grams.contains(g));
             let is_founder = founders_own(st.founder_windows, st.windows) || known_actions;
@@ -368,6 +373,23 @@ mod tests {
         assert_eq!(cands[0].chain.families, vec![7, 8]);
         assert!(cands[0].new);
         assert_eq!(cands[0].chain.agent_count, 6);
+    }
+
+    #[test]
+    fn spread_without_children_is_not_linked_to_success() {
+        // founder types that share code can each fall into the same failure; carriers with no
+        // children in two types are not a behaviour spreading
+        let mut j = world(6, 40, true);
+        for u in 201..=206u64 {
+            j.birth(u, u - 100, 0, [3; 32]);
+            for w in 60..63 {
+                j.window(&rec(u, w, 5, 9));
+            }
+        }
+        let (judged, _) = j.finish(&[fam(5, 60 * WINDOW), fam(7, 40 * WINDOW)], 100 * WINDOW);
+        let f5 = judged.iter().find(|f| f.id == 5).unwrap();
+        assert_eq!((f5.types, f5.fitness_milli), (2, 0));
+        assert!(!f5.pass);
     }
 
     #[test]
