@@ -32,6 +32,16 @@ fn main() {
     }
     let border = (0..(w.w * w.h)).filter(|&t| !fertile(t) && (0..4).filter_map(|d| w.neighbor(t, d)).any(fertile)).count();
     println!("tiles bordering fertile ground: {border}");
+    let (mut sx, mut sy, mut c) = (0u64, 0u64, 0u64);
+    for t in (0..(w.w * w.h)).filter(|&t| fertile(t)) {
+        let (x, y) = w.xy(t);
+        sx += x as u64;
+        sy += y as u64;
+        c += 1;
+    }
+    if c > 0 {
+        println!("centre of fertile ground: ({}, {})", sx / c, sy / c);
+    }
     let n = sim.st.agents.len().max(1) as f64;
     println!("agents {}: on fertile ground {:.1}%, next to it {:.1}%", sim.st.agents.len(), 100.0 * on as f64 / n, 100.0 * near as f64 / n);
 }

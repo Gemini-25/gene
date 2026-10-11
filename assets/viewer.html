@@ -321,7 +321,27 @@ function makeGroundTextures() {
       wrap(() => { c.fillStyle = "rgba(60,80,40,0.5)"; c.fillRect(x, y, 1, 2.5); });
     }
   });
-  return { size: S, layers: [grass, dry, rock, soil] };
+  // moss (SPEC §20k): a deep green velvet of small cushions, lit on top, with fine stalks and
+  // pale capsules
+  const moss = paintLayer(S, 67, [28, 96, 52], 0.45, 4, (c, r, wrap) => {
+    for (let i = 0; i < 520; i++) {
+      const x = r() * S, y = r() * S, rad = 2 + r() * 4.5, v = r();
+      wrap(() => {
+        c.fillStyle = "rgba(4,26,14,0.4)"; c.beginPath(); c.arc(x + 0.8, y + 1.1, rad, 0, 7); c.fill();
+        c.fillStyle = `rgb(${24 + v * 36},${100 + v * 70},${44 + v * 34})`; c.beginPath(); c.arc(x, y, rad, 0, 7); c.fill();
+        c.fillStyle = `rgba(${150 + v * 60},${225 + v * 30},${120 + v * 40},0.35)`; c.beginPath(); c.arc(x - rad * 0.3, y - rad * 0.35, rad * 0.45, 0, 7); c.fill();
+      });
+    }
+    c.lineCap = "round";
+    for (let i = 0; i < 260; i++) {
+      const x = r() * S, y = r() * S, l = 2 + r() * 3, a = -Math.PI / 2 + (r() - 0.5) * 0.6;
+      wrap(() => {
+        c.strokeStyle = "rgba(120,90,40,0.7)"; c.lineWidth = 0.7; c.beginPath(); c.moveTo(x, y); c.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); c.stroke();
+        c.fillStyle = "rgba(214,196,120,0.9)"; c.beginPath(); c.arc(x + Math.cos(a) * l, y + Math.sin(a) * l, 0.8, 0, 7); c.fill();
+      });
+    }
+  });
+  return { size: S, layers: [grass, dry, rock, soil, moss] };
 }
 
 // --- GL helpers
@@ -370,6 +390,13 @@ uniform vec2 u_world;
 layout(location = 0) out vec4 o_albedo;
 layout(location = 1) out vec4 o_weights;
 float elev(vec2 p) { return texture(u_terr, p / u_world).a * 255.0 / 16.0; }
+// moss cover of a tile (SPEC §20k): moss ground (flag 4) is always a little green, fully so at 16 G
+float mossAt(ivec2 c) {
+  c = clamp(c, ivec2(0), ivec2(u_world) - 1);
+  vec4 F = texelFetch(u_field, c, 0);
+  if ((int(F.b * 255.0 + 0.5) & 4) == 0) return 0.0;
+  return 0.45 + 0.55 * clamp(F.g * 255.0 / 16.0, 0.0, 1.0);
+}
 void main() {
   vec2 p = v_p;
   vec4 T = texture(u_terr, p / u_world);
@@ -398,6 +425,11 @@ void main() {
   // parched: dusty and less saturated than naturally dry ground
   col = mix(col, vec3(dot(col, vec3(0.35, 0.45, 0.2))) * vec3(1.06, 0.94, 0.80), parch * 0.5);
   col *= shade;
+  // moss, blended between tile centres so patches have soft edges
+  vec2 q = p - 0.5; ivec2 i0 = ivec2(floor(q)); vec2 fq = fract(q);
+  float mo = mix(mix(mossAt(i0), mossAt(i0 + ivec2(1, 0)), fq.x), mix(mossAt(i0 + ivec2(0, 1)), mossAt(i0 + ivec2(1, 1)), fq.x), fq.y);
+  mo *= 1.0 - wRock;
+  if (mo > 0.0) col = mix(col, texture(u_ground, vec3(uv * 0.9 + 0.29, 4.0)).rgb * shade, mo);
   float wv = texture(u_field, p / u_world).r * 255.0;
   col *= 1.0 - 0.14 * smoothstep(24.0, 48.0, wv);
   float wa = smoothstep(36.0, 80.0, wv);
@@ -441,10 +473,16 @@ void main() {
     float h = hash(vec2(ti) * 4.0 + sc);
     vec2 dc = vec2(0.3 + 0.4 * hash(sc + vec2(ti) * 1.7), 0.3 + 0.4 * hash(sc.yx + vec2(ti) * 2.3));
     float aa = 4.0 / u_ppt;
-    if (h < clamp(F.g * 255.0 / 40.0, 0.0, 0.85)) {
-      col = mix(col, vec3(0.30, 0.20, 0.10), smoothstep(0.24 + aa, 0.24 - aa, length(sf - dc)) * 0.85);
-    }
     int fl = int(F.b * 255.0 + 0.5);
+    if (h < clamp(F.g * 255.0 / 40.0, 0.0, 0.85)) {
+      // dead matter is a brown speck; on moss ground the G is moss: a lit green cushion
+      float dm = length(sf - dc);
+      if ((fl & 4) != 0) {
+        col = mix(col, vec3(0.11, 0.42, 0.20) + 0.2 * smoothstep(0.2, 0.0, length(sf - dc + 0.06)), smoothstep(0.3 + aa, 0.3 - aa, dm) * 0.9);
+      } else {
+        col = mix(col, vec3(0.30, 0.20, 0.10), smoothstep(0.24 + aa, 0.24 - aa, dm) * 0.85);
+      }
+    }
     if ((fl & 2) != 0 && h > 0.72) {
       float dd = length(sf - dc);
       col = mix(col, vec3(0.62, 0.36, 0.28) + 0.25 * step(dd, 0.08), smoothstep(0.22 + aa, 0.22 - aa, dd));
@@ -717,14 +755,14 @@ function initGL() {
   // generated textures: ground layers (2D array with mipmaps) and a water noise
   const g = makeGroundTextures();
   groundTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D_ARRAY, groundTex);
-  gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8, g.size, g.size, 4, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8, g.size, g.size, g.layers.length, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
   g.layers.forEach((d, i) => gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, g.size, g.size, 1, gl.RGBA, gl.UNSIGNED_BYTE, d));
   gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.REPEAT);
   // fine detail for close zoom: each layer's luminance minus its local average, one layer per channel
   const dd = new Uint8Array(g.size * g.size * 4), S = g.size;
-  g.layers.forEach((d, li) => {
+  g.layers.slice(0, 4).forEach((d, li) => {
     const lum = new Float32Array(S * S);
     for (let i = 0; i < S * S; i++) lum[i] = 0.3 * d[4 * i] + 0.59 * d[4 * i + 1] + 0.11 * d[4 * i + 2];
     for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
@@ -792,11 +830,11 @@ function setField(bin) {
   }
   lastField = bin;
   upload(fieldTex, W, H, bin);
-  // the bake uses water only: redo it when the drawn water level changed somewhere
+  // the bake uses water and moss: redo it when the drawn water level or moss cover changed
   const levels = new Uint8Array(W * H);
   let changed = !bake.levels;
   for (let t = 0; t < W * H; t++) {
-    levels[t] = Math.min(255, bin[4 * t]) >> 3;
+    levels[t] = (Math.min(255, bin[4 * t]) >> 3) | ((bin[4 * t + 2] & 4) ? (Math.min(16, bin[4 * t + 1]) >> 2) << 5 : 0);
     if (!changed && levels[t] !== bake.levels[t]) changed = true;
   }
   const now = performance.now();

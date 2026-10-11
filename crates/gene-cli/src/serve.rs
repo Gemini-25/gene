@@ -999,11 +999,15 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founders: &[gene_core::genome:
             let _ = tx.send(format!("{{\"distinct\":{},\"top\":[{}]}}", v.len(), items.join(",")));
         }
         Req::Water(tx) => {
-            // 4 bytes per tile: water (W + ice), loose G (dead organic matter), flags (1 records, 2 ore), loose S
+            // 4 bytes per tile: water (W + ice), loose G (dead organic matter, or moss on moss
+            // ground), flags (1 records, 2 ore, 4 moss ground, SPEC §20k), loose S
             let w = &sim.st.world;
+            let moss = sim.caps.moss;
             let mut out = Vec::with_capacity(4 * w.n());
             for t in 0..w.n() as u32 {
-                let flags = sim.st.dropped.contains_key(&t) as u8 | ((w.loose_total(t, gene_core::species::X) > 0) as u8) << 1;
+                let flags = sim.st.dropped.contains_key(&t) as u8
+                    | ((w.loose_total(t, gene_core::species::X) > 0) as u8) << 1
+                    | ((moss && w.substrate[t as usize] >= gene_core::env::MOSS_SUBSTRATE) as u8) << 2;
                 out.push((w.loose_total(t, W) + w.loose_total(t, gene_core::species::I)).min(255) as u8); // water in any phase
                 out.push(w.loose_total(t, gene_core::species::G).min(255) as u8);
                 out.push(flags);
