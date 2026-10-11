@@ -5,7 +5,8 @@
 //! the E2 founder types) or, with `hash`, the first 8 hex digits of the agent's genome hash at the
 //! start (children inherit the parent's group).
 //!
-//! usage: habits SAVE.bin TICKS [slotN|hash] [TOP]
+//! usage: habits SAVE.bin TICKS [slotN|hash] [TOP] [csv]
+//! With `csv`, prints group,verb,ok_per_day,failed_per_day,mean_amount for every verb instead.
 use gene_core::behavior::{describe_verb, verb};
 use gene_core::observer::EffectFact;
 use gene_core::sim::Sim;
@@ -73,6 +74,20 @@ fn main() {
         }
     }
     let names: Vec<&String> = groups.keys().filter(|k| groups[*k].agent_ticks > 0).collect();
+    if a.get(4).is_some_and(|m| m == "csv") {
+        println!("group,verb,ok_per_day,failed_per_day,mean_amount,agent_days,births_per_day");
+        for n in &names {
+            let g = &groups[*n];
+            let days = g.agent_ticks as f64 / 4096.0;
+            let mut vs: Vec<_> = g.acts.iter().collect();
+            vs.sort_by_key(|(v, _)| **v);
+            for (v, (ok, bad, amt)) in vs {
+                let mean = if *ok > 0 { *amt as f64 / *ok as f64 } else { 0.0 };
+                println!("{n},{},{:.4},{:.4},{:.2},{:.1},{:.4}", describe_verb(*v), *ok as f64 / days, *bad as f64 / days, mean, days, g.births as f64 / days);
+            }
+        }
+        return;
+    }
     println!("{} from tick {start} for {ticks} ticks (per agent-day: ok / failed, mean amount when ok)", a[0]);
     for n in &names {
         let g = &groups[*n];
