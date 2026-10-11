@@ -118,15 +118,31 @@ impl Sim {
             y0 = y1;
         }
         // tiles with records, a parcel or residue, as a dense mask (map lookups per tile cost
-        // more than the work)
+        // more than the work). Under locality only whole 64-tile runs are due, so only their
+        // ranges of the maps are visited, not every key.
         let residue = &w.residue;
+        let (locality, decomp) = (self.caps.locality, self.caps.decomp);
+        let mut marked: Vec<u32> = Vec::new();
+        if locality {
+            let seg = crate::world::SEGMENT;
+            let phase = (tick % 16) as u32;
+            for s in 0..(occ.len() as u32).div_ceil(seg) {
+                if crate::world::seg_hash(s) % 16 == phase {
+                    let r = s * seg..(s + 1) * seg;
+                    marked.extend(dropped.range(r.clone()).map(|(t, _)| *t));
+                    marked.extend(parcels.range(r.clone()).map(|(t, _)| *t));
+                    marked.extend(residue.range(r).map(|(t, _)| *t));
+                }
+            }
+        } else {
+            marked.extend(dropped.keys().chain(parcels.keys()).chain(residue.keys()).copied());
+        }
         let mask = &mut self.env_mask;
         mask.resize(occ.len(), 0);
-        for t in dropped.keys().chain(parcels.keys()).chain(residue.keys()) {
+        for t in &marked {
             mask[*t as usize] = 1;
         }
         let mask = &*mask;
-        let (locality, decomp) = (self.caps.locality, self.caps.decomp);
         let run = |band: &mut EnvBand| {
             let end = band.base + band.heat_u.len() as u32;
             crate::world::for_due_tiles(band.base, end, tick, locality, |t| {
@@ -147,8 +163,8 @@ impl Sim {
                 }
             });
         }
-        for t in dropped.keys().chain(parcels.keys()).chain(residue.keys()) {
-            self.env_mask[*t as usize] = 0;
+        for t in marked {
+            self.env_mask[t as usize] = 0;
         }
         let mut complex = Vec::new();
         for b in bands {
