@@ -18,7 +18,7 @@ const USAGE: &str = "gene — Gene M0 headless runner
 USAGE:
   gene run    [--seed N] [--size S] [--agents A] [--ticks T] [--founder NAME|FILE[+NAME|FILE...]]
               [--out DIR] [--stats-every K] [--map-every M] [--checkpoint-every C]
-              [--audit-every K] [--keep-going] [--save-final] [--quiet] [--ruleset m0|m0b|m0c|m0d|m1a..m1f|m2|m2b|m2c|m2d|current] [--sim-threads N]
+              [--audit-every K] [--keep-going] [--save-final] [--quiet] [--ruleset m0|m0b|m0c|m0d|m1a..m1f|m2|m2b|m2c|m2d|m2e|current] [--sim-threads N]
   gene batch  --seeds A-B|A,B,C-D [--threads N] [same options as run]  (one directory per seed)
   gene resume --from CHECKPOINT [--ticks T] [--out DIR] [...]
   gene serve  [--port 8080] [--load SAVE.bin] [same world options as run]
@@ -130,7 +130,8 @@ fn parse_opts(args: &[String], o: &mut Opts) -> BTreeMap<String, String> {
                     "m0d" | "gene-m0-4" => gene_core::sim::RULESET_M0D.into(),
                     "m2c" | "gene-m2-3" => gene_core::sim::RULESET_M2C.into(),
                     "m2d" | "gene-m2-4" | "current" => gene_core::sim::RULESET_M2D.into(),
-                    other => die(format!("unknown ruleset {other} (m0, m0b, m0c, m0d, m1a..m1f, m2, m2b, m2c, m2d)")),
+                    "m2e" | "gene-m2-5" => gene_core::sim::RULESET_M2E.into(),
+                    other => die(format!("unknown ruleset {other} (m0, m0b, m0c, m0d, m1a..m1f, m2, m2b, m2c, m2d, m2e)")),
                 }
             }
             "--seeds" | "--threads" | "--from" | "--port" | "--load" | "--top" | "--family" => {
@@ -803,7 +804,7 @@ fn run_from(mut sim: Sim, o: &Opts, resumed: Option<u64>) -> Summary {
         "tick,pop,births,deaths_energy,deaths_body,mean_energy,mean_inv_g,embryos,max_gen,mean_gen,distinct_genomes,mean_genome_len,\
 upkeep_q,vm_q,attempt_q,effect_q,photosynthesis,respiration,moves,inert,loose_G,loose_C,loose_O,loose_W,dropped_pages,mean_theta,ledger_residual,\
 emits,signal_reads,public_reads,copies_from_public,copies_to_public,draft_to_embryo,public_writes,drafts_created,bit_flips,foreign_births,commits,adoptions,parcels,parcels_created,parcel_reactions,links,unlinks,assembly_moves,parcels_moved,pushes,load_failures,\
-taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_media_created,parcel_media_dropped,dry_tiles,provisioned"
+taken,abrasion_q,shell_removed,body_removed,actor_pushes,parcel_media,parcel_media_created,parcel_media_dropped,dry_tiles,provisioned,moss"
     )
     .unwrap();
     writeln!(births, "tick,uid,parent,root,generation,genome,len,structural_op,structural_applied,point_flips,foreign,x,y,inv_g,modules").unwrap();
@@ -1060,7 +1061,7 @@ fn write_stats(out: &mut impl Write, sim: &mut Sim, genomes: &mut GenomeCache) {
     let a = sim.audit();
     writeln!(
         out,
-        "{},{},{},{},{},{:.0},{:.2},{},{},{:.2},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{},{},{},{},{},{:.0},{:.2},{},{},{:.2},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         sim.st.tick,
         ag.len(),
         sim.obs.total_births,
@@ -1118,7 +1119,8 @@ fn write_stats(out: &mut impl Write, sim: &mut Sim, genomes: &mut GenomeCache) {
         sim.obs.m1.parcel_media_created,
         sim.obs.m1.parcel_media_dropped,
         dry,
-        sim.obs.m1.provisioned
+        sim.obs.m1.provisioned,
+        acc.moss
     )
     .unwrap();
 }

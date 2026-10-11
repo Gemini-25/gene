@@ -23,6 +23,9 @@ pub struct TickStats {
     pub attempt_q: u64,
     pub effect_q: u64,
     pub agent_ticks: u64,
+    /// Moss extents (SPEC §20k). Not saved: checkpoints keep the format of rulesets without moss.
+    #[serde(skip)]
+    pub moss: u64,
 }
 
 impl TickStats {
@@ -38,6 +41,7 @@ impl TickStats {
         self.attempt_q += o.attempt_q;
         self.effect_q += o.effect_q;
         self.agent_ticks += o.agent_ticks;
+        self.moss += o.moss;
     }
 }
 

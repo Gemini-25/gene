@@ -40,6 +40,9 @@ pub const RULESET_M0D: &str = "gene-m0-4";
 pub const RULESET_M2C: &str = "gene-m2-3";
 /// gene-m2-2 + milder aging: 1q/tick more per two days of age (SPEC §20j, candidate).
 pub const RULESET_M2D: &str = "gene-m2-4";
+/// gene-m2-4 + moss: Rx0 at the loose site of the wettest ground, driven by light (SPEC §20k,
+/// candidate for decision 8).
+pub const RULESET_M2E: &str = "gene-m2-5";
 
 /// Capabilities switched on by the ruleset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -62,6 +65,8 @@ pub struct Caps {
     pub retain: bool,
     /// Upkeep grows by 1q/tick for every this many ticks of age; 0 is no aging (SPEC §20j).
     pub aging: u64,
+    /// Moss: fertile ground makes G from C and W with the light it absorbs (SPEC §20k).
+    pub moss: bool,
 }
 
 impl Caps {
@@ -82,6 +87,7 @@ impl Caps {
             RULESET_M0D => Some(Caps { aging: AGING_PERIOD, ..Caps::of(RULESET_M0C)? }),
             RULESET_M2C => Some(Caps { aging: AGING_PERIOD, ..Caps::of(RULESET_M2B)? }),
             RULESET_M2D => Some(Caps { aging: 2 * AGING_PERIOD, ..Caps::of(RULESET_M2B)? }),
+            RULESET_M2E => Some(Caps { moss: true, ..Caps::of(RULESET_M2D)? }),
             RULESET_M2 => Some(Caps {
                 m1: true,
                 commit: true,
@@ -95,6 +101,7 @@ impl Caps {
                 locality: true,
                 retain: false,
                 aging: 0,
+                moss: false,
             }),
             _ => None,
         }
@@ -189,6 +196,8 @@ pub struct FluxKeys {
     pub parcel_rx: [[[u32; 2]; 5]; 3],
     /// Pore exchange per species.
     pub pore: [[u32; 2]; NSPEC],
+    /// Moss growth at the loose site (SPEC §20k).
+    pub moss: [u32; 2],
 }
 
 pub struct Sim {
@@ -366,6 +375,7 @@ impl Sim {
             keys.loose_rx[k] = rng::flux_key(seed, FluxDomain::ReactionRound, rx.id as u32);
         }
         keys.media_rx2 = rng::flux_key(seed, FluxDomain::ReactionRound, (3 << 8) | 2);
+        keys.moss = rng::flux_key(seed, FluxDomain::ReactionRound, 5 << 8);
         for (si, kind) in [1u32, 2, 4].iter().enumerate() {
             for (k, rx) in CREDIT_REACTIONS.iter().enumerate() {
                 keys.parcel_rx[si][k] = rng::flux_key(seed, FluxDomain::ReactionRound, (kind << 8) | rx.id as u32);

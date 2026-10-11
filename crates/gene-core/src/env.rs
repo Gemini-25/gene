@@ -9,6 +9,30 @@ const GASES: [usize; 4] = [C, O, H, V];
 /// Water a tile keeps against running downhill when the ruleset has `retain` (SPEC §20i).
 pub const SOIL_RETAIN: u64 = 8;
 
+/// Moss (SPEC §20k): ground of this substrate class or wetter is fertile (the wettest quarter of
+/// the moisture field).
+pub const MOSS_SUBSTRATE: u8 = 3;
+/// Moss stops while this much loose G lies on the tile.
+pub const MOSS_CAP: u64 = 16;
+/// Moss needs this much loose W on the tile.
+pub const MOSS_W_MIN: u64 = 4;
+/// Chance of one Rx0 extent per environment visit = absorbed light × MOSS_RATE / 2^24.
+pub const MOSS_RATE: u64 = 64;
+
+/// Moss (SPEC §20k): whether one Rx0 extent (C + W -> G + O, 5000 of the light the tile just
+/// absorbed) happens at the loose site of a fertile tile with no actor and no parcel.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn moss_grows(absorbed: u64, theta: u64, c: u64, w: u64, g: u64, o_space: u64, key: [u32; 2], t: u32, tick: u64) -> bool {
+    absorbed >= PHOTO_HEAT
+        && (260..=330).contains(&theta)
+        && c >= 1
+        && w >= MOSS_W_MIN
+        && g < MOSS_CAP
+        && o_space >= 1
+        && sr(absorbed * MOSS_RATE, 1 << 24, key, t as u64, tick) >= 1
+}
+
 impl Sim {
     pub(crate) fn stage_transport(&mut self) {
         let tick = self.st.tick;
@@ -91,7 +115,8 @@ impl Sim {
         let dropped = &self.st.dropped;
         let parcels = &w.parcels;
         let occ = &w.occ;
-        let (lpeak, expo, heat_c) = (&w.lpeak, &w.expo, &w.heat_c);
+        let (lpeak, expo, heat_c, substrate) = (&w.lpeak, &w.expo, &w.heat_c, &w.substrate);
+        let moss = if self.caps.moss { Some(self.keys.moss) } else { None };
         let mut heat_u: &mut [u64] = &mut w.heat_u;
         let mut loose: &mut [[u16; NSPEC]] = &mut w.loose;
         let mut credit: &mut [[u16; 5]] = &mut w.rx_credit;
@@ -114,6 +139,7 @@ impl Sim {
                 heat_c,
                 flows: crate::sim::Flows::default(),
                 complex: vec![],
+                moss: 0,
             });
             y0 = y1;
         }
@@ -149,7 +175,8 @@ impl Sim {
                 if occ[t as usize] != 0 || mask[t as usize] != 0 {
                     band.complex.push(t);
                 } else {
-                    env_simple(band, t, tick, lpeak[t as usize] as u64, expo[t as usize] as u64, &keys, decomp);
+                    let fertile = moss.filter(|_| substrate[t as usize] >= MOSS_SUBSTRATE);
+                    env_simple(band, t, tick, lpeak[t as usize] as u64, expo[t as usize] as u64, &keys, decomp, fertile);
                 }
             });
         };
@@ -171,6 +198,7 @@ impl Sim {
             self.st.flows.solar_in += b.flows.solar_in;
             self.st.flows.sky_in += b.flows.sky_in;
             self.st.flows.radiation_out += b.flows.radiation_out;
+            self.obs.tick.moss += b.moss;
             complex.extend(b.complex);
         }
         complex
@@ -195,6 +223,18 @@ impl Sim {
                 self.st.world.heat_u[ti] += absorbed - to_credit;
             }
             _ => self.st.world.heat_u[ti] += absorbed,
+        }
+        if occupant.is_none() && self.caps.moss && self.st.world.substrate[ti] >= MOSS_SUBSTRATE && !self.st.world.parcels.contains_key(&t) {
+            let w = &self.st.world;
+            if moss_grows(absorbed, w.theta(t), w.loose_total(t, C), w.loose_total(t, W), w.loose_total(t, G), w.loose_space(t, O), self.keys.moss, t, tick) {
+                let w = &mut self.st.world;
+                w.take_loose(t, C, 1);
+                w.take_loose(t, W, 1);
+                w.put_loose(t, G, 1);
+                w.put_loose(t, O, 1);
+                w.heat_u[ti] -= PHOTO_HEAT;
+                self.obs.tick.moss += 1;
+            }
         }
         if let Some(i) = occupant {
             let a = &mut self.st.agents[i];
@@ -682,6 +722,8 @@ struct EnvBand<'a> {
     heat_c: &'a [u64],
     flows: crate::sim::Flows,
     complex: Vec<u32>,
+    /// Moss extents in this band (SPEC §20k).
+    moss: u64,
 }
 
 impl EnvBand<'_> {
@@ -716,7 +758,8 @@ impl EnvBand<'_> {
 /// Stage 8 for a due tile with no actor and no records: light, sky exchange, loose chemistry,
 /// phase changes. Same arithmetic as `Sim::env_tile` for such tiles.
 #[allow(clippy::too_many_arguments)]
-fn env_simple(b: &mut EnvBand, t: u32, tick: u64, lpeak: u64, x: u64, keys: &[[u32; 2]; 5], decomp: bool) {
+#[allow(clippy::too_many_arguments)]
+fn env_simple(b: &mut EnvBand, t: u32, tick: u64, lpeak: u64, x: u64, keys: &[[u32; 2]; 5], decomp: bool, moss: Option<[u32; 2]>) {
     let p = ((tick + 1024) % 4096) as i64;
     let f = (1024 - (p - 1024).abs()).max(0) as u64;
     let l = lpeak * f / 1024;
@@ -724,6 +767,17 @@ fn env_simple(b: &mut EnvBand, t: u32, tick: u64, lpeak: u64, x: u64, keys: &[[u
     b.flows.solar_in += l as u128;
     b.flows.radiation_out += refl as u128;
     *b.u(t) += l - refl;
+    // moss on fertile ground (`moss` is the key when the ruleset has it and the tile is fertile)
+    if let Some(key) = moss {
+        if moss_grows(l - refl, b.theta(t), b.total(t, C), b.total(t, W), b.total(t, G), b.space(t, O), key, t, tick) {
+            b.add(t, C, -1);
+            b.add(t, W, -1);
+            b.add(t, G, 1);
+            b.add(t, O, 1);
+            *b.u(t) -= PHOTO_HEAT;
+            b.moss += 1;
+        }
+    }
     // sky exchange toward 280
     let k = (2048 * x).div_ceil(256);
     let (u, c) = (*b.u(t), b.heat_c[t as usize]);

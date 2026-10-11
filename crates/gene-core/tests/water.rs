@@ -76,3 +76,39 @@ fn aging_raises_upkeep_by_one_per_day_of_age_and_keeps_the_ledger() {
     assert_eq!(drain(RULESET_M2C, 40 * 4096) - young, 40, "40 days old: 40q more per tick");
     assert_eq!(drain(RULESET_M2D, 40 * 4096) - young, 20, "the milder candidate: 1q per two days");
 }
+
+// ---------------------------------------------------------------- SPEC §20k moss (candidate)
+
+fn idle_world(ruleset: &str) -> Sim {
+    let prog = assemble(".module 0\nspin:\n    YIELD\n    JUMP spin\n").unwrap();
+    Sim::with_program_ruleset(Config { seed: 3, width: 64, height: 64, agents: 1 }, &prog, ruleset).unwrap()
+}
+
+fn loose_g(s: &Sim, fertile: bool) -> u64 {
+    (0..s.st.world.n() as u32)
+        .filter(|&t| (s.st.world.substrate[t as usize] >= gene_core::env::MOSS_SUBSTRATE) == fertile)
+        .map(|t| s.st.world.loose_total(t, G))
+        .sum()
+}
+
+#[test]
+fn moss_grows_on_fertile_ground_in_daylight_and_the_ledger_balances() {
+    use gene_core::sim::{RULESET_M2D, RULESET_M2E};
+    let mut old = idle_world(RULESET_M2D);
+    let mut new = idle_world(RULESET_M2E);
+    assert!((0..new.st.world.n()).any(|t| new.st.world.substrate[t] >= gene_core::env::MOSS_SUBSTRATE), "the test world has fertile ground");
+    let (g0_old, g0_new) = (loose_g(&old, true), loose_g(&new, true));
+    for _ in 0..2048 {
+        old.step();
+        new.step();
+    }
+    assert!(old.audit_ok() && new.audit_ok(), "moss keeps energy and atoms");
+    assert!(loose_g(&new, true) > g0_new + 50, "moss adds G on fertile ground");
+    assert!(loose_g(&old, true) <= g0_old, "no moss in gene-m2-4");
+    // off the fertile ground both worlds hold the same G, tile for tile
+    for t in 0..new.st.world.n() as u32 {
+        if new.st.world.substrate[t as usize] < gene_core::env::MOSS_SUBSTRATE && new.st.world.occ[t as usize] == 0 {
+            assert_eq!(new.st.world.loose_total(t, G), old.st.world.loose_total(t, G));
+        }
+    }
+}
