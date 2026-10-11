@@ -46,6 +46,9 @@ pub const RULESET_M2E: &str = "gene-m2-5";
 /// gene-m2-5 + signals spread through the air as through bonded metal (SPEC §20l, candidate for
 /// decision 8).
 pub const RULESET_M2F: &str = "gene-m2-6";
+/// gene-m2-4 + moss in blooms that move: every 4 days a fresh random set of 16×16 blocks is moss
+/// ground (SPEC §20m, candidate for decision 8).
+pub const RULESET_M2G: &str = "gene-m2-7";
 
 /// Capabilities switched on by the ruleset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -72,6 +75,9 @@ pub struct Caps {
     pub moss: bool,
     /// Every tile conducts signals to its four neighbours, as bonded metal does (SPEC §20l).
     pub air_signal: bool,
+    /// Moss ground is a set of 16×16 blocks drawn afresh every 4 days instead of the wettest
+    /// substrate (SPEC §20m; needs `moss`).
+    pub bloom: bool,
 }
 
 impl Caps {
@@ -94,6 +100,7 @@ impl Caps {
             RULESET_M2D => Some(Caps { aging: 2 * AGING_PERIOD, ..Caps::of(RULESET_M2B)? }),
             RULESET_M2E => Some(Caps { moss: true, ..Caps::of(RULESET_M2D)? }),
             RULESET_M2F => Some(Caps { air_signal: true, ..Caps::of(RULESET_M2E)? }),
+            RULESET_M2G => Some(Caps { bloom: true, ..Caps::of(RULESET_M2E)? }),
             RULESET_M2 => Some(Caps {
                 m1: true,
                 commit: true,
@@ -109,6 +116,7 @@ impl Caps {
                 aging: 0,
                 moss: false,
                 air_signal: false,
+                bloom: false,
             }),
             _ => None,
         }
@@ -243,6 +251,9 @@ pub struct Sim {
     pub(crate) pool: Option<rayon::ThreadPool>,
     /// Scratch for the parallel environment stage (all zero between uses; not state).
     pub(crate) env_mask: Vec<u8>,
+    /// Moss ground per tile (1) and the bloom epoch it was drawn for (derived, not state).
+    pub(crate) moss_mask: Vec<u8>,
+    pub(crate) moss_epoch: u64,
     /// Population from which Think runs on the pool (below it the split costs more than it saves).
     pub par_think_min: usize,
     /// LocalTrace event order within the tick (reset every tick).
@@ -425,6 +436,8 @@ impl Sim {
             threads: 1,
             pool: None,
             env_mask: Vec::new(),
+            moss_mask: Vec::new(),
+            moss_epoch: u64::MAX,
             par_think_min: 4096,
             trace_seq: 0,
         };

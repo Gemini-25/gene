@@ -137,3 +137,38 @@ fn signals_spread_through_the_air_only_in_gene_m2_6() {
         assert!(s.audit_ok());
     }
 }
+
+// ---------------------------------------------------------------- SPEC §20m moving moss blooms
+
+#[test]
+fn moss_blooms_move_every_epoch_and_cover_about_one_block_in_sixteen() {
+    use gene_core::env::{moss_ground, BLOOM_EPOCH};
+    let s = idle_world(gene_core::sim::RULESET_M2G);
+    let w = &s.st.world;
+    let a = moss_ground(w, 3, true, 0);
+    let b = moss_ground(w, 3, true, BLOOM_EPOCH - 1);
+    let c = moss_ground(w, 3, true, BLOOM_EPOCH);
+    assert_eq!(a, b, "the same epoch keeps its blooms");
+    assert_ne!(a, c, "the next epoch draws new ones");
+    // over many epochs about 1/16 of the ground is moss
+    let total: usize = (0..64).map(|e| moss_ground(w, 3, true, e * BLOOM_EPOCH).iter().filter(|&&m| m != 0).count()).sum();
+    let share = total as f64 / (64.0 * w.n() as f64);
+    assert!((0.03..0.10).contains(&share), "share {share}");
+    // whole 16x16 blocks
+    let t = (0..w.n()).find(|&t| c[t] != 0).unwrap() as u32;
+    let (x, y) = (t % w.w, t / w.w);
+    assert_eq!(c[((y | 15) * w.w + (x | 15)) as usize], 1, "the block's far corner is moss too");
+}
+
+#[test]
+fn moss_blooms_grow_g_and_keep_the_ledger() {
+    let mut s = idle_world(gene_core::sim::RULESET_M2G);
+    let mask = gene_core::env::moss_ground(&s.st.world, 3, true, 0);
+    let g = |s: &Sim| (0..s.st.world.n() as u32).filter(|&t| mask[t as usize] != 0).map(|t| s.st.world.loose_total(t, G)).sum::<u64>();
+    let g0 = g(&s);
+    for _ in 0..2048 {
+        s.step();
+    }
+    assert!(s.audit_ok());
+    assert!(g(&s) > g0 + 50, "blooms add G");
+}

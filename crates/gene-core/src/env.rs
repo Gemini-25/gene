@@ -19,16 +19,44 @@ pub const MOSS_W_MIN: u64 = 4;
 /// Chance of one Rx0 extent per environment visit = absorbed light × MOSS_RATE / 2^24.
 pub const MOSS_RATE: u64 = 64;
 
+/// Moving moss blooms (SPEC §20m): block side in tiles, epoch length in ticks, and the odds (1 in
+/// BLOOM_ODDS) that a block is moss ground for an epoch.
+pub const BLOOM_BLOCK: u32 = 16;
+pub const BLOOM_EPOCH: u64 = 16384;
+pub const BLOOM_ODDS: u32 = 16;
+/// Blooms are short-lived but rich: moss stops at this much loose G (above the 17 G at which
+/// Founder-8m calls).
+pub const BLOOM_CAP: u64 = 32;
+
+/// Moss ground per tile (SPEC §20k, §20m): the wettest substrate class, or with blooms the blocks
+/// drawn for the epoch of `tick` (Environment stream, object = block, ordinal = 3 << 56 | epoch).
+pub fn moss_ground(world: &crate::world::World, seed: u64, bloom: bool, tick: u64) -> Vec<u8> {
+    let n = (world.w * world.h) as usize;
+    if !bloom {
+        return (0..n).map(|t| (world.substrate[t] >= MOSS_SUBSTRATE) as u8).collect();
+    }
+    let epoch = tick / BLOOM_EPOCH;
+    let bw = world.w.div_ceil(BLOOM_BLOCK);
+    let bh = world.h.div_ceil(BLOOM_BLOCK);
+    let on: Vec<bool> = (0..bw * bh).map(|b| stream_key(seed, Domain::Environment, b as u64, (3u64 << 56) | epoch)[0] % BLOOM_ODDS == 0).collect();
+    (0..n as u32)
+        .map(|t| {
+            let (x, y) = (t % world.w, t / world.w);
+            on[((y / BLOOM_BLOCK) * bw + x / BLOOM_BLOCK) as usize] as u8
+        })
+        .collect()
+}
+
 /// Moss (SPEC §20k): whether one Rx0 extent (C + W -> G + O, 5000 of the light the tile just
 /// absorbed) happens at the loose site of a fertile tile with no actor and no parcel.
 #[allow(clippy::too_many_arguments)]
 #[inline]
-fn moss_grows(absorbed: u64, theta: u64, c: u64, w: u64, g: u64, o_space: u64, key: [u32; 2], t: u32, tick: u64) -> bool {
+fn moss_grows(absorbed: u64, theta: u64, c: u64, w: u64, g: u64, o_space: u64, cap: u64, key: [u32; 2], t: u32, tick: u64) -> bool {
     absorbed >= PHOTO_HEAT
         && (260..=330).contains(&theta)
         && c >= 1
         && w >= MOSS_W_MIN
-        && g < MOSS_CAP
+        && g < cap
         && o_space >= 1
         && sr(absorbed * MOSS_RATE, 1 << 24, key, t as u64, tick) >= 1
 }
@@ -90,6 +118,13 @@ impl Sim {
 
     pub(crate) fn stage_environment(&mut self) {
         let tick = self.st.tick;
+        if self.caps.moss {
+            let epoch = if self.caps.bloom { tick / BLOOM_EPOCH } else { 0 };
+            if self.moss_epoch != epoch || self.moss_mask.len() != self.st.world.n() {
+                self.moss_mask = moss_ground(&self.st.world, self.st.config.seed, self.caps.bloom, tick);
+                self.moss_epoch = epoch;
+            }
+        }
         let threads = self.threads.max(1);
         let parallel = threads > 1 && self.st.world.h as usize >= 8 * threads;
         if parallel && self.pool.is_none() {
@@ -115,8 +150,9 @@ impl Sim {
         let dropped = &self.st.dropped;
         let parcels = &w.parcels;
         let occ = &w.occ;
-        let (lpeak, expo, heat_c, substrate) = (&w.lpeak, &w.expo, &w.heat_c, &w.substrate);
+        let (lpeak, expo, heat_c, moss_mask) = (&w.lpeak, &w.expo, &w.heat_c, &self.moss_mask);
         let moss = if self.caps.moss { Some(self.keys.moss) } else { None };
+        let cap = if self.caps.bloom { BLOOM_CAP } else { MOSS_CAP };
         let mut heat_u: &mut [u64] = &mut w.heat_u;
         let mut loose: &mut [[u16; NSPEC]] = &mut w.loose;
         let mut credit: &mut [[u16; 5]] = &mut w.rx_credit;
@@ -175,8 +211,8 @@ impl Sim {
                 if occ[t as usize] != 0 || mask[t as usize] != 0 {
                     band.complex.push(t);
                 } else {
-                    let fertile = moss.filter(|_| substrate[t as usize] >= MOSS_SUBSTRATE);
-                    env_simple(band, t, tick, lpeak[t as usize] as u64, expo[t as usize] as u64, &keys, decomp, fertile);
+                    let fertile = moss.filter(|_| moss_mask[t as usize] != 0);
+                    env_simple(band, t, tick, lpeak[t as usize] as u64, expo[t as usize] as u64, &keys, decomp, fertile, cap);
                 }
             });
         };
@@ -224,9 +260,10 @@ impl Sim {
             }
             _ => self.st.world.heat_u[ti] += absorbed,
         }
-        if occupant.is_none() && self.caps.moss && self.st.world.substrate[ti] >= MOSS_SUBSTRATE && !self.st.world.parcels.contains_key(&t) {
+        if occupant.is_none() && self.caps.moss && self.moss_mask[ti] != 0 && !self.st.world.parcels.contains_key(&t) {
             let w = &self.st.world;
-            if moss_grows(absorbed, w.theta(t), w.loose_total(t, C), w.loose_total(t, W), w.loose_total(t, G), w.loose_space(t, O), self.keys.moss, t, tick) {
+            let cap = if self.caps.bloom { BLOOM_CAP } else { MOSS_CAP };
+            if moss_grows(absorbed, w.theta(t), w.loose_total(t, C), w.loose_total(t, W), w.loose_total(t, G), w.loose_space(t, O), cap, self.keys.moss, t, tick) {
                 let w = &mut self.st.world;
                 w.take_loose(t, C, 1);
                 w.take_loose(t, W, 1);
@@ -758,7 +795,7 @@ impl EnvBand<'_> {
 /// phase changes. Same arithmetic as `Sim::env_tile` for such tiles.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
-fn env_simple(b: &mut EnvBand, t: u32, tick: u64, lpeak: u64, x: u64, keys: &[[u32; 2]; 5], decomp: bool, moss: Option<[u32; 2]>) {
+fn env_simple(b: &mut EnvBand, t: u32, tick: u64, lpeak: u64, x: u64, keys: &[[u32; 2]; 5], decomp: bool, moss: Option<[u32; 2]>, cap: u64) {
     let p = ((tick + 1024) % 4096) as i64;
     let f = (1024 - (p - 1024).abs()).max(0) as u64;
     let l = lpeak * f / 1024;
@@ -768,7 +805,7 @@ fn env_simple(b: &mut EnvBand, t: u32, tick: u64, lpeak: u64, x: u64, keys: &[[u
     *b.u(t) += l - refl;
     // moss on fertile ground (`moss` is the key when the ruleset has it and the tile is fertile)
     if let Some(key) = moss {
-        if moss_grows(l - refl, b.theta(t), b.total(t, C), b.total(t, W), b.total(t, G), b.space(t, O), key, t, tick) {
+        if moss_grows(l - refl, b.theta(t), b.total(t, C), b.total(t, W), b.total(t, G), b.space(t, O), cap, key, t, tick) {
             b.add(t, C, -1);
             b.add(t, W, -1);
             b.add(t, G, 1);
