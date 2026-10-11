@@ -70,6 +70,9 @@ pub struct FamilyJudgement {
     pub pass: bool,
     /// Verbs of its windows that founder code never used.
     pub new_verbs: Vec<u32>,
+    /// Of those, the ones whose action and source/destination founder code never combined in
+    /// any verb (a new target), as opposed to another channel or sub-op of a founder verb.
+    pub new_targets: Vec<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -236,6 +239,13 @@ impl Judge {
         *slots = [slots[1], cur];
     }
 
+    /// A verb whose action (opcode) and source/destination domains founder code never used
+    /// together; another channel or sub-op of a founder verb is not a new target.
+    pub fn new_target(&self, v: u32) -> bool {
+        let shape = |v: u32| (v >> 27, v & 0xffff);
+        !self.founder_verbs.iter().any(|&f| shape(f) == shape(v))
+    }
+
     /// Judge every repeated family (B) and every chain (C) at `end`. Chains used by at least two
     /// agents are returned, passing ones first, each with the rule it fails if any.
     pub fn finish(&self, families: &[Family], end: u64) -> (Vec<FamilyJudgement>, Vec<Candidate>) {
@@ -295,6 +305,7 @@ impl Judge {
                 windows: st.windows,
                 founder: is_founder,
                 pass: success && linked,
+                new_targets: new_verbs.iter().copied().filter(|&v| self.new_target(v)).collect(),
                 new_verbs: new_verbs.clone(),
             });
             verbs_of.insert(f.id, new_verbs);
@@ -458,6 +469,9 @@ mod tests {
         let by = |id| judged.iter().find(|f| f.id == id).unwrap();
         assert!(!by(7).founder);
         assert_eq!(by(7).new_verbs, vec![g_in]);
+        assert!(by(7).new_targets.is_empty(), "same action and stores as the energy investment: a channel variant");
+        let give = crate::behavior::verb(&EffectFact { tick: 0, uid: 0, kind: 40, outcome: 0, dir: 0, channel: 3, actual: 1, src: 0, dst: 3 }).unwrap();
+        assert!(j.new_target(give), "G to another agent: no founder verb moves matter self>actor");
         assert!(by(8).founder, "same moves with the founders' verbs");
         assert_eq!(crate::behavior::describe_verb(g_in), "TRANSFER G self>embryo");
         assert_eq!(crate::behavior::describe_verb(energy_in), "TRANSFER energy self>embryo");

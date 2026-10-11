@@ -440,7 +440,7 @@ fn judge_csv(j: &[gene_core::judge::FamilyJudgement]) -> String {
             f.founder_windows,
             f.founder as u8,
             f.pass as u8,
-            verbs_text(&f.new_verbs)
+            verbs_marked(&f.new_verbs, &f.new_targets)
         );
     }
     out
@@ -500,14 +500,14 @@ fn judge_report(an: &gene_core::behavior::Analyzer, j: &gene_core::judge::Judge,
     for f in fams.iter().filter(|f| f.pass && !f.founder).take(top) {
         let fam = &an.families[f.id as usize];
         out += &format!(
-            "new family {}: carriers {}, fitness x{:.2}, windows {}, first day {:.1} (agent {}), new verbs [{}]\n    {}\n",
+            "new family {}: carriers {}, fitness x{:.2}, windows {}, first day {:.1} (agent {}), new verbs [{}] (* new target)\n    {}\n",
             f.id,
             f.carriers,
             f.fitness_milli as f64 / 1000.0,
             f.windows,
             fam.first_tick as f64 / 4096.0,
             fam.first_uid,
-            verbs_text(&f.new_verbs),
+            verbs_marked(&f.new_verbs, &f.new_targets),
             ex(f.id)
         );
     }
@@ -528,6 +528,15 @@ fn judge_report(an: &gene_core::behavior::Analyzer, j: &gene_core::judge::Judge,
         }
     }
     out
+}
+
+/// As `verbs_text`, with "*" before verbs that are a new target (not just another channel or
+/// sub-op of a founder verb).
+pub(crate) fn verbs_marked(v: &[u32], targets: &[u32]) -> String {
+    v.iter()
+        .map(|&x| format!("{}{}", if targets.contains(&x) { "*" } else { "" }, gene_core::behavior::describe_verb(x)))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Verbs founder code never used, readable and joined by "; ".

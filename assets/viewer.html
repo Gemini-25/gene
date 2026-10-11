@@ -1540,7 +1540,7 @@ async function loadHighlevel() {
     for (const f of h.new_families) {
       const li = document.createElement("li");
       li.innerHTML = `<span>#${f.id} <span class="small">· 개체 ${f.carriers} · 창 ${f.windows} · 성과 ×${(f.fitness / 1000).toFixed(2)} · 처음 ${(f.first / 4096).toFixed(1)}일</span></span>
-        <div class="steps"><code title="${esc(f.example.raw)}">${esc(stepWords(f.example))}</code></div>${f.verbs ? `<div class="small" title="조상 code가 한 번도 쓰지 않은 동작(무엇을 어디서 어디로)">새 동사: <code>${esc(f.verbs)}</code></div>` : ""}`;
+        <div class="steps"><code title="${esc(f.example.raw)}">${esc(stepWords(f.example))}</code></div>${f.verbs ? `<div class="small" title="조상 code가 한 번도 쓰지 않은 동작(무엇을 어디서 어디로). * 표시는 조상이 그 명령으로 한 번도 다루지 않은 대상(새 대상), 표시 없는 것은 조상 동작의 channel·sub-op만 다른 변형">새 동사: <code>${esc(f.verbs)}</code></div>` : ""}`;
       li.appendChild(hlRow(f.key, f.alive || [], hlReviews[f.key]));
       fl.appendChild(li);
     }

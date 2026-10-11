@@ -773,7 +773,7 @@ fn highlevel_json(j: &gene_core::judge::Judge, an: &gene_core::behavior::Analyze
                 "{{\"id\":{},\"key\":\"f{}\",\"verbs\":{},\"first\":{},\"carriers\":{},\"windows\":{},\"fitness\":{},\"alive\":[{}],\"example\":{}}}",
                 f.id,
                 f.id,
-                json_str(&crate::verbs_text(&f.new_verbs)),
+                json_str(&crate::verbs_marked(&f.new_verbs, &f.new_targets)),
                 fam.first_tick,
                 f.carriers,
                 f.windows,
