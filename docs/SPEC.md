@@ -797,6 +797,7 @@ bin = min(16, floor(log2(1 + n)))이다. parcel이 없는 tile의 parcel 필드�
 - `judge.csv`: 반복 family마다 성공·전체 token, 운반자 수, 성과 비(×1000), 조상 유형 수, 창 수, 조상 code 창 수, 조상의 것인지, 통과, 새 동사.
 - `highlevel.csv`: 개체 2 이상이 한 연쇄마다 판정(pass 또는 처음 걸린 규칙), 새로움, 처음 시각, 발생 수, 조상 code 발생 수, 개체 수, 때 수, 상황 수, 결과물 발생 수, 개체 예, 새 동사, 각 단계 family의 예시 token. 통과한 것이 먼저 온다.
 - `summary.json`의 `highlevel`: families_judged, families_pass, new_families_pass, chains_seen, chains_pass, new_chains_pass.
+- 실행 중에도 `gene judge ckpt_<tick>.ana`로 체크포인트의 분석 상태를 판정해 볼 수 있다(새 family, 새 연쇄, 새 동사).
 
 **한계.** 창 하나(256 tick) 안에서 끝나는 묶음은 연쇄가 아니라 family 하나로 잡힌다. 그런 새 행동은 B를 통과한 새 family로 센다. 상황은 위 세 가지로만 본다.
 

@@ -26,6 +26,8 @@ USAGE:
               Opens on the standard world: founder8m+founder9m+founder10m, gene-m2-4, 256², 249 agents
   gene asm    FILE.asm                   assemble, print size, hash and disassembly
   gene inspect SAVE.bin [--founder NAME]  genome census of a saved state with diffs against the founder
+  gene judge  CKPT.ana [--top N]          the high-level judge on a checkpoint's analysis state (SPEC §17f):
+                                         new families and chains so far, with the verbs founder code never used
   gene founders                          list built-in founders
 
 Defaults follow SPEC §3: size 512, agents 1000, founder founder4.
@@ -129,7 +131,7 @@ fn parse_opts(args: &[String], o: &mut Opts) -> BTreeMap<String, String> {
                     other => die(format!("unknown ruleset {other} (m0, m0b, m0c, m0d, m1a..m1f, m2, m2b, m2c, m2d)")),
                 }
             }
-            "--seeds" | "--threads" | "--from" | "--port" | "--load" => {
+            "--seeds" | "--threads" | "--from" | "--port" | "--load" | "--top" => {
                 let v = val();
                 extra.insert(k.to_string(), v);
             }
@@ -262,6 +264,15 @@ fn main() {
             };
             sim.threads = o.sim_threads;
             serve::serve(sim, serve::ServeOpts { port, save_dir: o.out.clone(), founder: o.founder.clone() });
+        }
+        "judge" => {
+            let path = args.get(1).unwrap_or_else(|| die("judge CKPT.ana"));
+            let extra = parse_opts(&args[2..], &mut o);
+            let top: usize = extra.get("--top").map_or(10, |v| v.parse().unwrap_or(10));
+            let bytes = fs::read(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
+            let (behavior, judge): (gene_core::behavior::Analyzer, gene_core::judge::Judge) =
+                postcard::from_bytes(&bytes).unwrap_or_else(|e| die(format!("{path}: {e}")));
+            print!("{}", judge_report(&behavior, &judge, top));
         }
         "inspect" => {
             let path = args.get(1).unwrap_or_else(|| die("inspect SAVE.bin"));
@@ -462,6 +473,59 @@ fn highlevel_csv(c: &[gene_core::judge::Candidate], an: &gene_core::behavior::An
             verbs_text(&k.new_verbs),
             steps.join(" => ")
         );
+    }
+    out
+}
+
+/// The judge's view of an analysis state: totals, then the new passing families and chains.
+fn judge_report(an: &gene_core::behavior::Analyzer, j: &gene_core::judge::Judge, top: usize) -> String {
+    use gene_core::behavior::{describe, WINDOW};
+    let end = an.families.iter().map(|f| f.last_tick).max().unwrap_or(0);
+    let (fams, chains) = j.finish(&an.families, end);
+    let c = &an.counts;
+    let mut out = format!(
+        "day {:.1}: windows {}, families {}, repeated {}; judged {}, pass {}, new {}; chains {}, pass {}, new {}\n",
+        end as f64 / 4096.0,
+        c.windows,
+        an.families.len(),
+        an.families.iter().filter(|f| f.repeated_at.is_some()).count(),
+        fams.len(),
+        fams.iter().filter(|f| f.pass).count(),
+        fams.iter().filter(|f| f.pass && !f.founder).count(),
+        chains.len(),
+        chains.iter().filter(|k| k.pass()).count(),
+        chains.iter().filter(|k| k.pass() && k.new).count()
+    );
+    let ex = |id: u32| an.families[id as usize].example.iter().take(6).map(describe).collect::<Vec<_>>().join(" · ");
+    for f in fams.iter().filter(|f| f.pass && !f.founder).take(top) {
+        let fam = &an.families[f.id as usize];
+        out += &format!(
+            "new family {}: carriers {}, fitness x{:.2}, windows {}, first day {:.1} (agent {}), new verbs [{}]\n    {}\n",
+            f.id,
+            f.carriers,
+            f.fitness_milli as f64 / 1000.0,
+            f.windows,
+            fam.first_tick as f64 / 4096.0,
+            fam.first_uid,
+            verbs_text(&f.new_verbs),
+            ex(f.id)
+        );
+    }
+    for k in chains.iter().filter(|k| k.pass() && k.new).take(top) {
+        let ch = &k.chain;
+        out += &format!(
+            "new chain {}: agents {}, occurrences {}, situations {}, first day {:.1}, new verbs [{}], agents {:?}\n",
+            ch.families.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(">"),
+            ch.agent_count,
+            ch.occurrences,
+            ch.contexts.count_ones(),
+            (ch.first_window * WINDOW) as f64 / 4096.0,
+            verbs_text(&k.new_verbs),
+            &ch.agents[..ch.agents.len().min(5)]
+        );
+        for f in &ch.families {
+            out += &format!("    {}\n", ex(*f));
+        }
     }
     out
 }
