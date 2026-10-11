@@ -748,8 +748,10 @@ fn latest_checkpoint(o: &Opts) -> Option<(u64, Sim)> {
 }
 
 /// Keep the header and the rows up to tick t of a CSV whose first column is the tick; return
-/// the kept rows' largest value in column `max_col` (0 when none).
-fn truncate_csv(path: &std::path::Path, t: u64, max_col: usize) -> u64 {
+/// the kept rows' largest value in column `max_col` (0 when none). Snapshot rows (stats) at tick t
+/// belong to the checkpoint; event rows (births, deaths) at tick t happened while running tick t,
+/// after the checkpoint, and are written again by the resumed run, so `events` keeps only t' < t.
+fn truncate_csv(path: &std::path::Path, t: u64, max_col: usize, events: bool) -> u64 {
     let text = fs::read_to_string(path).unwrap_or_default();
     let mut out = String::with_capacity(text.len());
     let mut best = 0;
@@ -762,7 +764,7 @@ fn truncate_csv(path: &std::path::Path, t: u64, max_col: usize) -> u64 {
             }
             let mut cols = line.split(',');
             match cols.next().and_then(|c| c.parse::<u64>().ok()) {
-                Some(tick) if tick <= t => {}
+                Some(tick) if tick < t || (tick == t && !events) => {}
                 _ => continue,
             }
             if let Some(v) = line.split(',').nth(max_col).and_then(|c| c.parse::<u64>().ok()) {
@@ -791,9 +793,9 @@ fn run_from(mut sim: Sim, o: &Opts, resumed: Option<u64>) -> Summary {
         BufWriter::new(fs::OpenOptions::new().append(true).open(o.out.join(name)).unwrap_or_else(|e| die(format!("{name}: {e}"))))
     };
     if let Some(t) = resumed {
-        peak_before = truncate_csv(&o.out.join("stats.csv"), t, 1);
-        truncate_csv(&o.out.join("births.csv"), t, 0);
-        truncate_csv(&o.out.join("deaths.csv"), t, 0);
+        peak_before = truncate_csv(&o.out.join("stats.csv"), t, 1, false);
+        truncate_csv(&o.out.join("births.csv"), t, 0, true);
+        truncate_csv(&o.out.join("deaths.csv"), t, 0, true);
     }
     let (mut stats, mut births, mut deaths) = match resumed {
         Some(_) => (append("stats.csv"), append("births.csv"), append("deaths.csv")),
@@ -1344,8 +1346,13 @@ mod tests {
         let p = dir.join("stats.csv");
         // the last line was cut off by a kill: it must not pass for tick 10
         std::fs::write(&p, "tick,pop\n256,10\n512,40\n768,30\n1024,99\n10").unwrap();
-        assert_eq!(truncate_csv(&p, 768, 1), 40, "largest pop among kept rows");
+        assert_eq!(truncate_csv(&p, 768, 1, false), 40, "largest pop among kept rows");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "tick,pop\n256,10\n512,40\n768,30\n");
+        // births at the checkpoint tick happened after the checkpoint: the resumed run writes them
+        let b = dir.join("births.csv");
+        std::fs::write(&b, "tick,uid\n700,5\n768,6\n768,7\n800,8\n").unwrap();
+        truncate_csv(&b, 768, 0, true);
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "tick,uid\n700,5\n");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
