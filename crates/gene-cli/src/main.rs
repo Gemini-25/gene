@@ -22,7 +22,8 @@ USAGE:
   gene batch  --seeds A-B|A,B,C-D [--threads N] [same options as run]  (one directory per seed)
   gene resume --from CHECKPOINT [--ticks T] [--out DIR] [...]
   gene serve  [--port 8080] [--load SAVE.bin] [same world options as run]
-              local web viewer: map, play/pause/speed, agent inspection, genome census
+              local web viewer: map, play/pause/speed, agent inspection, genome census.
+              Opens on the standard world: founder8m+founder9m+founder10m, gene-m2-4, 256², 249 agents
   gene asm    FILE.asm                   assemble, print size, hash and disassembly
   gene inspect SAVE.bin [--founder NAME]  genome census of a saved state with diffs against the founder
   gene founders                          list built-in founders
@@ -241,6 +242,11 @@ fn main() {
             print!("{}", isa::disassemble(&p));
         }
         "serve" => {
+            // the viewer opens on the standard world (decisions 5..7, SPEC §18b) unless told otherwise
+            o.founder = "founder8m+founder9m+founder10m".into();
+            o.ruleset = gene_core::sim::RULESET_M2D.into();
+            o.size = 256;
+            o.agents = 249;
             let extra = parse_opts(&args[1..], &mut o);
             let port = extra.get("--port").map_or(8080, |p| p.parse().unwrap_or_else(|_| die("bad --port")));
             if o.sim_threads == 0 {

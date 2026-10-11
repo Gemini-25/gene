@@ -1350,7 +1350,7 @@ async function loadAgent() {
     <tr><td>위치 · 방향</td><td>(${a.x}, ${a.y}) · ${"북동남서"[a.orient]}</td></tr>
     <tr><td>가용 energy</td><td>${a.energy} q (광합성 credit ${a.photo_credit})</td></tr>
     <tr><td>몸체 · inventory</td><td>G${a.body_g} S${a.shell_s}${a.abrasion ? ` (마모 ${a.abrasion} q)` : ""} · ${esc(inv)}</td></tr>
-    <tr><td>유지비</td><td>${a.upkeep} q/tick</td></tr>
+    <tr><td>유지비</td><td>${a.upkeep + (a.aging || 0)} q/tick${a.aging ? ` <span class="small" title="나이에 따른 유지비(SPEC §20j)">(나이 몫 ${a.aging})</span>` : ""}</td></tr>
     <tr><td>배아</td><td>${emb}</td></tr>
     <tr><td>자식</td><td>${a.children}</td></tr>
     <tr><td>초안 · 학습 코드</td><td>${a.draft ? `${a.draft.len}/${a.draft.capacity} cell${a.draft.foreign ? " (공개 기록 포함)" : ""}` : "없음"} · ${a.learned ? `${a.learned.len} cell 채택${a.learned.foreign ? " (공개 기록 출처)" : ""}` : "없음"}${a.retained ? ` · 보존 ${a.retained}` : ""}</td></tr>
@@ -1527,38 +1527,48 @@ async function loadHighlevel() {
     li.innerHTML = `<span>${c.families.map((f) => "#" + f).join(" → ")} ${verdict}${origin}
       <span class="small">· 개체 ${c.agents} · ${c.occ}번 · 상황 ${c.situations} · 결과물 ${c.outputs} · 처음 ${(c.first / 4096).toFixed(1)}일</span></span>
       <div class="steps">${c.steps.map((x) => `<code title="${esc(x.raw)}">${esc(stepWords(x))}</code>`).join("")}</div>`;
-    const row = document.createElement("div");
-    row.className = "hl-row";
-    if (c.alive.length) {
-      const lab = document.createElement("span"); lab.className = "small"; lab.textContent = "따라가기";
-      row.appendChild(lab);
-      for (const u of c.alive) {
-        const a = document.createElement("a"); a.textContent = "#" + u; a.title = "이 개체를 선택하고 따라가기";
-        a.onclick = () => watchAgent(u);
-        row.appendChild(a);
-      }
-    } else {
-      const lab = document.createElement("span"); lab.className = "small"; lab.textContent = "예시 개체가 모두 죽음";
-      row.appendChild(lab);
-    }
-    const sp = document.createElement("span"); sp.style.flex = "1"; row.appendChild(sp);
-    const btns = document.createElement("span"); btns.className = "rev-group"; row.appendChild(btns);
-    for (const [v, label, tip] of [["yes", "✓ 맞음", "사람이 보고 고수준 행동이라고 확인"], ["no", "✗ 아님", "사람이 보고 아니라고 판단"]]) {
-      const b = document.createElement("button");
-      const on = rv === (v === "yes");
-      b.className = `rev ${v}${rv !== undefined && on ? " on" : ""}`;
-      b.textContent = label; b.title = tip;
-      b.onclick = () => review(c.key, rv !== undefined && on ? "clear" : v);
-      btns.appendChild(b);
-    }
-    li.appendChild(row);
+    li.appendChild(hlRow(c.key, c.alive, rv));
     ul.appendChild(li);
   }
   if (!h.chains.length) ul.innerHTML = '<li class="small">아직 없음 (서로 다른 반복 행동이 이어진 개체가 3 이상인 연쇄가 없음)</li>';
+  // new behaviour inside one window: the same follow links and review buttons as chains
   const nf = $("hl-fams");
-  nf.innerHTML = h.new_families.length
-    ? `<div class="small" style="margin-top:8px">창 하나 안의 새 행동(통과, 조상 아님) ${h.new_families_pass}개</div><ul class="behav">${h.new_families.map((f) => `<li>#${f.id} <span class="small">· 개체 ${f.carriers} · 창 ${f.windows} · 성과 ×${(f.fitness / 1000).toFixed(2)} · 처음 ${(f.first / 4096).toFixed(1)}일</span><code title="${esc(f.example.raw)}">${esc(stepWords(f.example))}</code></li>`).join("")}</ul>`
-    : "";
+  nf.innerHTML = h.new_families.length ? `<div class="small" style="margin-top:8px">창 하나 안의 새 행동(통과, 조상 아님) ${h.new_families_pass}개</div>` : "";
+  if (h.new_families.length) {
+    const fl = document.createElement("ul"); fl.className = "behav"; nf.appendChild(fl);
+    for (const f of h.new_families) {
+      const li = document.createElement("li");
+      li.innerHTML = `<span>#${f.id} <span class="small">· 개체 ${f.carriers} · 창 ${f.windows} · 성과 ×${(f.fitness / 1000).toFixed(2)} · 처음 ${(f.first / 4096).toFixed(1)}일</span></span>
+        <div class="steps"><code title="${esc(f.example.raw)}">${esc(stepWords(f.example))}</code></div>`;
+      li.appendChild(hlRow(f.key, f.alive || [], hlReviews[f.key]));
+      fl.appendChild(li);
+    }
+  }
+}
+
+// Follow links for the example agents still alive, and the person's ✓/✗ (decision 3, D).
+function hlRow(key, alive, rv) {
+  const row = document.createElement("div");
+  row.className = "hl-row";
+  const lab = document.createElement("span"); lab.className = "small";
+  lab.textContent = alive.length ? "따라가기" : "예시 개체가 모두 죽음";
+  row.appendChild(lab);
+  for (const u of alive) {
+    const a = document.createElement("a"); a.textContent = "#" + u; a.title = "이 개체를 선택하고 따라가기";
+    a.onclick = () => watchAgent(u);
+    row.appendChild(a);
+  }
+  const sp = document.createElement("span"); sp.style.flex = "1"; row.appendChild(sp);
+  const btns = document.createElement("span"); btns.className = "rev-group"; row.appendChild(btns);
+  for (const [v, label, tip] of [["yes", "✓ 맞음", "사람이 보고 새 고수준 행동이라고 확인"], ["no", "✗ 아님", "사람이 보고 아니라고 판단"]]) {
+    const b = document.createElement("button");
+    const on = rv === (v === "yes");
+    b.className = `rev ${v}${rv !== undefined && on ? " on" : ""}`;
+    b.textContent = label; b.title = tip;
+    b.onclick = () => review(key, rv !== undefined && on ? "clear" : v);
+    btns.appendChild(b);
+  }
+  return row;
 }
 
 async function loadBehaviors() {

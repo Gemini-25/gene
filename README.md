@@ -48,14 +48,18 @@ Rust 1.85 이상이 필요하다.
 cargo test --release                      # 전체 시험
 cargo build --release
 
-# 작은 세계에서 한 번 실행
-./target/release/gene run --founder founder7 --size 128 --agents 64 --ticks 40000 --save-final --out runs/demo
+# 작은 세계에서 한 번 실행 (기준 ruleset)
+./target/release/gene run --ruleset current --founder founder7 --size 128 --agents 64 --ticks 40000 --save-final --out runs/demo
+
+# 진화한 genome과 조상의 경쟁 시험 (SPEC §17g)
+python3 scripts/compete.py runs/demo/final.bin HASH앞자리 --ruleset m2d
 
 # 명세 기본값(512², 1000 개체)으로 seed 여러 개를 병렬 실행
 ./target/release/gene batch --seeds 1-20 --threads 4 --founder founder7 --ticks 200000 --out runs/E1d
 
 # 브라우저 화면: http://127.0.0.1:8080/ 를 연다 (처음엔 일시정지 상태)
-./target/release/gene serve --founder founder7 --size 256 --agents 300
+./target/release/gene serve                                              # 기준 세계: module형 조상 셋, gene-m2-4, 256²
+./target/release/gene serve --founder founder7 --size 128 --agents 64    # 다른 조상
 ./target/release/gene serve --load runs/demo/final.bin --founder founder7   # 저장 상태 이어 보기
 ./target/release/gene serve --ruleset m1f --founder my.asm               # M1 기능 전체로
 
@@ -68,7 +72,7 @@ python3 scripts/e1_summary.py runs/E1d
 python3 scripts/e1_newborns.py runs/E1d   # 신생아 생존
 ```
 
-`--founder`에는 `founder4`..`founder10` 또는 어셈블리 파일 경로를 줄 수 있고, `+`로 이어 여러 조상을 한 세계에 둘 수 있다(조상 i는 i mod n번째 프로그램). `--ruleset`은 `m0`(기본), `m1a`..`m1f`, `m0b`, `m2`다. `m2`가 지금 있는 모든 기능이다(SPEC §20h). 실행마다 다음 파일이 생긴다.
+`--founder`에는 `founder4`..`founder10` 또는 어셈블리 파일 경로를 줄 수 있고, `+`로 이어 여러 조상을 한 세계에 둘 수 있다(조상 i는 i mod n번째 프로그램). `--ruleset`은 `m0`(명령줄 기본, 이전 실행 재현용), `m1a`..`m1f`, `m0b`..`m0d`, `m2`..`m2d`다. **기준은 `m2d`(`gene-m2-4`, 별칭 `current`)다**: 모든 기능 + 흙이 물을 붙잡음 + 나이 이틀마다 유지비 +1q/tick(사용자 결정 5..7, SPEC §20h..§20j). `gene serve`는 기본으로 이 세계를 연다. `--founder`에는 `저장.bin@hash앞자리`로 저장 상태 개체의 genome을 줄 수도 있다. 실행마다 다음 파일이 생긴다.
 
 | 파일 | 내용 |
 | --- | --- |

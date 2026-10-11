@@ -763,9 +763,17 @@ fn highlevel_json(j: &gene_core::judge::Judge, an: &gene_core::behavior::Analyze
         .take(8)
         .map(|f| {
             let fam = &an.families[f.id as usize];
+            let live: Vec<String> = fam.agents.iter().filter(|u| alive.contains(u)).take(6).map(|u| u.to_string()).collect();
             format!(
-                "{{\"id\":{},\"first\":{},\"carriers\":{},\"windows\":{},\"fitness\":{},\"example\":{}}}",
-                f.id, fam.first_tick, f.carriers, f.windows, f.fitness_milli, step(f.id)
+                "{{\"id\":{},\"key\":\"f{}\",\"first\":{},\"carriers\":{},\"windows\":{},\"fitness\":{},\"alive\":[{}],\"example\":{}}}",
+                f.id,
+                f.id,
+                fam.first_tick,
+                f.carriers,
+                f.windows,
+                f.fitness_milli,
+                live.join(","),
+                step(f.id)
             )
         })
         .collect();
@@ -900,7 +908,7 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founders: &[gene_core::genome:
             let s = format!(
                 "{{\"uid\":{},\"parent\":{},\"root\":{},\"generation\":{},\"age\":{},\"x\":{},\"y\":{},\"orient\":{},\
 \"energy\":{},\"photo_credit\":{},\"body_g\":{},\"shell_s\":{},\"abrasion\":{},\"inv\":{{{}}},\"children\":{},\"genome\":\"{}\",\
-\"cells\":{},\"pages\":{},\"upkeep\":{},\"theta\":{},\"tile_light_peak\":{},\"tile_elev\":{},\"tile_water\":{},\
+\"cells\":{},\"pages\":{},\"upkeep\":{},\"aging\":{},\"theta\":{},\"tile_light_peak\":{},\"tile_elev\":{},\"tile_water\":{},\
 \"recent\":[{}],\"pc\":[{},{}],\"fault\":{},\"regs\":[{}],\"mem\":[{}],\"embryo\":{},\"draft\":{},\"learned\":{},\"retained\":{},\"diff\":{},\"habits\":{}}}",
                 a.uid,
                 a.parent,
@@ -921,6 +929,7 @@ fn answer(req: Req, sim: &Sim, cache: &HashCache, founders: &[gene_core::genome:
                 a.used_len,
                 a.code.present_pages(),
                 a.upkeep(),
+                if sim.caps.aging > 0 { a.aging_upkeep(sim.caps.aging) } else { 0 },
                 w.theta(t),
                 w.lpeak[t as usize],
                 w.elev[t as usize],
@@ -1146,7 +1155,10 @@ fn handle(mut stream: TcpStream, shared: &Arc<Mutex<Shared>>, tx: &mpsc::Sender<
         }
         "/api/review" => {
             let key = query(q, "chain").unwrap_or_default();
-            if key.is_empty() || key.len() > 64 || !key.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+            // a chain "7-8-9" or a family inside one window "f7"
+            let digits = key.strip_prefix('f').unwrap_or(&key);
+            let ok = if key.starts_with('f') { !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) } else { key.bytes().all(|b| b.is_ascii_digit() || b == b'-') };
+            if key.is_empty() || key.len() > 64 || !ok {
                 return respond(&mut stream, "400 Bad Request", json, b"{\"error\":\"chain\"}");
             }
             let mut sh = shared.lock().unwrap();
