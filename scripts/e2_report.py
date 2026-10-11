@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""E2 main experiment summary (SPEC §18b): per seed, population by day and founder type, deepest
-generation, newborn one-day survival, habit mixes, matter put into embryos, code transfers, and
-the judge's new families and chains with the verbs founder code never used.
+"""E2 main experiment summary (SPEC §18b): per seed, population by day, deepest generation, the
+living by founder type at the end, the share of mutated births at the end, the commonest genome,
+matter put into embryos, code transfers, and the judge's new families and chains with the verbs
+founder code never used.
 
 usage: e2_report.py [RUN_ROOT=runs/E2_main] [--days 64,128,256,384,488]
 """
@@ -15,6 +16,29 @@ NAMES = ["founder8m", "founder9m", "founder10m"]
 def rows(path):
     with open(path) as f:
         return [r for r in csv.DictReader(f) if None not in r.values()]
+
+
+def living_by_founder(sd, agents=249, kinds=3):
+    """Living agents at the end by founder type of their root ((root - 1) mod kinds)."""
+    alive = {u: u for u in range(1, agents + 1)}
+    for b in rows(sd / "births.csv"):
+        alive[int(b["uid"])] = int(b["root"])
+    for d in rows(sd / "deaths.csv"):
+        alive.pop(int(d["uid"]), None)
+    out = [0] * kinds
+    for root in alive.values():
+        out[(root - 1) % kinds] += 1
+    return out
+
+
+def mutated_share(sd, since):
+    """Share of births from tick `since` on that carry a point flip or an applied structural change."""
+    n = m = 0
+    for b in rows(sd / "births.csv"):
+        if int(b["tick"]) >= since and b.get("point_flips"):
+            n += 1
+            m += int(b["point_flips"]) > 0 or b["structural_applied"] == "1"
+    return m / n if n else 0.0
 
 
 def main(argv):
@@ -41,6 +65,20 @@ def main(argv):
             end += " (extinct)"
         print(f"| {sd.name} | " + " | ".join(cells) + f" | {end} | {last['births']} | {last['max_gen']} | {'yes' if summary else 'no'} |")
     print("\n(cells: population / deepest generation)\n")
+    print("| seed | living by founder at the end (" + ", ".join(NAMES) + ") | mutated births, last 64 days | commonest genome |")
+    print("| --- | --- | --- | --- |")
+    for sd in seeds:
+        if not (sd / "summary.json").exists():
+            continue
+        st = rows(sd / "stats.csv")
+        end = int(st[-1]["tick"])
+        top = ""
+        if (sd / "genomes.txt").exists():
+            g = [l.split() for l in open(sd / "genomes.txt") if l.startswith("genome ")]
+            if g:
+                top = f"{g[0][1][:8]}: {g[0][3]} carriers, nearest {g[0][-1]}"
+        print(f"| {sd.name} | {' / '.join(map(str, living_by_founder(sd)))} | {100 * mutated_share(sd, end - 64 * DAY):.1f}% | {top} |")
+    print()
     for sd in seeds:
         if not (sd / "summary.json").exists():
             continue

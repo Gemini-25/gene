@@ -246,6 +246,13 @@ impl Judge {
         *slots = [slots[1], cur];
     }
 
+    /// A family's window count and its verbs with the number of windows each was seen in, and
+    /// whether founder code also used the verb (for hand checks: `gene judge --family`).
+    pub fn family_verbs(&self, family: u32) -> Option<(u64, Vec<(u32, u32, bool)>)> {
+        let st = self.stats.get(&family)?;
+        Some((st.windows, st.verbs.iter().map(|(&v, &n)| (v, n, self.founder_verbs.contains(&v))).collect()))
+    }
+
     /// A verb whose action (opcode) and source/destination domains founder code never used
     /// together; another channel or sub-op of a founder verb is not a new target.
     pub fn new_target(&self, v: u32) -> bool {

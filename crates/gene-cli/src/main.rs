@@ -26,8 +26,10 @@ USAGE:
               Opens on the standard world: founder8m+founder9m+founder10m, gene-m2-4, 256², 249 agents
   gene asm    FILE.asm                   assemble, print size, hash and disassembly
   gene inspect SAVE.bin [--founder NAME]  genome census of a saved state with diffs against the founder
-  gene judge  CKPT.ana [--top N]          the high-level judge on a checkpoint's analysis state (SPEC §17f):
-                                         new families and chains so far, with the verbs founder code never used
+  gene judge  CKPT.ana [--top N] [--family N]
+                                         the high-level judge on a checkpoint's analysis state (SPEC §17f):
+                                         new families and chains so far, with the verbs founder code never used;
+                                         --family: one family's verbs and how many windows had each
   gene founders                          list built-in founders
 
 Defaults follow SPEC §3: size 512, agents 1000, founder founder4.
@@ -131,7 +133,7 @@ fn parse_opts(args: &[String], o: &mut Opts) -> BTreeMap<String, String> {
                     other => die(format!("unknown ruleset {other} (m0, m0b, m0c, m0d, m1a..m1f, m2, m2b, m2c, m2d)")),
                 }
             }
-            "--seeds" | "--threads" | "--from" | "--port" | "--load" | "--top" => {
+            "--seeds" | "--threads" | "--from" | "--port" | "--load" | "--top" | "--family" => {
                 let v = val();
                 extra.insert(k.to_string(), v);
             }
@@ -272,7 +274,18 @@ fn main() {
             let bytes = fs::read(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
             let (behavior, judge): (gene_core::behavior::Analyzer, gene_core::judge::Judge) =
                 postcard::from_bytes(&bytes).unwrap_or_else(|e| die(format!("{path}: {e}")));
-            print!("{}", judge_report(&behavior, &judge, top));
+            match extra.get("--family").map(|v| v.parse::<u32>().unwrap_or_else(|_| die("--family N"))) {
+                Some(id) => match judge.family_verbs(id) {
+                    Some((windows, verbs)) => {
+                        println!("family {id}: {windows} windows; verbs of its successful effects (windows seen, * = founder code never used it)");
+                        for (v, n, founder) in verbs {
+                            println!("  {:>7}  {}{}", n, if founder { "" } else { "* " }, gene_core::behavior::describe_verb(v));
+                        }
+                    }
+                    None => die(format!("no family {id} in {path}")),
+                },
+                None => print!("{}", judge_report(&behavior, &judge, top)),
+            }
         }
         "inspect" => {
             let path = args.get(1).unwrap_or_else(|| die("inspect SAVE.bin"));
