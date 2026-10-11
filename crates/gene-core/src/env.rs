@@ -19,35 +19,50 @@ pub const MOSS_W_MIN: u64 = 4;
 /// Chance of one Rx0 extent per environment visit = absorbed light × MOSS_RATE / 2^24.
 pub const MOSS_RATE: u64 = 64;
 
-/// Moving moss blooms (SPEC §20m): block side in tiles, epoch length in ticks, the odds (1 in
-/// BLOOM_ODDS) that a block blooms in an epoch, and the radius of the bloom (a disc at the block
-/// centre).
-pub const BLOOM_BLOCK: u32 = 16;
-pub const BLOOM_EPOCH: u64 = 16384;
-pub const BLOOM_ODDS: u32 = 10;
-pub const BLOOM_RADIUS: i64 = 7;
-/// Blooms are short-lived but rich: moss stops at this much loose G (above the 17 G at which
-/// Founder-8m calls).
-pub const BLOOM_CAP: u64 = 32;
+/// Moving moss ground (SPEC §20m, §20o): the map is cut into `block`-sided squares; every `epoch`
+/// ticks each square blooms afresh with odds 1 in `odds` (Environment stream, object = square,
+/// ordinal = tag << 56 | epoch) as a disc of `radius` tiles at its centre. Moss there stops at
+/// `cap` loose G and grows with chance absorbed light × `rate` / 2^24 per environment visit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bloom {
+    pub block: u32,
+    pub epoch: u64,
+    pub odds: u32,
+    pub radius: i64,
+    pub cap: u64,
+    pub rate: u64,
+    pub tag: u64,
+}
+
+/// Blooms of `gene-m2-7` (SPEC §20m): 16×16 blocks, 4 days, 1 in 10, radius 7, rich (32 G, above
+/// the 17 G at which Founder-8m calls).
+pub const BLOOMS: Bloom = Bloom { block: 16, epoch: 16384, odds: 10, radius: 7, cap: 32, rate: MOSS_RATE, tag: 3 };
+/// Food patches of `gene-m2-10` (SPEC §20o): small (12 tiles, about the reach of a call), short
+/// (one day) and rich (48 G a tile), so one agent cannot eat a patch alone.
+pub const PATCHES: Bloom = Bloom { block: 8, epoch: 4096, odds: 8, radius: 2, cap: 48, rate: 512, tag: 4 };
+pub const BLOOM_BLOCK: u32 = BLOOMS.block;
+pub const BLOOM_EPOCH: u64 = BLOOMS.epoch;
+pub const BLOOM_ODDS: u32 = BLOOMS.odds;
+pub const BLOOM_RADIUS: i64 = BLOOMS.radius;
+pub const BLOOM_CAP: u64 = BLOOMS.cap;
 
 /// Moss ground per tile (SPEC §20k, §20m): the wettest substrate class, or with blooms a disc in
-/// each block drawn for the epoch of `tick` (Environment stream, object = block, ordinal =
-/// 3 << 56 | epoch).
-pub fn moss_ground(world: &crate::world::World, seed: u64, bloom: bool, tick: u64) -> Vec<u8> {
+/// each block drawn for the epoch of `tick`.
+pub fn moss_ground(world: &crate::world::World, seed: u64, bloom: Option<Bloom>, tick: u64) -> Vec<u8> {
     let n = (world.w * world.h) as usize;
-    if !bloom {
+    let Some(b) = bloom else {
         return (0..n).map(|t| (world.substrate[t] >= MOSS_SUBSTRATE) as u8).collect();
-    }
-    let epoch = tick / BLOOM_EPOCH;
-    let bw = world.w.div_ceil(BLOOM_BLOCK);
-    let bh = world.h.div_ceil(BLOOM_BLOCK);
-    let on: Vec<bool> = (0..bw * bh).map(|b| stream_key(seed, Domain::Environment, b as u64, (3u64 << 56) | epoch)[0] % BLOOM_ODDS == 0).collect();
+    };
+    let epoch = tick / b.epoch;
+    let bw = world.w.div_ceil(b.block);
+    let bh = world.h.div_ceil(b.block);
+    let on: Vec<bool> = (0..bw * bh).map(|k| stream_key(seed, Domain::Environment, k as u64, (b.tag << 56) | epoch)[0] % b.odds == 0).collect();
     (0..n as u32)
         .map(|t| {
             let (x, y) = (t % world.w, t / world.w);
-            let (dx, dy) = ((x % BLOOM_BLOCK) as i64 * 2 + 1 - BLOOM_BLOCK as i64, (y % BLOOM_BLOCK) as i64 * 2 + 1 - BLOOM_BLOCK as i64);
-            let inside = dx * dx + dy * dy <= 4 * BLOOM_RADIUS * BLOOM_RADIUS;
-            (inside && on[((y / BLOOM_BLOCK) * bw + x / BLOOM_BLOCK) as usize]) as u8
+            let (dx, dy) = ((x % b.block) as i64 * 2 + 1 - b.block as i64, (y % b.block) as i64 * 2 + 1 - b.block as i64);
+            let inside = dx * dx + dy * dy <= 4 * b.radius * b.radius;
+            (inside && on[((y / b.block) * bw + x / b.block) as usize]) as u8
         })
         .collect()
 }
@@ -56,14 +71,14 @@ pub fn moss_ground(world: &crate::world::World, seed: u64, bloom: bool, tick: u6
 /// absorbed) happens at the loose site of a fertile tile with no actor and no parcel.
 #[allow(clippy::too_many_arguments)]
 #[inline]
-fn moss_grows(absorbed: u64, theta: u64, c: u64, w: u64, g: u64, o_space: u64, cap: u64, key: [u32; 2], t: u32, tick: u64) -> bool {
+fn moss_grows(absorbed: u64, theta: u64, c: u64, w: u64, g: u64, o_space: u64, (cap, rate): (u64, u64), key: [u32; 2], t: u32, tick: u64) -> bool {
     absorbed >= PHOTO_HEAT
         && (260..=330).contains(&theta)
         && c >= 1
         && w >= MOSS_W_MIN
         && g < cap
         && o_space >= 1
-        && sr(absorbed * MOSS_RATE, 1 << 24, key, t as u64, tick) >= 1
+        && sr(absorbed * rate, 1 << 24, key, t as u64, tick) >= 1
 }
 
 impl Sim {
@@ -124,7 +139,7 @@ impl Sim {
     pub(crate) fn stage_environment(&mut self) {
         let tick = self.st.tick;
         if self.caps.moss {
-            let epoch = if self.caps.bloom { tick / BLOOM_EPOCH } else { 0 };
+            let epoch = self.caps.bloom.map_or(0, |b| tick / b.epoch);
             if self.moss_epoch != epoch || self.moss_mask.len() != self.st.world.n() {
                 self.moss_mask = moss_ground(&self.st.world, self.st.config.seed, self.caps.bloom, tick);
                 self.moss_epoch = epoch;
@@ -157,7 +172,7 @@ impl Sim {
         let occ = &w.occ;
         let (lpeak, expo, heat_c, moss_mask) = (&w.lpeak, &w.expo, &w.heat_c, &self.moss_mask);
         let moss = if self.caps.moss { Some(self.keys.moss) } else { None };
-        let cap = if self.caps.bloom { BLOOM_CAP } else { MOSS_CAP };
+        let cap = self.caps.bloom.map_or((MOSS_CAP, MOSS_RATE), |b| (b.cap, b.rate));
         let mut heat_u: &mut [u64] = &mut w.heat_u;
         let mut loose: &mut [[u16; NSPEC]] = &mut w.loose;
         let mut credit: &mut [[u16; 5]] = &mut w.rx_credit;
@@ -267,7 +282,7 @@ impl Sim {
         }
         if occupant.is_none() && self.caps.moss && self.moss_mask[ti] != 0 && !self.st.world.parcels.contains_key(&t) {
             let w = &self.st.world;
-            let cap = if self.caps.bloom { BLOOM_CAP } else { MOSS_CAP };
+            let cap = self.caps.bloom.map_or((MOSS_CAP, MOSS_RATE), |b| (b.cap, b.rate));
             if moss_grows(absorbed, w.theta(t), w.loose_total(t, C), w.loose_total(t, W), w.loose_total(t, G), w.loose_space(t, O), cap, self.keys.moss, t, tick) {
                 let w = &mut self.st.world;
                 w.take_loose(t, C, 1);
@@ -800,7 +815,7 @@ impl EnvBand<'_> {
 /// phase changes. Same arithmetic as `Sim::env_tile` for such tiles.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
-fn env_simple(b: &mut EnvBand, t: u32, tick: u64, lpeak: u64, x: u64, keys: &[[u32; 2]; 5], decomp: bool, moss: Option<[u32; 2]>, cap: u64) {
+fn env_simple(b: &mut EnvBand, t: u32, tick: u64, lpeak: u64, x: u64, keys: &[[u32; 2]; 5], decomp: bool, moss: Option<[u32; 2]>, cap: (u64, u64)) {
     let p = ((tick + 1024) % 4096) as i64;
     let f = (1024 - (p - 1024).abs()).max(0) as u64;
     let l = lpeak * f / 1024;

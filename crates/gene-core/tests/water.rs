@@ -145,13 +145,13 @@ fn moss_blooms_move_every_epoch_and_cover_a_few_percent_in_discs() {
     use gene_core::env::{moss_ground, BLOOM_EPOCH};
     let s = idle_world(gene_core::sim::RULESET_M2G);
     let w = &s.st.world;
-    let a = moss_ground(w, 3, true, 0);
-    let b = moss_ground(w, 3, true, BLOOM_EPOCH - 1);
-    let c = moss_ground(w, 3, true, BLOOM_EPOCH);
+    let a = moss_ground(w, 3, Some(gene_core::env::BLOOMS), 0);
+    let b = moss_ground(w, 3, Some(gene_core::env::BLOOMS), BLOOM_EPOCH - 1);
+    let c = moss_ground(w, 3, Some(gene_core::env::BLOOMS), BLOOM_EPOCH);
     assert_eq!(a, b, "the same epoch keeps its blooms");
     assert_ne!(a, c, "the next epoch draws new ones");
     // over many epochs about 1/16 of the ground is moss
-    let total: usize = (0..64).map(|e| moss_ground(w, 3, true, e * BLOOM_EPOCH).iter().filter(|&&m| m != 0).count()).sum();
+    let total: usize = (0..64).map(|e| moss_ground(w, 3, Some(gene_core::env::BLOOMS), e * BLOOM_EPOCH).iter().filter(|&&m| m != 0).count()).sum();
     let share = total as f64 / (64.0 * w.n() as f64);
     assert!((0.03..0.10).contains(&share), "share {share}");
     // discs at block centres: the centre of a blooming block is moss, its corners are not
@@ -164,7 +164,7 @@ fn moss_blooms_move_every_epoch_and_cover_a_few_percent_in_discs() {
 #[test]
 fn moss_blooms_grow_g_and_keep_the_ledger() {
     let mut s = idle_world(gene_core::sim::RULESET_M2G);
-    let mask = gene_core::env::moss_ground(&s.st.world, 3, true, 0);
+    let mask = gene_core::env::moss_ground(&s.st.world, 3, Some(gene_core::env::BLOOMS), 0);
     let g = |s: &Sim| (0..s.st.world.n() as u32).filter(|&t| mask[t as usize] != 0).map(|t| s.st.world.loose_total(t, G)).sum::<u64>();
     let g0 = g(&s);
     for _ in 0..2048 {
@@ -172,4 +172,32 @@ fn moss_blooms_grow_g_and_keep_the_ledger() {
     }
     assert!(s.audit_ok());
     assert!(g(&s) > g0 + 50, "blooms add G");
+}
+
+// ---------------------------------------------------------------- SPEC §20o food patches
+
+#[test]
+fn food_patches_are_small_move_daily_and_keep_the_ledger() {
+    use gene_core::env::{moss_ground, PATCHES};
+    let mut s = idle_world(gene_core::sim::RULESET_M2J);
+    let w = &s.st.world;
+    let a = moss_ground(w, 3, Some(PATCHES), 0);
+    assert_eq!(a, moss_ground(w, 3, Some(PATCHES), PATCHES.epoch - 1), "a day keeps its patches");
+    assert_ne!(a, moss_ground(w, 3, Some(PATCHES), PATCHES.epoch), "the next day draws new ones");
+    // a patch is 12 tiles: a 4×4 square without its corners at the centre of an 8×8 block
+    let t = (0..w.n()).find(|&t| a[t] != 0).unwrap() as u32;
+    let (bx, by) = (t % w.w / 8 * 8, t / w.w / 8 * 8);
+    let n: usize = (0..8).flat_map(|y| (0..8).map(move |x| (x, y))).filter(|&(x, y)| a[((by + y) * w.w + bx + x) as usize] != 0).count();
+    assert_eq!(n, 12);
+    // over many days about 1/8 of the blocks bloom: 12/512 of the map
+    let total: usize = (0..64).map(|e| moss_ground(w, 3, Some(PATCHES), e * PATCHES.epoch).iter().filter(|&&m| m != 0).count()).sum();
+    let share = total as f64 / (64.0 * w.n() as f64);
+    assert!((0.015..0.035).contains(&share), "share {share}");
+    let g = |s: &Sim| (0..s.st.world.n() as u32).filter(|&t| a[t as usize] != 0).map(|t| s.st.world.loose_total(t, G)).sum::<u64>();
+    let g0 = g(&s);
+    for _ in 0..1024 {
+        s.step();
+    }
+    assert!(s.audit_ok());
+    assert!(g(&s) > g0 + 50, "patches add G");
 }

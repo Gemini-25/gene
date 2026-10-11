@@ -54,6 +54,9 @@ pub const RULESET_M2H: &str = "gene-m2-8";
 /// gene-m2-4 + mating: a finished embryo may take a module from a neighbour's code (SPEC §20n,
 /// candidate for decision 8).
 pub const RULESET_M2I: &str = "gene-m2-9";
+/// gene-m2-5 + food patches: small, one-day, rich moss patches drawn afresh every day (SPEC §20o,
+/// candidate after E3).
+pub const RULESET_M2J: &str = "gene-m2-10";
 
 /// Capabilities switched on by the ruleset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -80,9 +83,9 @@ pub struct Caps {
     pub moss: bool,
     /// Every tile conducts signals to its four neighbours, as bonded metal does (SPEC §20l).
     pub air_signal: bool,
-    /// Moss ground is a set of 16×16 blocks drawn afresh every 4 days instead of the wettest
-    /// substrate (SPEC §20m; needs `moss`).
-    pub bloom: bool,
+    /// Moss ground is a set of discs drawn afresh every epoch instead of the wettest substrate
+    /// (SPEC §20m, §20o; needs `moss`).
+    pub bloom: Option<crate::env::Bloom>,
     /// Mating: at Finish, 1 embryo in MATE_ODDS with a neighbour takes one of its modules
     /// (SPEC §20n).
     pub mate: bool,
@@ -108,9 +111,10 @@ impl Caps {
             RULESET_M2D => Some(Caps { aging: 2 * AGING_PERIOD, ..Caps::of(RULESET_M2B)? }),
             RULESET_M2E => Some(Caps { moss: true, ..Caps::of(RULESET_M2D)? }),
             RULESET_M2F => Some(Caps { air_signal: true, ..Caps::of(RULESET_M2E)? }),
-            RULESET_M2G => Some(Caps { bloom: true, ..Caps::of(RULESET_M2E)? }),
+            RULESET_M2G => Some(Caps { bloom: Some(crate::env::BLOOMS), ..Caps::of(RULESET_M2E)? }),
             RULESET_M2H => Some(Caps { air_signal: true, ..Caps::of(RULESET_M2G)? }),
             RULESET_M2I => Some(Caps { mate: true, ..Caps::of(RULESET_M2D)? }),
+            RULESET_M2J => Some(Caps { bloom: Some(crate::env::PATCHES), ..Caps::of(RULESET_M2E)? }),
             RULESET_M2 => Some(Caps {
                 m1: true,
                 commit: true,
@@ -126,7 +130,7 @@ impl Caps {
                 aging: 0,
                 moss: false,
                 air_signal: false,
-                bloom: false,
+                bloom: None,
                 mate: false,
             }),
             _ => None,

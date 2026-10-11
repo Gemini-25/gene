@@ -4,9 +4,9 @@
 fn main() {
     let sim = gene_core::Sim::load(&std::fs::read(std::env::args().nth(1).unwrap()).unwrap()).unwrap();
     let w = &sim.st.world;
-    let e = gene_core::env::BLOOM_EPOCH;
-    let now = gene_core::env::moss_ground(w, sim.st.config.seed, true, sim.st.tick);
-    let before = gene_core::env::moss_ground(w, sim.st.config.seed, true, sim.st.tick.saturating_sub(e));
+    let e = sim.caps.bloom.map_or(gene_core::env::BLOOM_EPOCH, |b| b.epoch);
+    let now = gene_core::env::moss_ground(w, sim.st.config.seed, sim.caps.bloom, sim.st.tick);
+    let before = gene_core::env::moss_ground(w, sim.st.config.seed, sim.caps.bloom, sim.st.tick.saturating_sub(e));
     let count = |m: &[u8]| m.iter().filter(|&&v| v != 0).count();
     let both = now.iter().zip(&before).filter(|(a, b)| **a != 0 && **b != 0).count();
     let n = sim.st.agents.len().max(1) as f64;

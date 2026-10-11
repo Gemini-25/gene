@@ -8,7 +8,7 @@ fn main() {
     let mut sim = gene_core::Sim::load(&std::fs::read(&a[0]).unwrap()).unwrap();
     let ticks: u64 = a.get(1).map_or(16384, |v| v.parse().unwrap());
     let end = sim.st.tick + ticks;
-    let epoch = gene_core::env::BLOOM_EPOCH;
+    let epoch = sim.caps.bloom.map_or(gene_core::env::BLOOM_EPOCH, |b| b.epoch);
     while sim.st.tick < end {
         sim.step();
         if sim.st.tick % 512 == 0 {
