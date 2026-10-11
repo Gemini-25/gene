@@ -216,17 +216,19 @@ const hexColor = (c) => "#" + c.toString(16).padStart(6, "0");
 // (grass, dry ground, rock, damp soil) with hillshading, water, ground detail, parcels and
 // day/night light. Agents are instanced quads drawn as small creatures; their positions are
 // interpolated between snapshots so movement stays smooth while the simulation reports at ~4 Hz.
-const gl = map.getContext("webgl2", { antialias: true, alpha: false });
+// no multisampling: every pass draws its own smooth edges, and the cached terrain is blitted
+const gl = map.getContext("webgl2", { antialias: (new URLSearchParams(location.search).get("debug") || "").includes("msaa"), alpha: false });
 let view = { scale: 1, ox: 0, oy: 0, fitted: false };   // css px per tile, offset in css px
 let zoomTo = null;                                      // smoothed wheel zoom target
 let terrainTex = null, fieldTex = null, parcelTex = null, sigTex = null, groundTex = null, noiseTex = null;
 let parcelBuf = null, sigBuf = null, agentTex = null, agentBuf = null, lastAgentTiles = [];
 let terrTex = null, terrBuf = null, terrCells = [1, 1], terrLayer = -1, terrData = null; // -1 off, 0 visits, 1 matter, 2 structures
 const DOT_LOD = 6;   // device px per tile below which agents are drawn by the terrain pass
-const fps = { frames: 0, since: performance.now(), value: 0, scale: 1, lowered: 0, raised: 0, good: 0, start: performance.now(),
-  ceiling: 2, ceilingUntil: 0, backoff: 10000 };
+const fps = { frames: 0, since: performance.now(), value: 0, scale: 1, lowered: 0, raised: 0, good: 0, bad: 0, changed: 0, start: performance.now(),
+  ceiling: 2, ceilingUntil: 0, backoff: 30000 };
 window.__fps = () => fps.value;
-// ?debug=noterrain,noagents,fixed (measurement aid: skip a pass, or keep full resolution)
+// ?debug=noterrain,noagents,fixed,nocache,msaa (measurement aid: skip a pass, keep full resolution,
+// draw the terrain every frame without its cache, or ask for a multisampled canvas)
 const DEBUG = (new URLSearchParams(location.search).get("debug") || "").split(",");
 
 // --- procedural textures (tileable, seeded, made once at startup)
@@ -600,6 +602,21 @@ void main() {
   o = vec4(col, 1.0);
 }`;
 
+// The terrain pass is the costly one on a software GPU. It is rendered into an offscreen texture:
+// in full when the view changes, otherwise one horizontal strip per frame (water ripples, clouds,
+// light and data updates then refresh at 60 / TERRAIN_STRIPS Hz), and each frame copies it.
+const TERRAIN_STRIPS = 3;
+const VS_COPY = `#version 300 es
+void main() { vec2 c = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0); gl_Position = vec4(c, 0.0, 1.0); }`;
+const FS_COPY = `#version 300 es
+precision mediump float;
+uniform sampler2D u_tex;
+out vec4 o;
+void main() { o = texelFetch(u_tex, ivec2(gl_FragCoord.xy), 0); }`;
+const tcache = { fb: null, tex: null, w: 0, h: 0, key: "", strip: 0, full: 0, strips: 0 };
+window.__terrain = () => { const v = [tcache.full, tcache.strips]; tcache.full = 0; tcache.strips = 0; return v; };
+const COPY_UNIT = 12;
+
 // One point sprite per agent (a single draw call): the fragment shader turns gl_PointCoord into
 // local creature coordinates (tile half-size = 1, with a margin for the shadow and the ring).
 const VS_AGENT = `#version 300 es
@@ -703,7 +720,7 @@ void main() {
   o = vec4(c.rgb * c.a, c.a);
 }`;
 
-let progT = null, progA = null, progB = null, quadVao = null, agentVao = null, instBuf = null, instData = new Float32Array(0);
+let progT = null, progA = null, progB = null, progC = null, copyVao = null, quadVao = null, agentVao = null, instBuf = null, instData = new Float32Array(0);
 let detailTex = null, maxPoint = 64;
 // world-space bake: two buffers so a re-bake can run in strips while the other is shown
 const bake = { r: 4, w: 0, h: 0, front: null, back: null, row: 0, pending: false, strips: 32, last: 0, levels: null };
@@ -746,6 +763,7 @@ function initGL() {
   progT = program(VS_TERRAIN, FS_TERRAIN);
   progB = program(VS_TERRAIN, FS_BAKE);
   progA = program(VS_AGENT, FS_AGENT);
+  progC = program(VS_COPY, FS_COPY); copyVao = gl.createVertexArray();
   maxPoint = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1];
   const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
@@ -993,17 +1011,20 @@ function drawFrame(now) {
   if (now - fps.since >= 500) {
     fps.value = fps.frames * 1000 / (now - fps.since); fps.frames = 0; fps.since = now;
     // adaptive resolution: keep the frame rate, give back sharpness when there is headroom.
-    // A raise that the frame rate could not hold sets a ceiling for a while (doubling up to two
-    // minutes), so the scale does not probe up and down every few seconds.
-    if (DEBUG.includes("fixed") || now - fps.start < 3000) {} else if (fps.value < 50 && fps.scale > 0.3) {
+    // Raises are small (8%) and need two seconds at full rate; a raise that the frame rate could not
+    // hold keeps the scale 8% below it for a while (30 s, doubling up to two minutes), so the scale does not
+    // probe up and down every few seconds.
+    fps.bad = fps.value < 57 ? fps.bad + 1 : 0;
+    // the window that held a resize pays for reallocating the canvas and the terrain cache: skip it
+    if (DEBUG.includes("fixed") || now - fps.start < 3000 || now - fps.changed < 700) { fps.bad = 0; } else if ((fps.value < 50 || fps.bad >= 2) && fps.scale > 0.3) {
       if (now - fps.raised < 2500) { fps.ceiling = fps.scale; fps.ceilingUntil = now + fps.backoff; fps.backoff = Math.min(120000, fps.backoff * 2); }
-      fps.scale = Math.max(0.3, fps.scale * 0.85); fps.lowered = now; fps.good = 0;
-    } else if (fps.value >= 57 && fps.scale < 1 && now - fps.lowered > 2000 && ++fps.good >= 2) {
-      const next = Math.min(1, fps.scale * 1.15);
-      if (now >= fps.ceilingUntil || next < fps.ceiling * 0.999) { fps.scale = next; fps.raised = now; }
+      fps.scale = Math.max(0.3, fps.scale * 0.85); fps.lowered = now; fps.changed = now; fps.good = 0; fps.bad = 0;
+    } else if (fps.value >= 59 && fps.scale < 1 && now - fps.lowered > 2000 && ++fps.good >= 4) {
+      const next = Math.min(1, fps.scale * 1.08);
+      if (now >= fps.ceilingUntil || next < fps.ceiling * 0.92) { fps.scale = next; fps.raised = now; fps.changed = now; }
       fps.good = 0;
     }
-    if (now - fps.lowered > 60000) fps.backoff = 10000; // a long steady spell forgets old failures
+    if (now - fps.lowered > 120000) fps.backoff = 30000; // a long steady spell forgets old failures
     $("fps").textContent = `${Math.round(fps.value)} fps` + (fps.scale < 1 ? ` · 해상도 ${Math.round(fps.scale * 100)}%` : "");
   }
   if (!gl || !terrainTex || !W) return;
@@ -1046,7 +1067,7 @@ function drawFrame(now) {
     [u.u_parc, parcelTex], [u.u_sig, sigTex], [u.u_noise, noiseTex], [u.u_agents, agentTex], [u.u_terr2, terrTex]];
   units.forEach(([loc, tx], i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tx); gl.uniform1i(loc, i); });
   gl.disable(gl.BLEND);
-  if (!DEBUG.includes("noterrain")) { gl.bindVertexArray(quadVao); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); }
+  if (!DEBUG.includes("noterrain")) drawTerrainCached(cw, ch, vu, bg, [dots, showSignal, terrLayer, dark()].join());
   // agents
   const n = DEBUG.includes("noagents") ? 0 : agentInstances(now, dots, visibleRect(cw, ch, dpr));
   if (n) {
@@ -1062,6 +1083,40 @@ function drawFrame(now) {
   }
   drawMinimap(cw, ch, dpr, r, light, t);
   gl.bindVertexArray(null);
+}
+// terrain into the cache (all of it, or the next strip), then onto the screen
+function drawTerrainCached(cw, ch, vu, bg, state) {
+  if (DEBUG.includes("nocache")) { gl.bindVertexArray(quadVao); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); return; }
+  if (tcache.w !== cw || tcache.h !== ch || !tcache.fb) {
+    if (tcache.tex) { gl.deleteTexture(tcache.tex); gl.deleteFramebuffer(tcache.fb); }
+    tcache.tex = tex2d(cw, ch, null, gl.NEAREST);
+    tcache.fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, tcache.fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tcache.tex, 0);
+    tcache.w = cw; tcache.h = ch; tcache.key = "";
+  }
+  const key = `${cw},${ch},${vu.join()},${state}`;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, tcache.fb);
+  gl.activeTexture(gl.TEXTURE0 + COPY_UNIT); gl.bindTexture(gl.TEXTURE_2D, null);
+  if (key !== tcache.key) { tcache.key = key; tcache.strip = 0; tcache.full++; }
+  else {
+    tcache.strips++;
+    const k = tcache.strip, y0 = Math.floor(k * ch / TERRAIN_STRIPS), y1 = Math.floor((k + 1) * ch / TERRAIN_STRIPS);
+    gl.enable(gl.SCISSOR_TEST); gl.scissor(0, y0, cw, y1 - y0);
+    tcache.strip = (k + 1) % TERRAIN_STRIPS;
+  }
+  gl.clearColor(bg[0], bg[1], bg[2], 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.bindVertexArray(quadVao); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  gl.disable(gl.SCISSOR_TEST);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  if (gl.getContextAttributes().antialias) {
+    gl.useProgram(progC.p);
+    gl.activeTexture(gl.TEXTURE0 + COPY_UNIT); gl.bindTexture(gl.TEXTURE_2D, tcache.tex); gl.uniform1i(progC.u.u_tex, COPY_UNIT);
+    gl.bindVertexArray(copyVao); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  } else {
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, tcache.fb);
+    gl.blitFramebuffer(0, 0, cw, ch, 0, 0, cw, ch, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+  }
 }
 // --- minimap: the terrain pass again, fitted into a corner viewport, with the main view outlined
 const MINI = 168, MINI_PAD = 12;
