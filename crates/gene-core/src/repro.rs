@@ -126,12 +126,16 @@ impl Sim {
         };
         // mating (SPEC §20n): the first neighbour north, east, south, west, 1 time in MATE_ODDS
         let mut prefix_m = None;
-        if self.caps.mate {
+        if let Some(mode) = self.caps.mate {
             let t = self.tile_of(i);
             let partner = (0..4u8).filter_map(|d| self.st.world.neighbor(t, d)).find_map(|u| self.agent_at(u));
             if let Some(j) = partner {
                 if st.below(crate::mutation::MATE_ODDS) == 0 {
-                    prefix_m = Some(crate::mutation::mate(&prefix, self.st.agents[j].program(), &mut st));
+                    let other = self.st.agents[j].program();
+                    prefix_m = Some(match mode {
+                        crate::sim::Mating::Any => crate::mutation::mate(&prefix, other, &mut st),
+                        crate::sim::Mating::Homologous => crate::mutation::mate_homologous(&prefix, other, &mut st),
+                    });
                 }
             }
         }

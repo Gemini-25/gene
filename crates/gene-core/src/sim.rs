@@ -57,6 +57,18 @@ pub const RULESET_M2I: &str = "gene-m2-9";
 /// gene-m2-5 + food patches: small, one-day, rich moss patches drawn afresh every day (SPEC §20o,
 /// candidate after E3).
 pub const RULESET_M2J: &str = "gene-m2-10";
+/// gene-m2-7 (moving blooms) + homologous mating: a finished embryo may take a neighbour's module
+/// of the same tag (SPEC §20p, candidate after E4).
+pub const RULESET_M2K: &str = "gene-m2-11";
+
+/// Which embryo module a mate's module may replace (SPEC §20n, §20p).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mating {
+    /// Any module (uniform), tag kept: `gene-m2-9`.
+    Any,
+    /// Only the module with the same tag as the mate's: `gene-m2-11`.
+    Homologous,
+}
 
 /// Capabilities switched on by the ruleset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -87,8 +99,8 @@ pub struct Caps {
     /// (SPEC §20m, §20o; needs `moss`).
     pub bloom: Option<crate::env::Bloom>,
     /// Mating: at Finish, 1 embryo in MATE_ODDS with a neighbour takes one of its modules
-    /// (SPEC §20n).
-    pub mate: bool,
+    /// (SPEC §20n; `homologous`: only into the module with the same tag, SPEC §20p).
+    pub mate: Option<Mating>,
 }
 
 impl Caps {
@@ -113,7 +125,8 @@ impl Caps {
             RULESET_M2F => Some(Caps { air_signal: true, ..Caps::of(RULESET_M2E)? }),
             RULESET_M2G => Some(Caps { bloom: Some(crate::env::BLOOMS), ..Caps::of(RULESET_M2E)? }),
             RULESET_M2H => Some(Caps { air_signal: true, ..Caps::of(RULESET_M2G)? }),
-            RULESET_M2I => Some(Caps { mate: true, ..Caps::of(RULESET_M2D)? }),
+            RULESET_M2I => Some(Caps { mate: Some(Mating::Any), ..Caps::of(RULESET_M2D)? }),
+            RULESET_M2K => Some(Caps { mate: Some(Mating::Homologous), ..Caps::of(RULESET_M2G)? }),
             RULESET_M2J => Some(Caps { bloom: Some(crate::env::PATCHES), ..Caps::of(RULESET_M2E)? }),
             RULESET_M2 => Some(Caps {
                 m1: true,
@@ -131,7 +144,7 @@ impl Caps {
                 moss: false,
                 air_signal: false,
                 bloom: None,
-                mate: false,
+                mate: None,
             }),
             _ => None,
         }

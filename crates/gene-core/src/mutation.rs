@@ -173,6 +173,27 @@ fn structural(e: &mut Edit, opn: u8, st: &mut Stream, donor: &Program, extra: Op
 /// Mating (SPEC §20n): 1 finished embryo in MATE_ODDS that has a neighbour takes one module.
 pub const MATE_ODDS: u32 = 8;
 
+/// Homologous mating (SPEC §20p): one module of the embryo's validated prefix (uniform) takes the
+/// content of the partner's module with the same tag; nothing changes when the partner has no
+/// such module or the result would break the limits. A habit can only land in the hook it was
+/// written for, and the main module only ever meets another main module.
+pub fn mate_homologous(prefix: &[u16], partner: &Program, st: &mut Stream) -> Vec<u16> {
+    let Ok(p) = genome::parse(prefix) else { return prefix.to_vec() };
+    if p.modules.is_empty() {
+        return prefix.to_vec();
+    }
+    let mut e = Edit::from(&p);
+    let tj = st.below(e.mods.len() as u32) as usize;
+    let Some(m) = partner.modules.iter().find(|m| m.tag == e.mods[tj].0) else { return prefix.to_vec() };
+    e.mods[tj].1 = partner.words[m.start as usize..(m.start + m.len) as usize].to_vec();
+    let np = e.to_program();
+    if np.within_limits() {
+        np.to_cells()
+    } else {
+        prefix.to_vec()
+    }
+}
+
 /// Mating (SPEC §20n): one module of `partner` (uniform) overwrites one module of the embryo's
 /// validated prefix (uniform, tag kept), as Recombine does with the parent's own modules. Returns
 /// the prefix unchanged when the result would break the limits.
@@ -278,6 +299,33 @@ mod tests {
             }
         }
         assert!(changed > 10, "mating usually changes the embryo ({changed} of 40)");
+    }
+
+    #[test]
+    fn homologous_mating_moves_a_module_only_into_its_own_tag() {
+        let me = crate::isa::assemble(crate::FOUNDER8M_ASM).unwrap();
+        let partner = crate::isa::assemble(crate::FOUNDER10M_ASM).unwrap();
+        let body = |p: &Program, k: usize| {
+            let m = p.modules[k];
+            p.words[m.start as usize..(m.start + m.len) as usize].to_vec()
+        };
+        let mut changed = 0;
+        for o in 0..60 {
+            let mut st = Stream::new(stream_key(4, Domain::Mutation, 1, o), 1);
+            let p = genome::parse(&mate_homologous(&me.to_cells(), &partner, &mut st)).expect("valid");
+            assert_eq!(p.modules.len(), me.modules.len());
+            for k in 0..p.modules.len() {
+                assert_eq!(p.modules[k].tag, me.modules[k].tag, "tags kept");
+                if body(&p, k) != body(&me, k) {
+                    let j = partner.modules.iter().position(|m| m.tag == p.modules[k].tag).unwrap();
+                    assert_eq!(body(&p, k), body(&partner, j), "the partner's module of the same tag");
+                    changed += 1;
+                }
+            }
+            assert_eq!(body(&p, 0), body(&me, 0), "the shared main module never changes");
+        }
+        // three of Founder-8m's four modules differ from Founder-10m's
+        assert!(changed > 20, "{changed} of 60");
     }
 
     #[test]
