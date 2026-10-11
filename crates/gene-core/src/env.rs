@@ -291,10 +291,7 @@ impl Sim {
             self.parcel_chemistry(t, x, tick);
         }
         self.phase_changes(t);
-        self.media_chemistry(t, x, tick);
-        if self.caps.m1 {
-            self.media_wear(t, x);
-        }
+        self.media_step(t, x, tick);
         // 5. heat damage
         if let Some(i) = occupant {
             if self.st.world.theta(t) > 340 && self.st.agents[i].body_g > 0 {
@@ -388,83 +385,85 @@ impl Sim {
 
     /// Exposure bit wear of records lying on tile t (SPEC §20b), then of the medium attached to
     /// the parcel there (M1f: it is just as exposed).
-    fn media_wear(&mut self, t: u32, x: u64) {
-        let seed = self.st.config.seed;
-        let tick = self.st.tick;
-        let mut hits: Vec<(u64, u32)> = Vec::new();
-        if let Some(list) = self.st.dropped.get_mut(&t) {
-            for m in list.iter_mut() {
+    /// Records on tile t: Rx2 oxidation of the dropped ones in UID order, then of the parcel's;
+    /// then, with M1, wear of the dropped ones and of the parcel's. One map lookup per store
+    /// (the order is that of separate oxidation and wear passes).
+    fn media_step(&mut self, t: u32, x: u64, tick: u64) {
+        let (seed, decomp, key, wear) = (self.st.config.seed, self.caps.decomp, self.keys.media_rx2, self.caps.m1);
+        let st = &mut self.st;
+        let obs = &mut self.obs;
+        let mut list = st.dropped.get_mut(&t);
+        if let Some(l) = list.as_deref_mut() {
+            for m in l.iter_mut() {
+                oxidize_one(&mut st.world, obs, decomp, key, t, m, x, tick);
+            }
+            l.retain(|m| m.present_pages() > 0);
+        }
+        if let Some(mut m) = st.world.parcels.get_mut(&t).and_then(|p| p.media.take()) {
+            oxidize_one(&mut st.world, obs, decomp, key, t, &mut m, x, tick);
+            if m.present_pages() > 0 {
+                st.world.parcels.get_mut(&t).unwrap().media = Some(m);
+            }
+        }
+        let emptied = list.as_ref().is_some_and(|l| l.is_empty());
+        if wear {
+            let mut hits: Vec<(u64, u32)> = Vec::new();
+            if let Some(l) = list {
+                for m in l.iter_mut() {
+                    if let Some(c) = wear_one(m, x, seed, tick) {
+                        hits.push((m.uid, c));
+                    }
+                }
+            }
+            if let Some(m) = st.world.parcels.get_mut(&t).and_then(|p| p.media.as_mut()) {
                 if let Some(c) = wear_one(m, x, seed, tick) {
                     hits.push((m.uid, c));
                 }
             }
-        }
-        if let Some(m) = self.st.world.parcels.get_mut(&t).and_then(|p| p.media.as_mut()) {
-            if let Some(c) = wear_one(m, x, seed, tick) {
-                hits.push((m.uid, c));
+            obs.m1.bit_flips += hits.len() as u64;
+            if let Some(v) = &mut obs.lineage {
+                for (media, cell) in hits {
+                    v.push(crate::lineage::MediaFact::Damage { tick, media, cell });
+                }
             }
         }
-        self.obs.m1.bit_flips += hits.len() as u64;
-        if let Some(v) = &mut self.obs.lineage {
-            for (media, cell) in hits {
-                v.push(crate::lineage::MediaFact::Damage { tick, media, cell });
-            }
+        if emptied {
+            st.dropped.remove(&t);
         }
     }
+}
 
-    /// Rx2 oxidation of exposed records on tile t: dropped ones in UID order, then the parcel's.
-    /// A record without present pages is gone (its G already left as C and W).
-    fn media_chemistry(&mut self, t: u32, x: u64, tick: u64) {
-        if let Some(mut list) = self.st.dropped.remove(&t) {
-            for m in &mut list {
-                self.oxidize_one(t, m, x, tick);
-            }
-            list.retain(|m| m.present_pages() > 0);
-            if !list.is_empty() {
-                self.st.dropped.insert(t, list);
-            }
-        }
-        let Some(mut m) = self.st.world.parcels.get_mut(&t).and_then(|p| p.media.take()) else { return };
-        self.oxidize_one(t, &mut m, x, tick);
-        if m.present_pages() > 0 {
-            self.st.world.parcels.get_mut(&t).unwrap().media = Some(m);
-        }
+/// Rx2 oxidation of one exposed record on tile t. A record without present pages is gone (its G
+/// already left as C and W).
+#[allow(clippy::too_many_arguments)]
+fn oxidize_one(w: &mut crate::world::World, obs: &mut crate::observer::Observer, decomp: bool, key: [u32; 2], t: u32, m: &mut crate::media::Media, x: u64, tick: u64) {
+    let ti = t as usize;
+    let rate = rx_rate(&RX2, w.theta(t), decomp);
+    let possible = |w: &crate::world::World, m: &crate::media::Media| {
+        (m.present_pages() as u64).min(w.loose_total(t, O)).min(w.loose_space(t, C)).min(w.loose_space(t, W))
+    };
+    let p = possible(w, m);
+    if rate == 0 || p == 0 {
+        return;
     }
-
-    fn oxidize_one(&mut self, t: u32, m: &mut crate::media::Media, x: u64, tick: u64) {
-        let ti = t as usize;
-        let w = &self.st.world;
-        let rate = rx_rate(&RX2, w.theta(t), self.caps.decomp);
-        let possible = |w: &crate::world::World, m: &crate::media::Media| {
-            (m.present_pages() as u64)
-                .min(w.loose_total(t, O))
-                .min(w.loose_space(t, C))
-                .min(w.loose_space(t, W))
-        };
-        let p = possible(w, m);
-        if rate == 0 || p == 0 {
-            return;
+    let inc = sr(rate * x * p.min(16), 256, key, m.uid, tick);
+    let mut credit = m.credit as u64 + inc;
+    let mut ext = 0;
+    while credit >= 65536 && ext < 4 && possible(w, m) > 0 {
+        if let (Some(v), Some(page)) = (&mut obs.lineage, m.present.iter().rposition(|p| *p)) {
+            let start = (page * crate::genome::PAGE_CELLS) as u32;
+            v.push(crate::lineage::MediaFact::Destroy { tick, media: m.uid, start, end: start + crate::genome::PAGE_CELLS as u32 });
         }
-        let inc = sr(rate * x * p.min(16), 256, self.keys.media_rx2, m.uid, tick);
-        let mut credit = m.credit as u64 + inc;
-        let mut ext = 0;
-        while credit >= 65536 && ext < 4 && possible(&self.st.world, m) > 0 {
-            if let (Some(v), Some(page)) = (&mut self.obs.lineage, m.present.iter().rposition(|p| *p)) {
-                let start = (page * crate::genome::PAGE_CELLS) as u32;
-                v.push(crate::lineage::MediaFact::Destroy { tick, media: m.uid, start, end: start + crate::genome::PAGE_CELLS as u32 });
-            }
-            m.oxidize_top_page();
-            let w = &mut self.st.world;
-            w.take_loose(t, O, 1);
-            w.put_loose(t, C, 1);
-            w.put_loose(t, W, 1);
-            w.heat_u[ti] += 5000;
-            credit -= 65536;
-            ext += 1;
-            self.obs.tick.media_oxidized += 1;
-        }
-        m.credit = credit.min(65535) as u16;
+        m.oxidize_top_page();
+        w.take_loose(t, O, 1);
+        w.put_loose(t, C, 1);
+        w.put_loose(t, W, 1);
+        w.heat_u[ti] += 5000;
+        credit -= 65536;
+        ext += 1;
+        obs.tick.media_oxidized += 1;
     }
+    m.credit = credit.min(65535) as u16;
 }
 
 /// Mutable view of a contiguous run of tiles (a band of rows) for transport.
